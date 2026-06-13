@@ -55,7 +55,7 @@ export const HERMES_REMOTE_USER = process.env.HERMES_REMOTE_USER || 'root';
 export const HERMES_REMOTE_SSH_KEY =
   process.env.HERMES_REMOTE_SSH_KEY || path.join(os.homedir(), '.ssh', 'id_ed25519');
 export const HERMES_REMOTE_REPORT_DIR =
-  process.env.HERMES_REMOTE_REPORT_DIR || '/usr/docker/hermes/workspace/report-agent/reports';
+  process.env.HERMES_REMOTE_REPORT_DIR || '/opt/hermes/workspace/report-agent/reports';
 export const HERMES_CONTAINER_REPORT_DIR =
   '/home/node/.hermes/workspace/report-agent/reports';
 export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';

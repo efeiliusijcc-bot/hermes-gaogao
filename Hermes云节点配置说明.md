@@ -16,6 +16,13 @@
 | `hermes` | `nousresearch/hermes-agent:latest` | Hermes agent 服务 |
 | `todo_postgres` | `pgvector/pgvector:pg15-trixie` | `5432:5432`，pgvector 数据库 |
 
+Hermes 容器实际挂载：宿主机 `/opt/hermes` -> 容器内 `/opt/data`。
+从 OpenClaw 迁移过来的 report-agent skills 放在：
+
+```text
+/opt/hermes/workspace/report-agent/skills
+```
+
 ## 本地环境变量
 
 把实际 token 和数据库密码只放在本机或服务器 `.env`，不要提交到 GitHub。

@@ -71,7 +71,7 @@ docker run -d \
   -e PGVECTOR_EMBEDDING_INPUT_CHARS=${PGVECTOR_EMBEDDING_INPUT_CHARS:-600} \
   -e PGVECTOR_EMBEDDING_BASE_URL=${PGVECTOR_EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1} \
   -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
-  -v /usr/docker/hermes:/home/node/.hermes \
+  -v /opt/hermes:/home/node/.hermes \
   gaogao-api:latest
 
 sleep 3
