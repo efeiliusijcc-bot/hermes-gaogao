@@ -8,33 +8,32 @@ The active frontend lives in:
 b_k3ewYvsOEc1/
 ```
 
-The backend is a NestJS API that talks to Hermes through an OpenAI-compatible API.
+The backend is a NestJS API that can run Hermes through the cloud container CLI.
 The report workflow, frontend/backend layout, and pgvector database integration are kept from the original project.
 
 ## Backend Hermes Connection
 
-For local testing against the cloud Hermes node:
+For local testing against the cloud Hermes node, use remote CLI mode:
 
 ```env
-HERMES_BASE_URL=http://74.121.148.204:1888/v1
-HERMES_API_KEY=
-HERMES_MODEL=openclaw/report-agent
+HERMES_RUN_MODE=remote_cli
+HERMES_REMOTE_HOST=74.121.148.204
+HERMES_REMOTE_USER=root
+HERMES_REMOTE_SSH_KEY=~/.ssh/id_ed25519
+HERMES_REMOTE_REPORT_DIR=/opt/hermes/workspace/report-agent/reports
+HERMES_REMOTE_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports
+HERMES_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports
 ```
 
 Keep using the existing pgvector database by setting `PGVECTOR_DATABASE_URL` in `.env`.
 Do not commit real tokens, database passwords, or `.env` files.
-Hermes currently accepts model IDs in the `openclaw/<agentId>` format; keep the `HERMES_*` variable names and use `openclaw/report-agent` as the model value.
 
-For Docker deployment on the same host/network as the `hermes` container:
+Important: `http://74.121.148.204:1888/v1` is the legacy OpenClaw-compatible HTTP endpoint, not the Hermes container. Use it only for explicit legacy fallback testing:
 
 ```env
-HERMES_BASE_URL=http://hermes:18789/v1
-```
-
-The cloud health endpoint currently responds at:
-
-```text
-http://74.121.148.204:1888/health
+HERMES_RUN_MODE=http
+HERMES_BASE_URL=http://74.121.148.204:1888/v1
+HERMES_MODEL=openclaw/report-agent
 ```
 
 ## Commands

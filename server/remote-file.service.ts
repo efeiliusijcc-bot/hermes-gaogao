@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import {
   HERMES_REMOTE_HOST,
+  HERMES_REMOTE_CONTAINER_REPORT_DIR,
   HERMES_REMOTE_REPORT_DIR,
   HERMES_REMOTE_SSH_KEY,
   HERMES_REMOTE_USER,
@@ -54,12 +55,23 @@ export interface RemoteStat {
 export class RemoteFileService {
   readonly remoteDir = HERMES_REMOTE_REPORT_DIR;
 
+  private toHostPath(filePath: string): string {
+    if (!isRemote()) return filePath;
+    if (filePath === HERMES_REMOTE_CONTAINER_REPORT_DIR) return this.remoteDir;
+    if (filePath.startsWith(`${HERMES_REMOTE_CONTAINER_REPORT_DIR}/`)) {
+      return `${this.remoteDir}${filePath.slice(HERMES_REMOTE_CONTAINER_REPORT_DIR.length)}`;
+    }
+    return filePath;
+  }
+
   async readFile(filePath: string): Promise<string> {
+    filePath = this.toHostPath(filePath);
     if (!isRemote()) return fs.promises.readFile(filePath, 'utf-8');
     return execSsh(`cat '${filePath}'`);
   }
 
   async writeFile(filePath: string, content: string): Promise<void> {
+    filePath = this.toHostPath(filePath);
     if (!isRemote()) {
       await fs.promises.writeFile(filePath, content, 'utf-8');
       return;
@@ -69,6 +81,7 @@ export class RemoteFileService {
   }
 
   async readdir(dirPath: string): Promise<RemoteDirent[]> {
+    dirPath = this.toHostPath(dirPath);
     if (!isRemote()) {
       const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
       return entries.map((e) => ({
@@ -92,6 +105,7 @@ export class RemoteFileService {
   }
 
   async stat(filePath: string): Promise<RemoteStat> {
+    filePath = this.toHostPath(filePath);
     if (!isRemote()) {
       const s = await fs.promises.stat(filePath);
       return { size: s.size, mtimeMs: s.mtimeMs, isFile: s.isFile() };
@@ -106,6 +120,7 @@ export class RemoteFileService {
   }
 
   async mkdir(dirPath: string): Promise<void> {
+    dirPath = this.toHostPath(dirPath);
     if (!isRemote()) {
       await fs.promises.mkdir(dirPath, { recursive: true });
       return;
@@ -114,6 +129,7 @@ export class RemoteFileService {
   }
 
   async exists(filePath: string): Promise<boolean> {
+    filePath = this.toHostPath(filePath);
     if (!isRemote()) {
       try {
         const s = await fs.promises.stat(filePath);
@@ -141,12 +157,14 @@ export class RemoteFileService {
   }
 
   remapToReportDir(filePath: string): string | null {
+    filePath = this.toHostPath(filePath);
     const filename = path.basename(filePath);
     if (!filename.toLowerCase().endsWith('.md')) return null;
     return this.joinPath(this.remoteDir, filename);
   }
 
   isInsideReportDir(filePath: string): boolean {
+    filePath = this.toHostPath(filePath);
     if (!isRemote()) {
       const root = path.resolve(this.remoteDir).toLowerCase();
       const resolved = path.resolve(filePath).toLowerCase();

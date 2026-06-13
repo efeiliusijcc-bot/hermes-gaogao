@@ -1,50 +1,65 @@
 # Hermes 云节点配置说明
 
-## 服务器信息
+## 服务器
 
 | 项目 | 值 |
 |---|---|
 | IP | `74.121.148.204` |
-| SSH 端口 | `22` |
 | SSH 用户 | `root` |
 | 部署方式 | Docker |
 
-## 容器信息
+## 容器
 
-| 容器 | 镜像 | 端口/用途 |
+| 容器 | 镜像 | 说明 |
 |---|---|---|
-| `hermes` | `nousresearch/hermes-agent:latest` | Hermes agent 服务 |
-| `todo_postgres` | `pgvector/pgvector:pg15-trixie` | `5432:5432`，pgvector 数据库 |
+| `hermes` | `nousresearch/hermes-agent:latest` | Hermes Agent CLI/Gateway 容器，当前未暴露 HTTP 端口 |
+| `openclaw` | `alpine/openclaw:latest` | Legacy OpenClaw 网关，暴露 `1888->18789` |
+| `todo_postgres` | `pgvector/pgvector:pg15-trixie` | pgvector 数据库，暴露 `5432` |
 
-Hermes 容器实际挂载：宿主机 `/opt/hermes` -> 容器内 `/opt/data`。
-从 OpenClaw 迁移过来的 report-agent skills 放在：
+`http://74.121.148.204:1888/v1` 是 OpenClaw 兼容 HTTP 入口，不是 Hermes 容器。
+
+## Hermes 路径
+
+Hermes 容器挂载：
 
 ```text
-/opt/hermes/workspace/report-agent/skills
+宿主机 /opt/hermes -> 容器内 /opt/data
 ```
 
-## 本地环境变量
+从 OpenClaw 迁移的 report-agent skills：
 
-把实际 token 和数据库密码只放在本机或服务器 `.env`，不要提交到 GitHub。
-数据库沿用原项目的 pgvector 配置，通过 `PGVECTOR_DATABASE_URL` 指向原来的库。
+```text
+宿主机 /opt/hermes/workspace/report-agent/skills
+容器内 /opt/data/workspace/report-agent/skills
+```
+
+已注册到 Hermes 全局 skills：
+
+```text
+宿主机 /opt/hermes/skills/reporting
+容器内 /opt/data/skills/reporting
+```
+
+报告输出目录：
+
+```text
+宿主机 /opt/hermes/workspace/report-agent/reports
+容器内 /opt/data/workspace/report-agent/reports
+```
+
+## 本地后端推荐配置
 
 ```env
-HERMES_BASE_URL=http://74.121.148.204:1888/v1
-HERMES_API_KEY=
-HERMES_MODEL=openclaw/report-agent
-HERMES_QA_AGENT_ID=qa-agent
-HERMES_QA_MODEL=openclaw/qa-agent
-HERMES_QA_MODE=direct_pg
-
-PGVECTOR_DATABASE_URL=
+HERMES_RUN_MODE=remote_cli
+HERMES_REMOTE_HOST=74.121.148.204
+HERMES_REMOTE_USER=root
+HERMES_REMOTE_SSH_KEY=~/.ssh/id_ed25519
+HERMES_REMOTE_REPORT_DIR=/opt/hermes/workspace/report-agent/reports
+HERMES_REMOTE_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports
+HERMES_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports
+HERMES_REMOTE_CLI_CONTAINER=hermes
+HERMES_REMOTE_CLI_BINARY=/opt/hermes/.venv/bin/hermes
+HERMES_REMOTE_CLI_HOME=/opt/data
 ```
 
-## 常用检查命令
-
-```bash
-ssh -i ~/.ssh/id_ed25519 root@74.121.148.204
-docker ps | grep hermes
-docker ps | grep todo_postgres
-docker logs hermes
-docker restart hermes
-```
+模型密钥、数据库密码和 `.env` 只保存在本地或服务器，不提交到 GitHub。

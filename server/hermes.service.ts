@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import OpenAI from 'openai';
+import os from 'os';
 import path from 'path';
 import {
   HEALTH_TIMEOUT_MS,
@@ -13,6 +15,16 @@ import {
   HERMES_QA_MODEL,
   HERMES_QA_MODE,
   HERMES_QA_TIMEOUT_MS,
+  HERMES_REMOTE_CLI_BINARY,
+  HERMES_REMOTE_CLI_CONTAINER,
+  HERMES_REMOTE_CLI_HOME,
+  HERMES_REMOTE_CLI_MODEL,
+  HERMES_REMOTE_CLI_PROVIDER,
+  HERMES_REMOTE_HOST,
+  HERMES_REMOTE_REPORT_DIR,
+  HERMES_REMOTE_SSH_KEY,
+  HERMES_REMOTE_USER,
+  HERMES_RUN_MODE,
   HERMES_STATE_DIR,
   REPORT_TIMEOUT_MS,
 } from './config.js';
@@ -34,6 +46,9 @@ export class HermesApprovalRequiredError extends Error {
 const PLAN_MODEL_TIMEOUT_MS = Number(process.env.REPORT_PLAN_TIMEOUT_MS || 25000);
 const PLAN_SEARCH_QUERY_TIMEOUT_MS = Number(process.env.REPORT_PLAN_SEARCH_QUERY_TIMEOUT_MS || 2500);
 const GATEWAY_FINAL_POLL_INTERVAL_MS = 2000;
+const SSH_EXE = process.platform === 'win32'
+  ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+  : 'ssh';
 
 @Injectable()
 export class HermesService {
@@ -49,6 +64,18 @@ export class HermesService {
   });
 
   async health(timeoutMs = HEALTH_TIMEOUT_MS): Promise<HermesHealth> {
+    if (HERMES_RUN_MODE === 'remote_cli') {
+      return {
+        ok: Boolean(HERMES_REMOTE_HOST),
+        status: HERMES_REMOTE_HOST ? 'ready' : 'down',
+        checks: { hermesHttpApi: false, localProbe: Boolean(HERMES_REMOTE_HOST) },
+        timeoutMs,
+        details: HERMES_REMOTE_HOST
+          ? [`Hermes remote CLI mode enabled on ${HERMES_REMOTE_USER}@${HERMES_REMOTE_HOST}.`]
+          : ['HERMES_RUN_MODE=remote_cli requires HERMES_REMOTE_HOST.'],
+      };
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -89,6 +116,8 @@ export class HermesService {
   }
 
   async runReport(input: RunInput): Promise<RunResult> {
+    if (HERMES_RUN_MODE === 'remote_cli') return this.runReportViaRemoteCli(input);
+
     const prompt = this.buildReportPrompt(input);
     input.onEvent({ type: 'stage', stage: 'start', message: 'Preparing Hermes non-streaming request...' });
     input.onEvent({
@@ -113,6 +142,27 @@ export class HermesService {
     input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes returned a complete non-streaming response.' });
     this.assertNoApprovalCommands(markdown);
     return { markdown, artifacts: {} };
+  }
+
+  private async runReportViaRemoteCli(input: RunInput): Promise<RunResult> {
+    if (!HERMES_REMOTE_HOST) {
+      throw new Error('HERMES_RUN_MODE=remote_cli requires HERMES_REMOTE_HOST.');
+    }
+
+    const prompt = this.buildReportPrompt(input);
+    input.onEvent({ type: 'stage', stage: 'start', message: 'Preparing Hermes remote CLI request...' });
+    input.onEvent({
+      type: 'stage',
+      stage: 'running',
+      message: `Running Hermes CLI in cloud container ${HERMES_REMOTE_CLI_CONTAINER} (timeout ${Math.ceil(REPORT_TIMEOUT_MS / 1000)}s)...`,
+    });
+
+    const markdown = await this.runHermesRemoteCli(input.skill, prompt);
+    if (!markdown) throw new Error('Hermes remote CLI returned no text.');
+
+    input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes remote CLI returned a complete response.' });
+    this.assertNoApprovalCommands(markdown);
+    return { markdown, artifacts: { runMode: 'remote_cli' } };
   }
 
   async planReport(input: ReportPlanRequest): Promise<ReportPlanResponse> {
@@ -164,6 +214,82 @@ export class HermesService {
     } catch {
       return fallback;
     }
+  }
+
+  private runHermesRemoteCli(skill: string, prompt: string): Promise<string> {
+    const keyPath = HERMES_REMOTE_SSH_KEY.startsWith('~')
+      ? path.join(os.homedir(), HERMES_REMOTE_SSH_KEY.slice(1))
+      : HERMES_REMOTE_SSH_KEY;
+    const promptB64 = Buffer.from(prompt, 'utf-8').toString('base64');
+    const remoteScript = [
+      'import base64, os, subprocess, sys',
+      `prompt = base64.b64decode(${JSON.stringify(promptB64)}).decode("utf-8")`,
+      `container = ${JSON.stringify(HERMES_REMOTE_CLI_CONTAINER)}`,
+      `binary = ${JSON.stringify(HERMES_REMOTE_CLI_BINARY)}`,
+      `home = ${JSON.stringify(HERMES_REMOTE_CLI_HOME)}`,
+      `skill = ${JSON.stringify(skill)}`,
+      `provider = ${JSON.stringify(HERMES_REMOTE_CLI_PROVIDER)}`,
+      `model = ${JSON.stringify(HERMES_REMOTE_CLI_MODEL)}`,
+      'inner = """import os, subprocess, sys',
+      'prompt = sys.stdin.read()',
+      'env = os.environ.copy()',
+      'env["HERMES_HOME"] = os.environ.get("HERMES_HOME", "/opt/data")',
+      'cmd = [os.environ["HERMES_BINARY"], "chat", "--skills", os.environ["HERMES_SKILL"], "-Q"]',
+      'if os.environ.get("HERMES_PROVIDER_OVERRIDE"):',
+      '    cmd.extend(["--provider", os.environ["HERMES_PROVIDER_OVERRIDE"]])',
+      'if os.environ.get("HERMES_MODEL_OVERRIDE"):',
+      '    cmd.extend(["--model", os.environ["HERMES_MODEL_OVERRIDE"]])',
+      'cmd.extend(["-q", prompt])',
+      'proc = subprocess.run(cmd, env=env, text=True, capture_output=True)',
+      'sys.stdout.write(proc.stdout or "")',
+      'sys.stderr.write(proc.stderr or "")',
+      'sys.exit(proc.returncode)',
+      '"""',
+      'cmd = ["docker", "exec", "-i", "-e", f"HERMES_HOME={home}", "-e", f"HERMES_BINARY={binary}", "-e", f"HERMES_SKILL={skill}", "-e", f"HERMES_PROVIDER_OVERRIDE={provider}", "-e", f"HERMES_MODEL_OVERRIDE={model}", container, "python3", "-c", inner]',
+      'proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True)',
+      'sys.stdout.write(proc.stdout or "")',
+      'sys.stderr.write(proc.stderr or "")',
+      'sys.exit(proc.returncode)',
+    ].join('\n');
+
+    return new Promise((resolve, reject) => {
+      const args = [
+        '-i',
+        keyPath,
+        '-o',
+        'StrictHostKeyChecking=no',
+        '-o',
+        'ConnectTimeout=10',
+        `${HERMES_REMOTE_USER}@${HERMES_REMOTE_HOST}`,
+        'python3 -',
+      ];
+      const child = spawn(SSH_EXE, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const chunks: Buffer[] = [];
+      const errorChunks: Buffer[] = [];
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new Error('Hermes remote CLI timed out.'));
+      }, REPORT_TIMEOUT_MS);
+
+      child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+      child.stderr.on('data', (chunk: Buffer) => errorChunks.push(chunk));
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        const stdout = Buffer.concat(chunks).toString('utf-8');
+        const stderr = Buffer.concat(errorChunks).toString('utf-8');
+        if (code !== 0) {
+          reject(new Error(`Hermes remote CLI failed: ${stderr || `exit code ${code}`}`));
+          return;
+        }
+        if (stderr.trim()) console.warn(`Hermes remote CLI stderr: ${stderr.trim().slice(0, 4000)}`);
+        resolve(stdout.trim());
+      });
+      child.stdin.end(remoteScript);
+    });
   }
 
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -969,7 +1095,7 @@ export class HermesService {
     return [
       `6. write-hb 的 report_type 为 ${reportType}，必须按该报种对应大纲撰写，不要混用 K报 与 HB报 结构。`,
       '7. known_context 如果是 JSON，必须先解析其 selectedSearchQueries、userProvidedSources、selectedModules、parameterValues、supplement；selectedModules 可能按章节提供 sectionKey、sectionTitle、selectedDirections；如果解析失败，再按普通文本上下文处理。',
-      `8. Research Phase 必须执行完整 K/HB 全量流水线：先写入 reports/${jobId}/context.json；如启用数据库信源，再完成 pg-sources__query PG 向量库预召回并保存 database/database_query_plan.json、database/database_sources.json（仅在 PG 空结果/失败且已记录 fallback reason 后才可用 mysql-test__mysql_query 兜底）；随后必须调用 /home/node/.hermes/workspace/report-agent/skills/web-research-firecrawl/scripts/harness_cli.py plan 生成 plan.json 和 groups/group_A.json 等分组文件；再启动 research-${jobIdShort}-{X} 调研子任务，由子任务调用 harness_cli.py run 产出 research/research_{X}.json；最后合并为 research/consolidated.json 后才能进入撰稿。`,
+      `8. Research Phase 必须执行完整 K/HB 全量流水线：先写入 reports/${jobId}/context.json；如启用数据库信源，再完成 pg-sources__query PG 向量库预召回并保存 database/database_query_plan.json、database/database_sources.json（仅在 PG 空结果/失败且已记录 fallback reason 后才可用 mysql-test__mysql_query 兜底）；随后必须调用 ${HERMES_CONTAINER_REPORT_DIR.replace(/\/reports$/, '')}/skills/web-research-firecrawl/scripts/harness_cli.py plan 生成 plan.json 和 groups/group_A.json 等分组文件；再启动 research-${jobIdShort}-{X} 调研子任务，由子任务调用 harness_cli.py run 产出 research/research_{X}.json；最后合并为 research/consolidated.json 后才能进入撰稿。`,
       '9. Research Phase 禁止把 research_cli.py brief 作为 K/HB 主调研路径；research_cli.py brief 只允许在 harness_cli.py plan/run 已失败且已记录 firecrawl_fallback_reason 时作为异常补充。PG 向量信源不能替代 Tavily、Exa、Firecrawl 三件套，不能减少 harness_cli.py run、research_*.json 或 consolidated.json 的生成要求。',
       '10. Research Phase 输出必须形成完整内部素材包：context.json、plan.json、至少一个 groups/group_*.json、至少一个 research/research_*.json、research/consolidated.json、sources、evidence_cards、key_findings、verification_needed 和信息缺口；consolidated.json 或 research_*.json 中必须能看到 Tavily、Exa、Firecrawl 调研记录，除非三件套不可用且已记录明确 fallback reason。',
       '11. Write-HB Phase：只在 Research Phase 完成后，基于前置研究结果和用户 selectedModules，按 sectionTitle 对应的 K报/HB报一级章节逐章撰写；每章重点展开 selectedDirections，未选方向不得强行作为正文重点。',

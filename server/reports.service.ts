@@ -1539,7 +1539,7 @@ export class ReportsService {
 
   private extractReportPath(text: string): string | null {
     const normalized = text.replaceAll('\\\\', '/');
-    const pattern = /(?:\/home\/node\/\.hermes\/workspace\/report-agent\/reports\/|\/usr\/docker\/hermes\/workspace\/report-agent\/reports\/)[^\r\n`"'<>|?*]+?\.md/gi;
+    const pattern = /(?:\/opt\/data\/workspace\/report-agent\/reports\/|\/opt\/hermes\/workspace\/report-agent\/reports\/|\/home\/node\/\.hermes\/workspace\/report-agent\/reports\/|\/usr\/docker\/hermes\/workspace\/report-agent\/reports\/)[^\r\n`"'<>|?*]+?\.md/gi;
     const matches = Array.from(normalized.matchAll(pattern)).map((match) => match[0].trim());
     return matches.find((candidate) => this.remoteFs.isInsideReportDir(candidate)) ?? null;
   }

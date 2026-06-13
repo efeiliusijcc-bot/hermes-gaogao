@@ -7,6 +7,7 @@ import {
   HERMES_BASE_URL,
   HERMES_HEALTH_URL,
   HERMES_MODEL,
+  HERMES_RUN_MODE,
   REPORT_TIMEOUT_MS,
 } from './config.js';
 
@@ -18,6 +19,7 @@ async function bootstrap() {
   await app.listen(port);
 
   console.log(`Report API server running on http://localhost:${port}`);
+  console.log(`Hermes run mode: ${HERMES_RUN_MODE}`);
   console.log(`Hermes HTTP base URL: ${HERMES_BASE_URL}`);
   console.log(`Hermes health URL: ${HERMES_HEALTH_URL}`);
   console.log(`Hermes model/agent: ${HERMES_MODEL}`);

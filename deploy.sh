@@ -62,8 +62,10 @@ docker run -d \
   -e HERMES_QA_MODE=${HERMES_QA_MODE:-direct_pg} \
   -e HERMES_QA_TIMEOUT_MS=${HERMES_QA_TIMEOUT_MS:-900000} \
   -e HERMES_REMOTE_HOST= \
-  -e REPORT_OUTPUT_DIR=/home/node/.hermes/workspace/report-agent/reports \
-  -e HERMES_REMOTE_REPORT_DIR=/home/node/.hermes/workspace/report-agent/reports \
+  -e REPORT_OUTPUT_DIR=/opt/data/workspace/report-agent/reports \
+  -e HERMES_REMOTE_REPORT_DIR=/opt/hermes/workspace/report-agent/reports \
+  -e HERMES_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports \
+  -e HERMES_REMOTE_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports \
   -e PGVECTOR_DATABASE_URL=${PGVECTOR_DATABASE_URL} \
   -e PGVECTOR_NEWS_TABLE=${PGVECTOR_NEWS_TABLE:-vector_materials_text_embedding_v4} \
   -e PGVECTOR_EMBEDDING_MODEL=${PGVECTOR_EMBEDDING_MODEL:-text-embedding-v4} \
@@ -71,7 +73,7 @@ docker run -d \
   -e PGVECTOR_EMBEDDING_INPUT_CHARS=${PGVECTOR_EMBEDDING_INPUT_CHARS:-600} \
   -e PGVECTOR_EMBEDDING_BASE_URL=${PGVECTOR_EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1} \
   -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
-  -v /opt/hermes:/home/node/.hermes \
+  -v /opt/hermes:/opt/data \
   gaogao-api:latest
 
 sleep 3

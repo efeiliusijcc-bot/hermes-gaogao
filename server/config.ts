@@ -32,6 +32,7 @@ export const HERMES_HEALTH_URL =
 export const HERMES_API_KEY = process.env.HERMES_API_KEY || readGatewayToken() || 'hermes-local';
 export const HERMES_DEVICE_TOKEN = readDeviceAuthToken();
 export const HERMES_MODEL = process.env.HERMES_MODEL || 'openclaw/report-agent';
+export const HERMES_RUN_MODE = process.env.HERMES_RUN_MODE || 'http';
 export const HERMES_QA_AGENT_ID = process.env.HERMES_QA_AGENT_ID || 'qa-agent';
 export const HERMES_QA_MODEL = process.env.HERMES_QA_MODEL || 'openclaw/qa-agent';
 export const HERMES_QA_MODE = process.env.HERMES_QA_MODE || 'direct_pg';
@@ -57,5 +58,13 @@ export const HERMES_REMOTE_SSH_KEY =
 export const HERMES_REMOTE_REPORT_DIR =
   process.env.HERMES_REMOTE_REPORT_DIR || '/opt/hermes/workspace/report-agent/reports';
 export const HERMES_CONTAINER_REPORT_DIR =
-  '/home/node/.hermes/workspace/report-agent/reports';
+  process.env.HERMES_CONTAINER_REPORT_DIR || '/opt/data/workspace/report-agent/reports';
+export const HERMES_REMOTE_CONTAINER_REPORT_DIR =
+  process.env.HERMES_REMOTE_CONTAINER_REPORT_DIR || '/opt/data/workspace/report-agent/reports';
+export const HERMES_REMOTE_CLI_CONTAINER = process.env.HERMES_REMOTE_CLI_CONTAINER || 'hermes';
+export const HERMES_REMOTE_CLI_BINARY =
+  process.env.HERMES_REMOTE_CLI_BINARY || '/opt/hermes/.venv/bin/hermes';
+export const HERMES_REMOTE_CLI_HOME = process.env.HERMES_REMOTE_CLI_HOME || '/opt/data';
+export const HERMES_REMOTE_CLI_PROVIDER = process.env.HERMES_REMOTE_CLI_PROVIDER || '';
+export const HERMES_REMOTE_CLI_MODEL = process.env.HERMES_REMOTE_CLI_MODEL || '';
 export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
