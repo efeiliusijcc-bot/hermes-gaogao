@@ -19,6 +19,7 @@
 ## 本地环境变量
 
 把实际 token 和数据库密码只放在本机或服务器 `.env`，不要提交到 GitHub。
+数据库沿用原项目的 pgvector 配置，通过 `PGVECTOR_DATABASE_URL` 指向原来的库。
 
 ```env
 HERMES_BASE_URL=http://74.121.148.204:1888/v1

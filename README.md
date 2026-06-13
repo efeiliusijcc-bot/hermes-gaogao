@@ -9,6 +9,7 @@ b_k3ewYvsOEc1/
 ```
 
 The backend is a NestJS API that talks to Hermes through an OpenAI-compatible API.
+The report workflow, frontend/backend layout, and pgvector database integration are kept from the original project.
 
 ## Backend Hermes Connection
 
@@ -19,6 +20,9 @@ HERMES_BASE_URL=http://74.121.148.204:1888/v1
 HERMES_API_KEY=
 HERMES_MODEL=hermes/report-agent
 ```
+
+Keep using the existing pgvector database by setting `PGVECTOR_DATABASE_URL` in `.env`.
+Do not commit real tokens, database passwords, or `.env` files.
 
 For Docker deployment on the same host/network as the `hermes` container:
 

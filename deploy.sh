@@ -14,6 +14,7 @@ set +a
 : "${REMOTE_USER:?Missing REMOTE_USER}"
 : "${SSH_KEY:=~/.ssh/id_ed25519}"
 : "${HERMES_API_KEY:?Missing HERMES_API_KEY}"
+: "${PGVECTOR_DATABASE_URL:?Missing PGVECTOR_DATABASE_URL}"
 
 REMOTE_DIR=/usr/docker/gaogao-api
 SRC_DIR=$REMOTE_DIR/src
@@ -63,7 +64,7 @@ docker run -d \
   -e HERMES_REMOTE_HOST= \
   -e REPORT_OUTPUT_DIR=/home/node/.hermes/workspace/report-agent/reports \
   -e HERMES_REMOTE_REPORT_DIR=/home/node/.hermes/workspace/report-agent/reports \
-  -e PGVECTOR_DATABASE_URL=${PGVECTOR_DATABASE_URL:-} \
+  -e PGVECTOR_DATABASE_URL=${PGVECTOR_DATABASE_URL} \
   -e PGVECTOR_NEWS_TABLE=${PGVECTOR_NEWS_TABLE:-vector_materials_text_embedding_v4} \
   -e PGVECTOR_EMBEDDING_MODEL=${PGVECTOR_EMBEDDING_MODEL:-text-embedding-v4} \
   -e PGVECTOR_EMBEDDING_DIMENSIONS=${PGVECTOR_EMBEDDING_DIMENSIONS:-1024} \
