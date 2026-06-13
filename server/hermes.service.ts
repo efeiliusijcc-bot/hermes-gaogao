@@ -1,0 +1,2295 @@
+import { Injectable } from '@nestjs/common';
+import fs from 'fs';
+import OpenAI from 'openai';
+import path from 'path';
+import {
+  HEALTH_TIMEOUT_MS,
+  HERMES_API_KEY,
+  HERMES_BASE_URL,
+  HERMES_CONTAINER_REPORT_DIR,
+  HERMES_HEALTH_URL,
+  HERMES_MODEL,
+  HERMES_QA_AGENT_ID,
+  HERMES_QA_MODEL,
+  HERMES_QA_MODE,
+  HERMES_QA_TIMEOUT_MS,
+  HERMES_STATE_DIR,
+  REPORT_TIMEOUT_MS,
+} from './config.js';
+import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
+import { ResearchKeysService } from './research-keys.service.js';
+import type { HermesHealth, ReportPlanRequest, ReportPlanResponse, RunInput, RunResult, ServerEvent } from './types.js';
+import type { ReportPlanStepType } from './types.js';
+
+export class HermesApprovalRequiredError extends Error {
+  constructor(
+    readonly commands: string[],
+    readonly partialOutput: string,
+  ) {
+    super('Hermes requires tool approval before it can continue.');
+    this.name = 'HermesApprovalRequiredError';
+  }
+}
+
+const PLAN_MODEL_TIMEOUT_MS = Number(process.env.REPORT_PLAN_TIMEOUT_MS || 25000);
+const PLAN_SEARCH_QUERY_TIMEOUT_MS = Number(process.env.REPORT_PLAN_SEARCH_QUERY_TIMEOUT_MS || 2500);
+const GATEWAY_FINAL_POLL_INTERVAL_MS = 2000;
+
+@Injectable()
+export class HermesService {
+  constructor(
+    private readonly gatewayDevice: HermesGatewayDeviceService,
+    private readonly researchKeys: ResearchKeysService,
+  ) {}
+
+  private readonly client = new OpenAI({
+    apiKey: HERMES_API_KEY,
+    baseURL: HERMES_BASE_URL,
+    timeout: REPORT_TIMEOUT_MS,
+  });
+
+  async health(timeoutMs = HEALTH_TIMEOUT_MS): Promise<HermesHealth> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(HERMES_HEALTH_URL, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+      if (!response.ok) {
+        return {
+          ok: false,
+          status: 'degraded',
+          checks: { hermesHttpApi: true, localProbe: false },
+          timeoutMs,
+          details: [`Hermes HTTP probe failed with status ${response.status}.`],
+        };
+      }
+
+      return {
+        ok: true,
+        status: 'ready',
+        checks: { hermesHttpApi: true, localProbe: true },
+        timeoutMs,
+        details: [],
+      };
+    } catch (error) {
+      clearTimeout(timeout);
+      return {
+        ok: false,
+        status: 'down',
+        checks: { hermesHttpApi: false, localProbe: false },
+        timeoutMs,
+        details: [error instanceof Error ? error.message : String(error)],
+      };
+    }
+  }
+
+  async runReport(input: RunInput): Promise<RunResult> {
+    const prompt = this.buildReportPrompt(input);
+    input.onEvent({ type: 'stage', stage: 'start', message: 'Preparing Hermes non-streaming request...' });
+    input.onEvent({
+      type: 'stage',
+      stage: 'running',
+      message: `Running Hermes report-agent with stream=false (timeout ${Math.ceil(REPORT_TIMEOUT_MS / 1000)}s)...`,
+    });
+
+    const markdown = await this.completeReportPrompt(prompt, input.requestUser);
+    if (!markdown) throw new Error('Hermes report-agent returned no text.');
+
+    const wholeReportError = this.extractTextError(markdown);
+    if (wholeReportError) {
+      input.onEvent({
+        type: 'stage',
+        stage: 'segmenting',
+        message: `Whole-report generation failed (${wholeReportError}); retrying as segmented non-streaming generation.`,
+      });
+      return this.runReportSegmented(input, prompt);
+    }
+
+    input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes returned a complete non-streaming response.' });
+    this.assertNoApprovalCommands(markdown);
+    return { markdown, artifacts: {} };
+  }
+
+  async planReport(input: ReportPlanRequest): Promise<ReportPlanResponse> {
+    const fallback = this.buildFallbackPlan(input);
+    const searchFindings = await this.searchPlanningSources(fallback.searchQueries);
+    const prompt = [
+      '请为一个中文深度编报任务生成“规划搜索与子任务选择”方案。',
+      '只输出严格 JSON，不要输出 Markdown，不要解释。',
+      'JSON 字段必须是：title, summary, searchQueries, steps。',
+      'steps 每项字段：id, type, sectionKey, sectionTitle, title, description, allowMultiple, options。',
+      'options 每项字段：id, label, detail, selected。',
+      '要求：',
+      '1. searchQueries 给出 4-6 个可用于公开信息检索的中文查询词。',
+      '2. steps 必须先给出一个 source_scope 步骤，然后按报类一级章节逐章给出 report_section 步骤；type 只能使用 source_scope 或 report_section。',
+      '3. K报必须有 3 个 report_section：一、基本情况；二、涉我风险；三、对策建议。',
+      '4. HB报必须有 6 个 report_section：一、事件概述；二、背景分析；三、各方立场与反应；四、涉我风险评估；五、趋势研判；六、对策建议。',
+      '5. 每个 report_section 的 sectionTitle 必须等于对应章节名，sectionKey 必须是稳定英文蛇形命名。',
+      '6. 每个章节根据主题生成 2-6 个具体编报方向，数量不要固定；允许多选，默认选中最重要方向。',
+      '7. source_scope 用于让用户选择信源范围和具体可用信源。必须优先根据“初步公开检索摘要”把搜到的具体信源、机构、媒体、报告或数据库尽可能全部列为 options；不要只给少数通用类别。',
+      '8. source_scope options 不设固定数量上限；如检索到很多信源，去重后尽量全部展示。可补充官方/监管、主流媒体、智库研究、行业/数据材料、当事方/机构、区域/外文信源等兜底项。',
+      '9. 选项要贴合报类、主题和所在章节，不要泛泛而谈；每个 source_scope option 的 label 应是具体信源名或明确来源类型，detail 说明该信源可提供什么材料。',
+      '10. 不要包含 URL、密钥、环境变量或长正文。',
+      '',
+      `报类：${input.reportType}`,
+      `主题：${input.topic}`,
+      `补充上下文：${input.context || '无'}`,
+      `结构化参数：${JSON.stringify(input.parameters || {})}`,
+      `初步公开检索摘要：${searchFindings || '检索暂不可用，请按主题和上下文规划。'}`,
+    ].join('\n');
+
+    try {
+      const completion = await this.withTimeout(
+        this.client.chat.completions.create({
+          model: HERMES_MODEL,
+          stream: false,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a precise report planning assistant. Return compact valid JSON only.',
+            },
+            { role: 'user', content: prompt },
+          ],
+        }),
+        PLAN_MODEL_TIMEOUT_MS,
+        'Report planning timed out.',
+      );
+      const plan = this.normalizePlanResponse(this.extractCompletionText(completion), fallback);
+      return this.isPlanRelevant(input.topic, plan) ? plan : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  private async runReportSegmented(input: RunInput, basePrompt: string): Promise<RunResult> {
+    const segments = [
+      {
+        title: '标题、摘要与关键信息',
+        prompt: `${basePrompt}\n\n只生成以下部分：标题、摘要、关键信息表。不要输出其他章节。`,
+      },
+      {
+        title: '公开履历与政治背景',
+        prompt: `${basePrompt}\n\n只生成以下部分：公开履历、政治背景、关键时间线。不要输出其他章节。`,
+      },
+      {
+        title: '政策立场与风险研判',
+        prompt: `${basePrompt}\n\n只生成以下部分：政策立场、涉华/涉外态度、风险研判。不要输出其他章节。`,
+      },
+      {
+        title: '结论、建议、来源与信息缺口',
+        prompt: `${basePrompt}\n\n只生成以下部分：结论、工作建议、来源清单、可信度评估、信息缺口。不要输出其他章节。`,
+      },
+    ];
+
+    const parts: string[] = [];
+    for (const [index, segment] of segments.entries()) {
+      input.onEvent({
+        type: 'stage',
+        stage: `segment:${index + 1}`,
+        message: `Generating segment ${index + 1}/${segments.length}: ${segment.title}`,
+      });
+      const text = await this.completeReportPrompt(segment.prompt, input.requestUser);
+      const error = this.extractTextError(text);
+      if (error) throw new Error(`Segment ${index + 1} failed: ${error}`);
+      parts.push(`## ${segment.title}\n\n${text.trim()}`);
+    }
+
+    const markdown = parts.join('\n\n---\n\n').trim();
+    this.assertNoApprovalCommands(markdown);
+    return { markdown, artifacts: {} };
+  }
+
+  private async completeReportPrompt(prompt: string, requestUser?: string): Promise<string> {
+    const completion = await this.client.chat.completions.create({
+      model: HERMES_MODEL,
+      stream: false,
+      ...(requestUser ? { user: requestUser } : {}),
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are report-agent. Generate rigorous Chinese Markdown reports using public sources only.',
+            'All generated Chinese report text must be valid UTF-8 and must not contain Unicode replacement characters such as U+FFFD, consecutive replacement characters, or \\ufffd. Rewrite any damaged sentence before saving.',
+            'If the task uses write-hb, operate silently: do not send assistant-visible progress, planning, research notes, summaries, or draft text while using tools.',
+            'For write-hb, any assistant message that calls tools must contain no visible text. The final assistant message must contain exactly one REPORT_FILE line.',
+          ].join('\n'),
+        },
+        { role: 'user', content: prompt },
+      ],
+    });
+    return this.extractCompletionText(completion);
+  }
+
+  async runReportViaGateway(input: RunInput): Promise<RunResult> {
+    const prompt = this.buildReportPrompt(input);
+    const sessionKey = this.buildGatewaySessionKey(input);
+    const seenSessionEvents = new Set<string>();
+    const flushSessionEvents = () => this.forwardSessionToolEvents(sessionKey, input.onEvent, seenSessionEvents);
+    input.onEvent({ type: 'stage', stage: 'start', message: 'Preparing Hermes Gateway device request...' });
+    input.onEvent({
+      type: 'stage',
+      stage: 'running',
+      message: `Running Hermes report-agent through paired Gateway device (timeout ${Math.ceil(REPORT_TIMEOUT_MS / 1000)}s)...`,
+    });
+
+    const startedAt = Date.now();
+    const pollTimer = setInterval(flushSessionEvents, GATEWAY_FINAL_POLL_INTERVAL_MS);
+    pollTimer.unref?.();
+
+    let agentPayload: unknown;
+    try {
+      agentPayload = await this.gatewayDevice.runAgent({
+        agentId: 'report-agent',
+        message: prompt,
+        timeoutMs: REPORT_TIMEOUT_MS,
+        sessionKey,
+        label: this.buildReportLabel(input),
+        onEvent: (event) => this.forwardGatewayEvent(event, input.onEvent),
+      });
+    } finally {
+      clearInterval(pollTimer);
+      flushSessionEvents();
+    }
+
+    const initialMarkdown = this.extractAgentMarkdown(agentPayload) || this.extractSessionFinalText(sessionKey);
+    const markdown = await this.waitForGatewayFinalText(
+      sessionKey,
+      initialMarkdown,
+      startedAt,
+      input.onEvent,
+      flushSessionEvents,
+      input.skill === 'write-hb',
+    );
+    if (!markdown) {
+      throw new Error(`Hermes report-agent returned no text. Raw payload: ${JSON.stringify(agentPayload).slice(0, 2000)}`);
+    }
+
+    const agentError = this.extractAgentError(agentPayload, markdown);
+    if (agentError) throw new Error(agentError);
+
+    this.assertNoApprovalCommands(markdown);
+    return { markdown, artifacts: {} };
+  }
+
+  private async waitForGatewayFinalText(
+    sessionKey: string,
+    initialMarkdown: string,
+    startedAt: number,
+    onEvent: (event: ServerEvent) => void,
+    flushSessionEvents: () => void,
+    requireReportFilePointer = false,
+  ): Promise<string> {
+    const initial = initialMarkdown.trim();
+    if (this.isFinalReportText(initial, requireReportFilePointer)) return initial;
+
+    const deadline = startedAt + REPORT_TIMEOUT_MS;
+    let announced = false;
+    while (Date.now() < deadline) {
+      if (!announced) {
+        onEvent({
+          type: 'stage',
+          stage: 'waiting_final_report',
+          message: 'Hermes is still waiting for the final report file.',
+        });
+        announced = true;
+      }
+
+      await this.sleep(GATEWAY_FINAL_POLL_INTERVAL_MS);
+      flushSessionEvents();
+      const sessionText = this.extractSessionFinalText(sessionKey).trim();
+      if (this.isFinalReportText(sessionText, requireReportFilePointer)) return sessionText;
+    }
+
+    return requireReportFilePointer ? '' : initial;
+  }
+
+  private isFinalReportText(text: string, requireReportFilePointer = false): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    if (/^HEARTBEAT_OK$/i.test(trimmed)) return false;
+    if (/^\[?Context:/i.test(trimmed)) return false;
+    if (/sessions_yield|等待.*Sub-Agent|等待.*完成/i.test(trimmed)) return false;
+    if (/REPORT_FILE\s*:\s*\/.+\.md\s*$/im.test(trimmed)) return true;
+    if (requireReportFilePointer) return false;
+    return trimmed.length >= 1000 && !/REPORT_FILE\s*:/i.test(trimmed);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async streamChat(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    onEvent: (event: ServerEvent) => void,
+  ): Promise<string> {
+    return this.streamQaViaHttp(messages, onEvent);
+  }
+
+  async streamQa(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    onEvent: (event: ServerEvent) => void,
+    sessionId?: string,
+  ): Promise<string> {
+    if (HERMES_QA_MODE === 'direct') {
+      try {
+        return await this.streamQaViaHttp(messages, onEvent);
+      } catch (error) {
+        console.warn(
+          `Direct QA model ${HERMES_QA_MODEL} failed; falling back to Hermes qa-agent:`,
+          error instanceof Error ? error.message : String(error),
+        );
+        return this.streamQaViaGateway(messages, onEvent, sessionId, false);
+      }
+    }
+    return this.streamQaViaGateway(messages, onEvent, sessionId, true);
+  }
+
+  private async streamQaViaGateway(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    onEvent: (event: ServerEvent) => void,
+    sessionId?: string,
+    allowHttpFallback = true,
+  ): Promise<string> {
+    let keepAliveTimer: NodeJS.Timeout | undefined;
+    const sessionKey = this.buildQaGatewaySessionKey(sessionId);
+    const startedAt = Date.now();
+    let streamedText = '';
+    const emitText = (text: string) => {
+      const next = text.trim();
+      if (!next || next === streamedText) return;
+      const delta = next.startsWith(streamedText) ? next.slice(streamedText.length) : next;
+      streamedText = next;
+      if (!delta) return;
+      onEvent({ type: 'stage', stage: 'synthesis_started', message: '正在生成回答' });
+      for (const chunk of this.splitTextForStreaming(delta)) {
+        onEvent({ type: 'text_delta', content: chunk });
+        onEvent({ type: 'token', content: chunk });
+      }
+    };
+    try {
+      onEvent({ type: 'stage', stage: 'retrieval_started', message: '正在检索数据库并整合相关信息' });
+      keepAliveTimer = setInterval(() => {
+        onEvent({ type: 'status', status: 'running', message: '正在检索数据库并整合相关信息' });
+      }, 15000);
+      keepAliveTimer.unref?.();
+
+      const payload = await this.gatewayDevice.runAgent({
+        agentId: HERMES_QA_AGENT_ID,
+        message: this.buildQaGatewayMessage(messages),
+        timeoutMs: HERMES_QA_TIMEOUT_MS,
+        sessionKey,
+        label: 'knowledge-qa',
+        onEvent: (event) => this.forwardGatewayEvent(event, onEvent),
+        earlyResolve: () => this.waitForQaSessionAnswer(sessionKey, startedAt, messages, emitText),
+      });
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = undefined;
+
+      const text = (this.extractAgentMarkdown(payload) || streamedText || this.extractAgentSessionFinalText(HERMES_QA_AGENT_ID, sessionKey, startedAt, messages)).trim();
+      const error = this.extractQaAgentError(payload, text);
+      if (error) throw new Error(error);
+      if (!text) throw new Error(`Hermes qa-agent returned no text. Raw payload: ${JSON.stringify(payload).slice(0, 2000)}`);
+
+      onEvent({ type: 'stage', stage: 'synthesis_started', message: '正在生成回答' });
+      emitText(text);
+      return text;
+    } catch (error) {
+      if (keepAliveTimer) clearInterval(keepAliveTimer);
+      if (streamedText.trim()) return streamedText.trim();
+      if (!allowHttpFallback) throw error;
+      console.warn(
+        `Hermes qa-agent Gateway call failed; falling back to HTTP model ${HERMES_QA_MODEL}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+      return this.streamQaViaHttp(messages, onEvent);
+    }
+  }
+
+  private async streamQaViaHttp(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    onEvent: (event: ServerEvent) => void,
+  ): Promise<string> {
+    onEvent({ type: 'stage', stage: 'direct_model_started', message: '正在连接热点感知模型' });
+    const stream = await this.client.chat.completions.create({
+      model: HERMES_QA_MODEL,
+      messages,
+      stream: true,
+    });
+
+    let text = '';
+    const seenTools = new Set<string>();
+    let emittedSynthesisStage = false;
+
+    for await (const chunk of stream) {
+      for (const choice of chunk.choices || []) {
+        const delta = choice.delta;
+        const content = typeof delta.content === 'string' ? delta.content : '';
+
+        if (content) {
+          if (!emittedSynthesisStage) {
+            emittedSynthesisStage = true;
+            onEvent({ type: 'stage', stage: 'synthesis_started', message: '正在生成回答' });
+          }
+          text += content;
+          onEvent({ type: 'text_delta', content });
+          onEvent({ type: 'token', content });
+        }
+
+        const toolCalls = delta.tool_calls || [];
+        for (const toolCall of toolCalls) {
+          const id = toolCall.id || `tool-${toolCall.index}`;
+          const name = toolCall.function?.name;
+          if (!seenTools.has(id)) {
+            seenTools.add(id);
+            onEvent({ type: 'tool_start', id, name, raw: toolCall });
+          }
+          onEvent({ type: 'tool_delta', id, name, raw: toolCall });
+        }
+
+        if (choice.finish_reason) {
+          for (const id of seenTools) {
+            onEvent({ type: 'tool_end', id, raw: { finishReason: choice.finish_reason } });
+          }
+        }
+      }
+    }
+
+    return text.trim();
+  }
+
+  private buildQaGatewayMessage(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): string {
+    const transcript = messages
+      .map((message) => {
+        const role = typeof message.role === 'string' ? message.role : 'user';
+        const content = this.stringifyChatContent(message.content);
+        return `${role}: ${content}`;
+      })
+      .filter((line) => line.trim().length > 0)
+      .join('\n\n');
+
+    return [
+      '请根据以下对话回答最后一个用户问题。',
+      '检索规程：必须优先使用 pg-sources__query 检索 PostgreSQL 信源库，不要先使用 MySQL；不要查询 documents、news、articles 等臆测表名。',
+      'PostgreSQL 当前主要信源表是 public.vector_materials_text_embedding_v4；如需确认结构，先查询 information_schema.columns。常用字段包括 ch_title、entitle、data_source_url、website_name、publish_time、summary、content、embedding_text、embedding_model、embedding_vector。',
+      'PG 检索时至少返回 ch_title、data_source_url、website_name、publish_time、summary；优先在 ch_title、summary、content、embedding_text 中围绕用户问题的关键词和同义词检索，并按 publish_time DESC 排序。不要使用不存在的 title、source、published_at 字段。',
+      '如果 pg-sources__query 返回空结果或表结构不满足需求，可以再用 mysql-test__mysql_query 作为补充检索；补充检索结果也必须保留 ch_title、data_source_url、website_name、publish_time、summary 等来源字段。',
+      '回答必须基于检索到的信源资料进行归纳。资料不足时，请明确说明当前信源库未检索到足够信息，不要编造细节。',
+      '直接输出最终回答，不要输出检索过程、思考过程或“我先检索”等开场白，不要中英文混杂。',
+      '回答面向普通业务用户，不要暴露底层工具、模型、SQL、MCP、Gateway 或 Agent 过程。',
+      '',
+      transcript,
+    ].join('\n');
+
+    return [
+      '请根据以下对话回答最后一个用户问题。',
+      '要求：先检索数据库信源资料，再整合回答；如果资料不足，请明确说明当前数据库中未检索到足够信息。',
+      '直接输出最终回答，不要输出检索过程、思考过程或“我先检索”等开场白，不要中英文混杂。',
+      '回答面向普通业务用户，不要暴露底层工具、模型、SQL、MCP、Gateway 或 Agent 过程。',
+      '',
+      transcript,
+    ].join('\n');
+  }
+
+  private stringifyChatContent(content: OpenAI.Chat.Completions.ChatCompletionMessageParam['content']): string {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          if (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string') return part.text;
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    return '';
+  }
+
+  private buildQaGatewaySessionKey(sessionId?: string): string {
+    const normalized = String(sessionId || '')
+      .replace(/[^a-zA-Z0-9_.:-]/g, '_')
+      .slice(0, 120);
+    if (normalized) return `agent:${HERMES_QA_AGENT_ID}:chat:${normalized}`;
+    return `agent:${HERMES_QA_AGENT_ID}:chat:${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  extractQaSessionSources(sessionId?: string): Record<string, unknown>[] {
+    const normalized = String(sessionId || '')
+      .replace(/[^a-zA-Z0-9_.:-]/g, '_')
+      .slice(0, 120);
+    if (!normalized) return [];
+
+    const sessionKey = `agent:${HERMES_QA_AGENT_ID}:chat:${normalized}`;
+    const jsonlPath = this.resolveAgentSessionJsonlPath(HERMES_QA_AGENT_ID, sessionKey);
+    if (!jsonlPath) return [];
+
+    try {
+      const sources: Record<string, unknown>[] = [];
+      const lines = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        const item = this.parseJsonLine(line);
+        const message = item?.message && typeof item.message === 'object' ? (item.message as Record<string, unknown>) : undefined;
+        if (!message || message.role !== 'toolResult') continue;
+
+        const toolName = String(message.toolName || '');
+        if (!this.isQaSourceTool(toolName)) continue;
+
+        for (const row of this.extractSourceRowsFromToolResult(message)) {
+          const source = this.normalizeQaSourceRow(row, toolName);
+          if (source) sources.push(source);
+        }
+      }
+      return this.dedupeQaSources(sources).slice(0, 100);
+    } catch {
+      return [];
+    }
+  }
+
+  private splitTextForStreaming(text: string): string[] {
+    const chunks = text.match(/[\s\S]{1,160}/g);
+    return chunks && chunks.length > 0 ? chunks : [text];
+  }
+
+  private async waitForQaSessionAnswer(
+    sessionKey: string,
+    startedAt: number,
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    emitText: (text: string) => void,
+  ): Promise<unknown> {
+    const deadline = startedAt + HERMES_QA_TIMEOUT_MS;
+    let lastText = '';
+    let stableCount = 0;
+    while (Date.now() < deadline) {
+      await this.sleep(1000);
+      const text = this.extractAgentSessionFinalText(HERMES_QA_AGENT_ID, sessionKey, startedAt, messages).trim();
+      if (!text) continue;
+      emitText(text);
+      if (text === lastText) stableCount += 1;
+      else stableCount = 0;
+      lastText = text;
+      if (stableCount >= 1) {
+        return {
+          result: {
+            payloads: [{ text }],
+            meta: { finalAssistantVisibleText: text },
+          },
+        };
+      }
+    }
+    throw new Error('Hermes qa-agent session answer timed out.');
+  }
+
+  private extractQaAgentError(payload: unknown, text: string): string | null {
+    const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+    const result = root.result && typeof root.result === 'object' ? (root.result as Record<string, unknown>) : root;
+    const meta = result.meta && typeof result.meta === 'object' ? (result.meta as Record<string, unknown>) : undefined;
+    const status = typeof root.status === 'string' ? root.status : typeof result.status === 'string' ? result.status : '';
+    const stopReason = typeof meta?.stopReason === 'string' ? meta.stopReason : '';
+    const embeddedRunError = typeof meta?.embeddedRunError === 'string' ? meta.embeddedRunError : '';
+
+    if (/failed|error/i.test(status) || stopReason === 'error' || embeddedRunError) {
+      return `Hermes qa-agent failed: ${embeddedRunError || text.slice(0, 300) || 'empty response'}`;
+    }
+
+    const textError = this.extractTextError(text);
+    return textError ? `Hermes qa-agent failed: ${textError}` : null;
+  }
+
+  private buildReportPrompt(input: RunInput): string {
+    const payloadWithOutput = {
+      ...input.payload,
+      ...this.buildContextJsonPayload(input),
+      output_dir: HERMES_CONTAINER_REPORT_DIR,
+      output_file_instruction: `如果需要写入文件，请把最终 Markdown 报告保存到 ${HERMES_CONTAINER_REPORT_DIR}。`,
+    };
+
+    const yamlPayload = Object.entries(payloadWithOutput)
+      .map(([key, value]) => this.formatPromptPayloadValue(key, value))
+      .join('\n');
+
+    const skillLabel = this.getSkillLabel(input);
+    const extraRequirements = this.getSkillRequirements(input);
+
+    return [
+      `请使用 Hermes Skill: ${input.skill} 生成${skillLabel}。`,
+      '',
+      '输入参数如下：',
+      '```yaml',
+      yamlPayload,
+      '```',
+      '',
+      '要求：',
+      '1. 严格按照对应 Skill 的工作流执行。',
+      '2. 仅使用公开来源，严禁编造事实。',
+      '3. 输出完整 Markdown 报告。',
+      '4. 报告末尾列出来源、可信度和信息缺口。',
+      `5. 如需写入文件，只能写入目录：${HERMES_CONTAINER_REPORT_DIR}。`,
+      '格式硬约束A：K报/HB报最终 Markdown 不得出现独立小标题“导语”“摘要”“导语/摘要”“摘要导语”。如需写开场说明，必须写成标题和元信息之后、一、基本情况之前的一整段无标题自然段。',
+      '格式硬约束B：K报最终结构必须是：居中加粗标题；**编号：**K-YYYY-MMDD-NNN；**签发日期：**YYYY年M月D日；一段无标题开场自然段；## **一、基本情况**；## **二、涉我风险**；## **三、对策建议**；## **四、参考资料**。不得在“一、基本情况”前插入任何“导语”或“摘要”模块。',
+      ...extraRequirements,
+    ].join('\n');
+  }
+
+  private getSkillLabel(input: RunInput): string {
+    if (input.skill === 'risk-assessment-reports') return '风险评估报告';
+    if (input.skill === 'person-intelligence-report') return '人物情报报告';
+    if (input.skill === 'write-hb') {
+      const reportType = typeof input.payload.report_type === 'string' ? input.payload.report_type : 'K报/HB报';
+      return `${reportType}现场调研报告`;
+    }
+    return '报告';
+  }
+
+  private formatPromptPayloadValue(key: string, value: unknown): string {
+    if (Array.isArray(value)) {
+      return `${key}:\n${value.map((item) => `  - ${String(item)}`).join('\n')}`;
+    }
+
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    if (text.includes('\n') || text.trim().startsWith('{') || text.trim().startsWith('[')) {
+      return `${key}: |\n${text.split('\n').map((line) => `  ${line}`).join('\n')}`;
+    }
+
+    return `${key}: ${text}`;
+  }
+
+  private buildContextJsonPayload(input: RunInput): Record<string, unknown> {
+    if (input.skill !== 'write-hb') return {};
+
+    const knownContext = typeof input.payload.known_context === 'string' ? input.payload.known_context : '';
+    const parsedContext = this.parseJsonObject(knownContext);
+    const selectedModules = this.normalizeSelectedModules(parsedContext?.selectedModules);
+    const userProvidedSources = this.normalizeStringArray(
+      parsedContext?.userProvidedSources ?? parsedContext?.selectedSources,
+    );
+    const selectedSearchQueries = this.normalizeStringArray(parsedContext?.selectedSearchQueries);
+    const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
+    const parameterValues =
+      parsedContext?.parameterValues && typeof parsedContext.parameterValues === 'object' && !Array.isArray(parsedContext.parameterValues)
+        ? parsedContext.parameterValues
+        : {};
+    const supplement = this.sanitizeText(
+      String(parsedContext?.supplement ?? (parsedContext ? '' : knownContext)),
+      3000,
+    );
+    const databaseQueryIntent = this.buildDatabaseQueryIntent({
+      topic: String(input.payload.topic ?? ''),
+      selectedSearchQueries,
+      selectedModules,
+      supplement,
+    });
+
+    const contextJson = {
+      schema_version: 1,
+      generated_by: 'backend',
+      job_id: input.jobId,
+      skill: input.skill,
+      topic: String(input.payload.topic ?? ''),
+      report_type: String(input.payload.report_type ?? ''),
+      selectedSearchQueries,
+      userProvidedSources,
+      databaseSourceOptions,
+      databaseQueryIntent,
+      selectedModules,
+      parameterValues,
+      supplement,
+    };
+
+    return {
+      context_json: contextJson,
+      context_json_serialized: JSON.stringify(contextJson),
+      context_json_instruction:
+        'Before Research Phase, write a valid UTF-8 JSON file named context.json using context_json_serialized or exactly the context_json object. Use JSON.stringify/structured JSON serialization only; do not hand-write JSON, add comments, trailing commas, Markdown fences, or placeholder values.',
+    };
+  }
+
+  private parseJsonObject(text: string): Record<string, unknown> | null {
+    if (!text.trim()) return null;
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeStringArray(value: unknown, limit = 20): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => this.sanitizeText(String(item ?? ''), 300))
+      .filter(Boolean)
+      .slice(0, limit);
+  }
+
+  private normalizeDatabaseSourceOptions(value: unknown): {
+    enabled: boolean;
+    mode: 'summary_first';
+    lookbackDays: number;
+    maxMetadataRows: number;
+    maxContentRows: number;
+    mcpServer: 'pg-sources';
+    storageMode: 'pgvector_single_table';
+    sourceTable: 'vector_materials_text_embedding_v4';
+  } {
+    const options = value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+    const boundedInt = (raw: unknown, fallback: number, min: number, max: number) => {
+      const parsed = typeof raw === 'number' ? raw : Number(String(raw ?? ''));
+      if (!Number.isFinite(parsed)) return fallback;
+      return Math.max(min, Math.min(max, Math.floor(parsed)));
+    };
+
+    return {
+      enabled: options.enabled === true || String(options.enabled).toLowerCase() === 'true',
+      mode: 'summary_first',
+      lookbackDays: boundedInt(options.lookbackDays, 30, 1, 90),
+      maxMetadataRows: boundedInt(options.maxMetadataRows, 50, 1, 100),
+      maxContentRows: boundedInt(options.maxContentRows, 8, 0, 20),
+      mcpServer: 'pg-sources',
+      storageMode: 'pgvector_single_table',
+      sourceTable: 'vector_materials_text_embedding_v4',
+    };
+  }
+
+  private buildDatabaseQueryIntent(input: {
+    topic: string;
+    selectedSearchQueries: string[];
+    selectedModules: Array<{
+      sectionKey: string;
+      sectionTitle: string;
+      selectedDirections: string[];
+    }>;
+    supplement: string;
+  }): Record<string, unknown> {
+    const rawTopic = this.sanitizeText(input.topic, 160);
+    const textParts = [
+      rawTopic,
+      ...input.selectedSearchQueries,
+      ...input.selectedModules.flatMap((module) => module.selectedDirections),
+      this.sanitizeText(input.supplement, 1000),
+    ].filter(Boolean);
+    const sourceText = textParts.join(' ');
+    const normalizedTopic = this.normalizeIntentText(rawTopic);
+    const combinedText = this.normalizeIntentText(sourceText);
+    const combinedTextLower = combinedText.toLowerCase();
+    const stopWords = new Set([
+      '报告',
+      '分析',
+      '影响',
+      '情况',
+      '最新',
+      '有关',
+      '关于',
+      '建议',
+      '对策',
+      '研判',
+      '编报',
+      '导语',
+      '摘要',
+      '资料',
+      '信息',
+      '方面',
+      '相关',
+      '研究',
+      '进行',
+      '开展',
+      '我国',
+      '我方',
+    ]);
+    const stopWordsRemoved = new Set<string>();
+    const primaryPhrases = new Set<string>();
+    const entityTerms = new Set<string>();
+    const actionTerms = new Set<string>();
+    const domainTerms = new Set<string>();
+    const ngrams = new Set<string>();
+
+    const addTerm = (target: Set<string>, raw: string, maxLength = 40): void => {
+      const term = this.normalizeIntentText(raw);
+      if (term.length < 2 || term.length > maxLength) return;
+      if (stopWords.has(term)) {
+        stopWordsRemoved.add(term);
+        return;
+      }
+      target.add(term);
+    };
+    const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const hasKnownTerm = (raw: string): boolean => {
+      const term = this.normalizeIntentText(raw);
+      if (/^[A-Za-z0-9]+$/.test(term)) return new RegExp(`\\b${escapeRegExp(term)}\\b`, 'i').test(combinedText);
+      return combinedTextLower.includes(term.toLowerCase());
+    };
+
+    addTerm(primaryPhrases, rawTopic, 80);
+    for (const query of input.selectedSearchQueries.slice(0, 8)) addTerm(primaryPhrases, query, 80);
+    for (const module of input.selectedModules.slice(0, 12)) {
+      for (const direction of module.selectedDirections.slice(0, 6)) addTerm(primaryPhrases, direction, 80);
+    }
+
+    const knownEntities = [
+      '美国', '中国', '欧盟', '俄罗斯', '日本', '韩国', '印度', '英国', '法国', '德国', '澳大利亚',
+      '加拿大', '东盟', '台湾', '香港', '新加坡', '乌克兰', '中东', '红海', '南海',
+      'USTR', 'OFAC', 'DOJ', 'FTC', 'SEC', 'FBI', 'CIA', 'CISA', 'EU', 'UN', 'NATO',
+      '商务部', '财政部', '司法部', '国会', '白宫', '海关', '港口', '海事局', '证监会',
+    ];
+    const actionLexicon = [
+      '制裁', '反制', '调查', '反垄断', '刑事执法', '执法升级', '升级', '打压', '限制',
+      '管制', '审查', '禁令', '加征', '征费', '征税', '诉讼', '罚款', '封锁', '脱钩',
+      '竞争', '收购', '并购', '出口管制', '进口限制', '供应链重组',
+    ];
+    const domainLexicon = [
+      '航运', '海事', '造船', '制造', '产业', '港口', '物流', '贸易', '关税', '供应链',
+      '芯片', '半导体', '技术', '人工智能', '金融', '能源', '军工', '汽车', '矿产',
+      '数据', '网络安全', '市场', '价格', '风险', '安全', '合规',
+    ];
+
+    for (const term of knownEntities) {
+      if (hasKnownTerm(term)) addTerm(entityTerms, term, 32);
+    }
+    for (const term of actionLexicon) {
+      if (hasKnownTerm(term)) addTerm(actionTerms, term, 32);
+    }
+    for (const term of domainLexicon) {
+      if (hasKnownTerm(term)) addTerm(domainTerms, term, 32);
+    }
+
+    for (const match of sourceText.match(/[A-Za-z][A-Za-z0-9&.+/-]{1,}/g) || []) {
+      addTerm(entityTerms, match, 32);
+    }
+    for (const match of sourceText.match(/\b(?:19|20)\d{2}\b/g) || []) {
+      addTerm(entityTerms, match, 8);
+    }
+    for (const match of sourceText.match(/[\p{Script=Han}]{2,}(?:公司|集团|委员会|部门|部|局|署|院|协会|联盟|机构|企业|银行|大学|研究所)/gu) || []) {
+      addTerm(entityTerms, match.replace(/^[和与对在由向从及、]+/, ''), 32);
+    }
+    for (const match of sourceText.match(/[\p{Script=Han}]{2,}/gu) || []) {
+      const normalized = this.normalizeIntentText(match);
+      for (const size of [4, 3, 2]) {
+        for (let index = 0; index <= normalized.length - size; index += 1) {
+          const token = normalized.slice(index, index + size);
+          addTerm(ngrams, token, 8);
+        }
+      }
+    }
+
+    for (const keyword of this.extractPlanningKeywords(rawTopic)) addTerm(ngrams, keyword, 16);
+
+    return {
+      rawTopic,
+      normalizedTopic,
+      primaryPhrases: Array.from(primaryPhrases).slice(0, 16),
+      entityTerms: Array.from(entityTerms).slice(0, 32),
+      actionTerms: Array.from(actionTerms).slice(0, 24),
+      domainTerms: Array.from(domainTerms).slice(0, 24),
+      ngrams: Array.from(ngrams).slice(0, 80),
+      stopWordsRemoved: Array.from(stopWordsRemoved).slice(0, 32),
+    };
+  }
+
+  private normalizeIntentText(value: string): string {
+    return this.sanitizeText(value.normalize('NFKC'), 120)
+      .replace(/[“”"‘’'`]+/g, '')
+      .replace(/[，。；、：:：！？!?（）()[\]{}<>《》【】|\\]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private normalizeSelectedModules(value: unknown): Array<{
+    sectionKey: string;
+    sectionTitle: string;
+    selectedDirections: string[];
+  }> {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => {
+        const module = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+        return {
+          sectionKey: this.sanitizeText(String(module.sectionKey ?? ''), 80),
+          sectionTitle: this.sanitizeText(String(module.sectionTitle ?? ''), 120),
+          selectedDirections: this.normalizeStringArray(module.selectedDirections, 12),
+        };
+      })
+      .filter((item) => item.sectionKey || item.sectionTitle || item.selectedDirections.length > 0)
+      .slice(0, 20);
+  }
+
+  private getSkillRequirements(input: RunInput): string[] {
+    if (input.skill !== 'write-hb') return [];
+
+    const jobId = input.jobId;
+    const jobIdShort = jobId.slice(0, 8);
+    const reportType = typeof input.payload.report_type === 'string' ? input.payload.report_type : 'K报或HB报';
+    const knownContext = typeof input.payload.known_context === 'string' ? input.payload.known_context : '';
+    const parsedContext = this.parseJsonObject(knownContext);
+    const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
+    const databaseSourceRequirements = databaseSourceOptions.enabled
+      ? [
+          `18. databaseSourceOptions.enabled=true 时，Research Phase 必须先读取 context.json.databaseQueryIntent 分词词包，再在公开检索前调用 MCP 工具 pg-sources__query 检索 PostgreSQL 向量信源库；配置为 summary_first、storageMode=${databaseSourceOptions.storageMode}、sourceTable=public.${databaseSourceOptions.sourceTable}、lookbackDays=${databaseSourceOptions.lookbackDays}、maxMetadataRows=${databaseSourceOptions.maxMetadataRows}、maxContentRows=${databaseSourceOptions.maxContentRows}。`,
+          '19. PG 信源库当前主表是 public.vector_materials_text_embedding_v4；如需确认结构，只能先查询 information_schema.columns。不要查询 documents、news、articles 或 news.data_YYYYMMDD 等臆测表名，不要把 MySQL 当作默认入口；任何数据库操作都必须是只读 SELECT，不得执行 INSERT/UPDATE/DELETE/DDL。',
+          '20. PG 首轮检索必须围绕 databaseQueryIntent.primaryPhrases、entityTerms、actionTerms、domainTerms、ngrams，在 ch_title、entitle、summary、content、embedding_text 中组织关键词、同义词和语义召回；优先返回 ch_title、entitle、data_source_url、website_name、publish_time、summary，可在内部读取有限 content/embedding_text 摘要用于相关性判断；严禁读取或输出 embedding_vector、raw_data、连接信息。',
+          `21. PG 命中结果必须单独保存为 database/database_sources.json 和 database/database_query_plan.json。database_sources.json 每条记录必须保留原始展示字段：ch_title（中文标题）、data_source_url（信源链接）、summary（摘要）、website_name（来源站点名称）、publish_time（发布时间）；可附带内部字段如 relevance_score、similarity、relevance_reason、needs_verification、source_type='pg_vector'。database_query_plan 必须记录 retrieval_mode='pg_vector'、mcp_server='pg-sources'、storageMode、sourceTable、embeddingModel（如可得）、indexedRows（如可得）、vector_hits/total_hits、returned_sources、使用词包和 database_source_fallback_reason。`,
+          '22. 如果 pg-sources__query 返回空结果、表结构不满足需求、SQL 报错或权限不足，必须在 database_query_plan.json 中写入 database_source_fallback_reason 字段（值为字符串，说明具体回退原因）；只有在该字段已记录后，才可用 mysql-test__mysql_query 作为补充兜底检索，并在 plan 中记录 fallback_mcp="mysql-test"。无论是否回退，都不得让编报任务失败，也不得因此缩减公网调研流程。',
+          '23. 数据库/向量信源是前置可信素材池，必须与 Tavily/Exa/Firecrawl 三件套结果合并并交叉核验后再写作；不得在最终报告正文或用户可见日志中暴露 SQL、表名、MCP 实现细节、数据库连接信息、完整 content、raw_data、embedding_text 或 embedding_vector。',
+        ]
+      : [
+          '18. databaseSourceOptions.enabled 不是 true 时，不得调用 pg-sources__query、mysql-test__mysql_query 或其他数据库 MCP 工具；继续使用 web-research-firecrawl、用户指定信源和公开检索。',
+        ];
+    if (databaseSourceOptions.enabled) {
+      databaseSourceRequirements.push(
+        `24. If strict phrase/entity matching returns fewer than maxMetadataRows=${databaseSourceOptions.maxMetadataRows}, broaden recall with entityTerms, actionTerms, domainTerms, and ngrams as OR conditions across ch_title, entitle, summary, content, and embedding_text until the candidate pool reaches maxMetadataRows or PG returns no more relevant rows.`,
+        '25. database_sources.json is a user-visible transparency artifact: keep up to maxMetadataRows URL-deduped metadata rows, including medium/low relevance rows with relevance_level and relevance_reason; do not discard rows solely because only summary matched.',
+        '26. database_query_plan.json must report retrieval_mode, mcp_server, storageMode, sourceTable, query_terms, strict_hits, expanded_hits, vector_hits/total_hits, returned_sources, broadening_applied, content_rows_read, database_source_fallback_reason, and fallback_mcp when used. total_hits must mean candidate-pool size and returned_sources must equal database_sources.json row count.',
+        '27. Preserve title/url fallback fields when ch_title/data_source_url are empty. Never include content, raw_data, SQL, table names, MCP implementation details, database connection details, embedding_text, or embedding_vector in the final report or user-visible logs.',
+        '28. If context.json contains vectorDatabaseSources, treat them as already-prefetched PostgreSQL pgvector semantic database sources. Save sanitized fields to database/vector_sources.json, including title, url, summary, contentExcerpt, websiteName, publishTime, similarity, and relevanceScore. Merge them with database_sources.json; they may satisfy PG/vector pre-recall when queryPlan reports returnedSources > 0.',
+        '29. PG/vector sources cannot replace harness_cli.py plan/run, Tavily, Exa, Firecrawl, research_*.json, consolidated.json, or synthesis steps; they replace only the old MySQL-first database recall path.',
+        '30. embeddingText/embedding_text is recall-debug text only. Do not include embeddingText, embedding_text, SQL, table names, MCP implementation details, database connection details, full content, raw_data, or embedding vectors in user-visible logs or the final report.',
+      );
+    }
+    return [
+      `6. write-hb 的 report_type 为 ${reportType}，必须按该报种对应大纲撰写，不要混用 K报 与 HB报 结构。`,
+      '7. known_context 如果是 JSON，必须先解析其 selectedSearchQueries、userProvidedSources、selectedModules、parameterValues、supplement；selectedModules 可能按章节提供 sectionKey、sectionTitle、selectedDirections；如果解析失败，再按普通文本上下文处理。',
+      `8. Research Phase 必须执行完整 K/HB 全量流水线：先写入 reports/${jobId}/context.json；如启用数据库信源，再完成 pg-sources__query PG 向量库预召回并保存 database/database_query_plan.json、database/database_sources.json（仅在 PG 空结果/失败且已记录 fallback reason 后才可用 mysql-test__mysql_query 兜底）；随后必须调用 /home/node/.hermes/workspace/report-agent/skills/web-research-firecrawl/scripts/harness_cli.py plan 生成 plan.json 和 groups/group_A.json 等分组文件；再启动 research-${jobIdShort}-{X} 调研子任务，由子任务调用 harness_cli.py run 产出 research/research_{X}.json；最后合并为 research/consolidated.json 后才能进入撰稿。`,
+      '9. Research Phase 禁止把 research_cli.py brief 作为 K/HB 主调研路径；research_cli.py brief 只允许在 harness_cli.py plan/run 已失败且已记录 firecrawl_fallback_reason 时作为异常补充。PG 向量信源不能替代 Tavily、Exa、Firecrawl 三件套，不能减少 harness_cli.py run、research_*.json 或 consolidated.json 的生成要求。',
+      '10. Research Phase 输出必须形成完整内部素材包：context.json、plan.json、至少一个 groups/group_*.json、至少一个 research/research_*.json、research/consolidated.json、sources、evidence_cards、key_findings、verification_needed 和信息缺口；consolidated.json 或 research_*.json 中必须能看到 Tavily、Exa、Firecrawl 调研记录，除非三件套不可用且已记录明确 fallback reason。',
+      '11. Write-HB Phase：只在 Research Phase 完成后，基于前置研究结果和用户 selectedModules，按 sectionTitle 对应的 K报/HB报一级章节逐章撰写；每章重点展开 selectedDirections，未选方向不得强行作为正文重点。',
+      '11a. K报篇幅是硬约束：最终 Markdown 目标约 9000-11000 个中文字符，按 A4 常规排版约 10 页；最低不得低于 8500 个中文字符。不得通过新增一级章节、堆砌参考资料或重复空话凑篇幅，只能通过增加事实密度、分析层次、风险链条、对策可操作性和信息缺口说明扩写。低于 8500 中文字符必须视为不合格并重新扩写，禁止交付短稿。',
+      `12. 必须把完整成稿 Markdown 写入 ${HERMES_CONTAINER_REPORT_DIR} 下的 .md 文件；不要只在对话中输出正文。`,
+      `13. 静默执行：调研、检索、提取、规划、草稿、进度说明都不要发送到对话；不要输出“任务已启动”“正在检索”“获取了足够素材”等中间文本。`,
+      `14. 最终对话只输出一行：REPORT_FILE: ${HERMES_CONTAINER_REPORT_DIR}/实际文件名.md。这里的”实际文件名”必须替换为真实已写入的 .md 文件名；严禁输出 ${jobId}、{报告名}、{filename}、summary.json、plan.json、context.json 或复制/后处理说明。除这一行外不要输出摘要、正文、来源表或其他说明。`,
+      '15. 最终保存的 Markdown 正文、标题、来源、文件名均不得包含 Unicode 替换字符 U+FFFD、连续替换字符、\\ufffd 或明显乱码；如素材中有乱码，必须改写为语义完整的中文句子后再保存。',
+      '16. 正文段落不得出现 http:// 或 https:// 原始网址；正文引用只写来源机构、发布时间和参考资料编号，完整 URL 只放在文末参考资料部分。',
+      '17. K报正文开头必须按标准样式把导语和摘要合并为“一、基本情况”之前的一整段自然段正文；不得生成“导语”“摘要”“导语/摘要”“摘要导语”等任何小标题，也不得拆成两个独立模块。',
+      '18. K report format lock: use this exact structure, without relying on any historical file path: centered bold title; two separate metadata lines **编号：**K-YYYY-MMDD-NNN and **签发日期：**YYYY年M月D日; one untitled preface paragraph; ## **一、基本情况** with exactly four fixed subheadings ### **（一）主要内容**, ### **（二）各方态度**, ### **（三）相关情况**, ### **（四）其他背景**; ## **二、涉我风险** has no subheadings and uses bold Markdown leads **一是...。**, **二是...。**, **三是...。**, **四是...。**; ## **三、对策建议** has no subheadings and uses bold Markdown leads **一是...。**, **二是...。**, **三是...。**; ## **四、参考资料** is followed by **来源可信度评估：** paragraphs and **信息缺口：** numbered list.',
+      '19. selectedDirections only guide material coverage; never render selectedDirections labels such as 事件经过, 政策依据, 涉我安全利益, 风险传导路径, 风险等级判断, 立即措施, 中期措施, 预案与风险提示 as headings, subheadings, or fixed paragraph leads.',
+      '19a. Planning enforcement: if known_context.selectedModules is present, build an internal outline map before writing. Each selected module sectionTitle must be mapped into the closest fixed K/HB report section, and every selectedDirections item must be substantively covered in that mapped section with concrete facts, analysis, risks, or countermeasures.',
+      '19b. Planning compliance check: before saving final Markdown, verify that the final report body contains material for all selectedModules and selectedDirections. If a selected direction has insufficient evidence, keep the fixed report structure but explicitly cover it as an information gap or monitoring point in the relevant section instead of silently omitting it.',
+      `20. Internal reference artifact: after final Markdown is complete, create ${HERMES_CONTAINER_REPORT_DIR}/${jobId}/references/report_references.json. It must contain every citation number used in the final report body, including citations that came from non-structured public research evidence and citations that do not match database/vector sources.`,
+      '21. The internal reference artifact JSON schema is: {"jobId":"...","updatedAt":"ISO time","sourceCount":N,"references":[{"citationNo":1,"title":"","sourceName":"","url":"","publishedAt":"","summary":"","excerpt":"","rawReferenceText":"[1] ...","sourceType":"report_reference","relevanceScore":100,"status":"referenced","method":"final_report_reference_index","matchStatus":"matched|raw_only"}]}.',
+      '22. Keep report_references.json internal only: do not mention its path, JSON schema, SQL, MCP, Hermes, Agent, database tables, or implementation details in the final user-visible report. The final Markdown reference section remains normal Chinese report text.',
+      ...databaseSourceRequirements,
+    ];
+  }
+
+  private buildReportLabel(input: RunInput): string {
+    const name =
+      typeof input.payload.target_name === 'string'
+        ? input.payload.target_name
+        : typeof input.payload.targetName === 'string'
+          ? input.payload.targetName
+          : typeof input.payload.subject === 'string'
+            ? input.payload.subject
+            : typeof input.payload.topic === 'string'
+              ? input.payload.topic
+              : undefined;
+    return name ? `${input.skill}: ${name}` : input.skill;
+  }
+
+  private buildGatewaySessionKey(input: RunInput): string {
+    return `agent:report-agent:openai-user:${input.requestUser || cryptoSafeLabel(this.buildReportLabel(input))}`;
+  }
+
+  private extractCompletionText(completion: OpenAI.Chat.Completions.ChatCompletion): string {
+    return completion.choices
+      .map((choice) => {
+        const content = choice.message?.content;
+        if (typeof content === 'string') return content;
+        return '';
+      })
+      .join('\n\n')
+      .trim();
+  }
+
+  private normalizePlanResponse(text: string, fallback: ReportPlanResponse): ReportPlanResponse {
+    try {
+      const jsonText = text.trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+      const parsed = JSON.parse(jsonText) as Partial<ReportPlanResponse>;
+      const requiresReportSections = fallback.steps.some((step) => step.type === 'report_section');
+      const steps = Array.isArray(parsed.steps)
+        ? parsed.steps
+            .map((step, stepIndex) => {
+              const fallbackStep = fallback.steps[stepIndex];
+              const type = this.safePlanStepType(
+                (step as { type?: unknown } | undefined)?.type,
+                requiresReportSections ? undefined : fallbackStep?.type,
+              );
+              const sectionTitle = this.sanitizeText(String((step as { sectionTitle?: unknown } | undefined)?.sectionTitle || fallbackStep?.sectionTitle || ''), 40);
+              const title = this.sanitizeText(String(step?.title || sectionTitle || fallbackStep?.title || `步骤 ${stepIndex + 1}`), 40);
+              return {
+                id: this.safePlanId(step?.id, `step-${stepIndex + 1}`),
+                type,
+                sectionKey: this.safePlanId((step as { sectionKey?: unknown } | undefined)?.sectionKey, fallbackStep?.sectionKey || `section-${stepIndex + 1}`),
+                sectionTitle: sectionTitle || undefined,
+                title,
+                description: this.sanitizeText(String(step?.description || fallbackStep?.description || ''), 160),
+                allowMultiple: step?.allowMultiple !== false,
+                options: Array.isArray(step?.options)
+                  ? step.options.map((option, optionIndex) => ({
+                      id: this.safePlanId(option?.id, `option-${optionIndex + 1}`),
+                      label: this.sanitizeText(String(option?.label || `选项 ${optionIndex + 1}`), 48),
+                      detail: this.sanitizeText(String(option?.detail || ''), 160),
+                      selected: typeof option?.selected === 'boolean' ? option.selected : optionIndex < 3,
+                    }))
+                  : [],
+              };
+            })
+            .filter((step) => step.options.length > 0)
+        : [];
+
+      const normalizedSteps = steps.length ? this.ensurePlanStepTypes(steps, fallback.steps) : fallback.steps;
+
+      return {
+        title: this.sanitizeText(String(parsed.title || fallback.title), 60),
+        summary: this.sanitizeText(String(parsed.summary || fallback.summary), 180),
+        searchQueries: Array.isArray(parsed.searchQueries)
+          ? parsed.searchQueries.map((item) => this.sanitizeText(String(item), 80)).filter(Boolean).slice(0, 8)
+          : fallback.searchQueries,
+        steps: normalizedSteps,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  private ensurePlanStepTypes(steps: ReportPlanResponse['steps'], fallbackSteps: ReportPlanResponse['steps']): ReportPlanResponse['steps'] {
+    const requiresReportSections = fallbackSteps.some((step) => step.type === 'report_section');
+    if (requiresReportSections) {
+      const sourceScope = steps.find((step) => step.type === 'source_scope') || fallbackSteps.find((step) => step.type === 'source_scope');
+      const result = sourceScope ? [sourceScope] : [];
+      for (const fallback of fallbackSteps.filter((step) => step.type === 'report_section')) {
+        const candidate = steps.find((step) =>
+          step.type === 'report_section' &&
+          (step.sectionKey === fallback.sectionKey || step.sectionTitle === fallback.sectionTitle || step.title === fallback.sectionTitle),
+        );
+        result.push(candidate ? { ...candidate, id: fallback.id, sectionKey: fallback.sectionKey, sectionTitle: fallback.sectionTitle, title: fallback.sectionTitle || candidate.title } : fallback);
+      }
+      return result;
+    }
+    const result = [...steps];
+    for (const fallback of fallbackSteps) {
+      const exists = fallback.type === 'report_section'
+        ? result.some((step) => step.type === 'report_section' && step.sectionKey === fallback.sectionKey)
+        : result.some((step) => step.type === fallback.type);
+      if (!exists) {
+        result.push(fallback);
+      }
+    }
+    return result;
+  }
+
+  private safePlanId(value: unknown, fallback: string): string {
+    const text = typeof value === 'string' ? value : fallback;
+    return text.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || fallback;
+  }
+
+  private safePlanStepType(value: unknown, fallback?: ReportPlanStepType): ReportPlanStepType {
+    const allowed = new Set<ReportPlanStepType>([
+      'search_queries',
+      'source_scope',
+      'basic_info_module',
+      'analysis_module',
+      'output_module',
+      'report_section',
+    ]);
+    return typeof value === 'string' && allowed.has(value as ReportPlanStepType)
+      ? (value as ReportPlanStepType)
+      : fallback || 'analysis_module';
+  }
+
+  private buildFallbackPlan(input: ReportPlanRequest): ReportPlanResponse {
+    const topic = this.sanitizeText(input.topic || '未命名编报', 60);
+    const reportType = this.sanitizeText(input.reportType || 'report', 40);
+    const keywords = this.extractPlanningKeywords(topic);
+    const primaryKeyword = this.buildPrimaryPlanningKeyword(topic, keywords);
+    const reportLabel = reportType === 'write-hb-k'
+      ? 'K报'
+      : reportType === 'write-hb-hb'
+        ? 'HB报'
+        : reportType === 'person-intelligence-report'
+          ? '人物报'
+          : reportType === 'risk-assessment-reports'
+            ? '风险报'
+            : '编报';
+    return {
+      title: `${topic}：编报规划`,
+      summary: `已围绕“${topic}”生成${reportLabel}检索词和研判子任务，请选择需要纳入正式编报的方向。`,
+      searchQueries: [
+        `${topic} 最新动态`,
+        `${topic} 政策背景 影响`,
+        `${primaryKeyword} 公开报道 研判`,
+        `${topic} 风险 对策`,
+        `${topic} 各方立场`,
+      ],
+      steps: [
+        {
+          id: 'source-scope',
+          type: 'source_scope',
+          title: '信源范围',
+          description: `选择围绕“${topic}”需要优先检索、抽取和交叉核验的信源类型。`,
+          allowMultiple: true,
+          options: [
+            { id: 'official-sources', label: '官方信源', detail: `优先核验“${topic}”相关政府部门、国际组织、监管机构、法院或议会文件。`, selected: true },
+            { id: 'major-media', label: '主流媒体', detail: `补充“${topic}”的一线报道、公开采访、事件进展和各方回应。`, selected: true },
+            { id: 'think-tank-research', label: '智库研究', detail: `检索“${topic}”相关智库、研究机构、行业报告和专家分析。`, selected: true },
+            { id: 'industry-data', label: '行业与数据材料', detail: `补充支撑“${topic}”判断的行业报告、公开数据、统计口径、案例和图表来源。`, selected: true },
+            { id: 'direct-parties', label: '当事方与相关机构', detail: `优先提取“${topic}”直接相关主体、企业、机构、协会或组织发布的声明、公告和行动信息。`, selected: false },
+            { id: 'regional-sources', label: '区域与当地信源', detail: `检索“${topic}”发生地或重点影响区域的当地媒体、地方政府、区域组织和本地分析。`, selected: false },
+            { id: 'foreign-language-sources', label: '外文信源', detail: `补充“${topic}”相关英文或其他外文公开信源，用于交叉核验中文信息和获取原始口径。`, selected: false },
+            { id: 'social-public-opinion', label: '舆情与公开讨论', detail: `观察“${topic}”在公开舆论场、社交平台、专家评论和媒体转载中的传播重点与争议点。`, selected: false },
+            { id: 'primary-documents', label: '原始文件与公告', detail: `优先检索“${topic}”相关原始公告、白皮书、法案文本、制裁清单、企业公告或会议纪要。`, selected: false },
+            { id: 'expert-commentary', label: '专家评论与访谈', detail: `补充“${topic}”相关专家访谈、公开评论、研讨会发言和专业解读。`, selected: false },
+            { id: 'historical-cases', label: '历史案例与相似事件', detail: `检索“${topic}”相关历史案例、类似事件和可比处置经验。`, selected: false },
+            { id: 'market-industry-reaction', label: '市场与行业反应', detail: `跟踪“${topic}”在资本市场、产业链、贸易流向、企业经营和行业组织中的反应。`, selected: false },
+          ],
+        },
+        ...this.buildFallbackReportSectionSteps(reportType, topic, primaryKeyword),
+      ],
+    };
+  }
+
+  private buildFallbackReportSectionSteps(reportType: string, topic: string, primaryKeyword: string): ReportPlanResponse['steps'] {
+    if (reportType === 'write-hb-hb') {
+      return [
+        this.reportSectionStep('hb-event-summary', 'event_summary', '一、事件概述', `确定“${topic}”事件概述部分需要交代的方向。`, [
+          ['core-facts', '核心事实', `提炼“${topic}”的时间、地点、主体、动作和当前状态。`, true],
+          ['key-timeline', '关键时间节点', `梳理“${topic}”从发生到最新进展的关键节点。`, true],
+          ['trigger-factor', '触发因素', `说明“${topic}”直接诱因、外部变量和突发背景。`, false],
+        ]),
+        this.reportSectionStep('hb-background-analysis', 'background_analysis', '二、背景分析', `确定“${topic}”背景分析部分需要展开的方向。`, [
+          ['historical-context', '历史脉络', `回溯“${topic}”相关历史演进、长期矛盾和既有机制。`, true],
+          ['policy-context', '政策制度背景', `梳理“${topic}”涉及的政策、法规、条约或监管框架。`, true],
+          ['interest-structure', '利益格局', `识别“${topic}”背后的利益关系、资源约束和战略诉求。`, false],
+        ]),
+        this.reportSectionStep('hb-positions-reactions', 'positions_reactions', '三、各方立场与反应', `确定“${topic}”各方立场与反应部分需要覆盖的方向。`, [
+          ['direct-parties', '直接当事方', `归纳“${topic}”直接相关方的官方表态、行动和政策意图。`, true],
+          ['major-powers', '主要外部力量', `分析主要国家、国际组织或区域力量对“${topic}”的反应。`, true],
+          ['public-opinion', '舆论与媒体反应', `研判“${topic}”在舆论场和媒体叙事中的传播态势。`, false],
+        ]),
+        this.reportSectionStep('hb-risk-assessment', 'risk_assessment', '四、涉我风险评估', `确定“${topic}”涉我风险评估部分需要研判的方向。`, [
+          ['direct-risk', '直接风险', `研判“${topic}”对我方安全、外交、产业或人员利益的直接影响。`, true],
+          ['spillover-risk', '外溢风险', `分析“${topic}”可能引发的区域、市场、供应链或舆情外溢。`, true],
+          ['risk-level', '风险等级', `给出“${topic}”短期和中期风险等级及判断依据。`, false],
+        ]),
+        this.reportSectionStep('hb-trend-forecast', 'trend_forecast', '五、趋势研判', `确定“${topic}”趋势研判部分需要推演的方向。`, [
+          ['short-term', '短期走势', `判断“${topic}”未来 1-3 个月可能演变和关键触发点。`, true],
+          ['medium-term', '中期演变', `推演“${topic}”未来 3-12 个月的主要情景和变量。`, true],
+          ['uncertainty', '不确定因素', `标注“${topic}”中需要持续跟踪的信息缺口和不确定性。`, false],
+        ]),
+        this.reportSectionStep('hb-countermeasures', 'countermeasures', '六、对策建议', `确定“${topic}”对策建议部分需要提出的方向。`, [
+          ['immediate-response', '立即措施', `提出针对“${topic}”一周内可执行的监测、沟通或防范措施。`, true],
+          ['medium-response', '中期措施', `提出针对“${topic}”1-3 个月的协调、评估和风险处置安排。`, true],
+          ['contingency-plan', '预案与提示', `设计“${topic}”恶化或突发变化时的预案和风险提示。`, false],
+        ]),
+      ];
+    }
+
+    if (reportType === 'write-hb-k') {
+      return [
+        this.reportSectionStep('k-basic-info', 'basic_info', '一、基本情况', `确定“${topic}”基本情况部分需要展开的方向。`, [
+          ['event-process', `${primaryKeyword}事件经过`, `按时间顺序梳理“${topic}”起因、经过、结果和最新状态。`, true],
+          ['positions', '各方态度', `归纳“${topic}”相关政要、部门、机构、专家和主要主体表态。`, true],
+          ['related-background', '相关情况', `补充“${topic}”关联事件、涉及范围、历史背景和相似案例。`, true],
+          ['policy-basis', '政策依据', `核验“${topic}”涉及的政策文件、法律依据、制度框架和执行口径。`, false],
+        ]),
+        this.reportSectionStep('k-risk-to-china', 'risk_to_china', '二、涉我风险', `确定“${topic}”涉我风险部分需要研判的方向。`, [
+          ['security-interest', '涉我安全利益', `分析“${topic}”对我方安全、外交、经济、产业链或人员机构的影响。`, true],
+          ['risk-path', '风险传导路径', `说明“${topic}”风险如何通过政策、市场、舆论、地区局势向我方传导。`, true],
+          ['risk-level', '风险等级判断', `判断“${topic}”短期、中长期风险等级和关键依据。`, true],
+          ['information-gap', '信息缺口', `列明“${topic}”仍需核验的事实、口径冲突和后续跟踪点。`, false],
+        ]),
+        this.reportSectionStep('k-countermeasures', 'countermeasures', '三、对策建议', `确定“${topic}”对策建议部分需要提出的方向。`, [
+          ['immediate-actions', '立即措施', `提出针对“${topic}”一周内可采取的风险防范、沟通和监测动作。`, true],
+          ['medium-actions', '中期措施', `提出针对“${topic}”1-3 个月的协调、研判、预警和处置建议。`, true],
+          ['long-term-actions', '长期措施', `提出针对“${topic}”6 个月以上的机制建设、产业或政策应对建议。`, false],
+          ['contingency-warning', '预案与风险提示', `设计“${topic}”突发升级、舆情反转或外溢扩散时的预案。`, true],
+        ]),
+      ];
+    }
+
+    return [
+      this.reportSectionStep('general-analysis', 'analysis', '研判内容', `选择“${topic}”需要纳入正文的分析方向。`, [
+        ['facts', '事实梳理', `梳理“${topic}”核心事实和关键节点。`, true],
+        ['risk', '风险识别', `研判“${topic}”主要风险和影响。`, true],
+        ['action', '对策建议', `提出“${topic}”后续建议和跟踪方向。`, true],
+      ]),
+    ];
+  }
+
+  private reportSectionStep(
+    id: string,
+    sectionKey: string,
+    sectionTitle: string,
+    description: string,
+    options: Array<[string, string, string, boolean]>,
+  ): ReportPlanResponse['steps'][number] {
+    return {
+      id,
+      type: 'report_section',
+      sectionKey,
+      sectionTitle,
+      title: sectionTitle,
+      description,
+      allowMultiple: true,
+      options: options.map(([optionId, label, detail, selected]) => ({ id: optionId, label, detail, selected })),
+    };
+  }
+
+  private isPlanRelevant(topic: string, plan: ReportPlanResponse): boolean {
+    const terms = this.extractPlanningKeywords(topic);
+    if (terms.length === 0) return true;
+
+    const haystack = [
+      plan.title,
+      plan.summary,
+      ...(plan.searchQueries || []),
+      ...(plan.steps || []).flatMap((step) => [
+        step.title,
+        step.sectionTitle || '',
+        step.sectionKey || '',
+        step.description,
+        ...(step.options || []).flatMap((option) => [option.label, option.detail]),
+      ]),
+    ].join('\n');
+
+    return terms.some((term) => haystack.includes(term)) || haystack.includes(String(topic).trim());
+  }
+
+  private extractPlanningKeywords(topic: string): string[] {
+    const text = this.sanitizeText(String(topic || ''), 80);
+    const stopWords = new Set([
+      '方面',
+      '情报',
+      '研判',
+      '报告',
+      '编报',
+      '关于',
+      '有关',
+      '情况',
+      '事件',
+      '影响',
+      '风险',
+      '最新',
+    ]);
+    const matches = text.match(/[\p{Script=Han}A-Za-z0-9]{2,}/gu) || [];
+    const terms = new Set<string>();
+
+    for (const match of matches) {
+      if (!stopWords.has(match)) terms.add(match);
+      const chineseParts = match.match(/[\p{Script=Han}]{2,}/gu) || [];
+      for (const part of chineseParts) {
+        if (part.length > 6) {
+          for (let index = 0; index <= part.length - 2; index += 2) {
+            const token = part.slice(index, Math.min(index + 4, part.length));
+            if (token.length >= 2 && !stopWords.has(token)) terms.add(token);
+          }
+        }
+      }
+    }
+
+    return Array.from(terms).slice(0, 8);
+  }
+
+  private buildPrimaryPlanningKeyword(topic: string, keywords: string[]): string {
+    const normalized = this
+      .sanitizeText(topic, 40)
+      .replace(/方面/g, '')
+      .replace(/情报|研判|报告|编报|情况|事件/g, '')
+      .replace(/的$/g, '')
+      .trim();
+    if (normalized.length >= 2 && normalized.length <= 14) return normalized;
+    const compact = keywords.find((keyword) => keyword.length >= 2 && keyword.length <= 10);
+    return compact || normalized.slice(0, 12) || topic.slice(0, 12);
+  }
+
+  private async searchPlanningSources(queries: string[]): Promise<string> {
+    const tavilyApiKeys = await this.researchKeys.getEffectiveKeys('tavilyApiKey');
+    if (!tavilyApiKeys.length || queries.length === 0) return '';
+    const findings = await Promise.all(
+      queries.slice(0, 6).map(async (query) => {
+      try {
+        const response = await this.researchKeys.withKeyFailover('tavilyApiKey', async (tavilyApiKey) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), PLAN_SEARCH_QUERY_TIMEOUT_MS);
+          try {
+            const result = await fetch('https://api.tavily.com/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: controller.signal,
+              body: JSON.stringify({
+                api_key: tavilyApiKey,
+                query,
+                search_depth: 'basic',
+                max_results: 10,
+                include_answer: true,
+              }),
+            });
+            if (!result.ok && this.researchKeys.isFailoverError(`${result.status} ${await result.clone().text().catch(() => '')}`)) {
+              const error = new Error(`Tavily search failed with ${result.status}`);
+              (error as Error & { status?: number }).status = result.status;
+              throw error;
+            }
+            return result;
+          } finally {
+            clearTimeout(timer);
+          }
+        });
+        if (!response.ok) return '';
+        const data = (await response.json()) as {
+          answer?: unknown;
+          results?: Array<{ title?: unknown; content?: unknown; url?: unknown; source?: unknown }>;
+        };
+        const lines = [
+          typeof data.answer === 'string' ? data.answer : '',
+          ...(Array.isArray(data.results)
+            ? data.results.map((item) => {
+                const source = String(item.source || item.title || '').trim();
+                const title = String(item.title || '').trim();
+                const content = String(item.content || '').trim();
+                return [source, title && title !== source ? title : '', content].filter(Boolean).join(' ');
+              })
+            : []),
+        ]
+          .map((item) => this.sanitizeText(item, 180))
+          .filter(Boolean)
+          .filter((item, index, array) => array.indexOf(item) === index);
+        return lines.length ? `查询：${query}\n${lines.map((line) => `- ${line}`).join('\n')}` : '';
+      } catch {
+        return '';
+      }
+    }),
+    );
+
+    return findings.filter(Boolean).join('\n\n').slice(0, 8000);
+  }
+
+  private forwardGatewayEvent(
+    event: { type: string; payload: unknown },
+    onEvent: (event: ServerEvent) => void,
+  ) {
+    const payload = event.payload && typeof event.payload === 'object' ? (event.payload as Record<string, unknown>) : {};
+    if (event.type !== 'agent.stream') return;
+
+    const stream = typeof payload.stream === 'string' ? payload.stream : '';
+    const data = payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {};
+
+    if (stream === 'tool') {
+      const phase = typeof data.phase === 'string' ? data.phase : '';
+      const id =
+        typeof data.toolCallId === 'string'
+          ? data.toolCallId
+          : typeof data.id === 'string'
+            ? data.id
+            : undefined;
+      const name = this.extractToolName(data);
+      const summary = this.summarizeToolEvent(data);
+      const raw = {
+        phase: summary.phase || phase,
+        toolPhase: phase,
+        status: summary.status,
+        label: summary.label,
+        summary: summary.summary,
+        command: summary.command,
+        actor: summary.actor,
+        detail: summary.detail,
+      };
+      if (summary.status === 'failed') onEvent({ type: 'tool_error', id, name, message: summary.summary, raw });
+      else if (phase === 'start' || phase === 'call') onEvent({ type: 'tool_start', id, name, raw });
+      else if (phase === 'result' || phase === 'output' || phase === 'end' || phase === 'complete') onEvent({ type: 'tool_end', id, name, raw });
+      else onEvent({ type: 'tool_delta', id, name, raw });
+    }
+
+    if (stream === 'lifecycle') {
+      const phase = typeof data.phase === 'string' ? data.phase : '';
+      const message = this.summarizeLifecycleEvent(phase, data);
+      if (phase) onEvent({ type: 'stage', stage: `hermes:${phase}`, message });
+    }
+  }
+
+  private forwardSessionToolEvents(
+    sessionKey: string,
+    onEvent: (event: ServerEvent) => void,
+    seen: Set<string>,
+  ): void {
+    const jsonlPath = this.resolveSessionJsonlPath(sessionKey);
+    if (!jsonlPath) return;
+
+    const toolCalls = new Map<string, { name: string; args: Record<string, unknown>; emittedStart: boolean }>();
+    const lines = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).filter(Boolean);
+
+    for (const line of lines) {
+      const item = this.parseJsonLine(line);
+      const message = item?.message && typeof item.message === 'object' ? (item.message as Record<string, unknown>) : undefined;
+      if (!message) continue;
+
+      if (message.role === 'assistant' && Array.isArray(message.content)) {
+        for (const content of message.content) {
+          if (!content || typeof content !== 'object') continue;
+          const call = content as Record<string, unknown>;
+          if (call.type !== 'toolCall') continue;
+          const id = typeof call.id === 'string' ? call.id : `${String(item?.id || 'tool')}-${toolCalls.size}`;
+          const name = typeof call.name === 'string' ? call.name : 'tool';
+          const args = this.parseMaybeObject(call.arguments) || {};
+          toolCalls.set(id, { name, args, emittedStart: false });
+          if (!/read/i.test(name)) this.emitSessionToolStart(id, name, args, onEvent, seen, toolCalls);
+        }
+      }
+
+      if (message.role === 'toolResult') {
+        const id = typeof message.toolCallId === 'string' ? message.toolCallId : '';
+        const stored = toolCalls.get(id);
+        const name = typeof message.toolName === 'string' ? message.toolName : stored?.name || 'tool';
+        const args = stored?.args || {};
+        if (/read/i.test(name) && !stored?.emittedStart) {
+          const range = this.inferReadRangeFromToolResult(message);
+          this.emitSessionToolStart(id, name, { ...args, ...(range ? { startLine: range.start, endLine: range.end } : {}) }, onEvent, seen, toolCalls);
+        }
+        this.emitSessionToolEnd(id, name, onEvent, seen);
+      }
+    }
+  }
+
+  private resolveSessionJsonlPath(sessionKey: string): string | null {
+    return this.resolveAgentSessionJsonlPath('report-agent', sessionKey);
+  }
+
+  private resolveAgentSessionJsonlPath(agentId: string, sessionKey: string): string | null {
+    try {
+      const sessionsPath = path.join(HERMES_STATE_DIR, 'agents', agentId, 'sessions', 'sessions.json');
+      const sessions = JSON.parse(fs.readFileSync(sessionsPath, 'utf8')) as Record<string, { sessionId?: unknown }>;
+      const sessionId = sessions[sessionKey]?.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId) return null;
+      const jsonlPath = path.join(HERMES_STATE_DIR, 'agents', agentId, 'sessions', `${sessionId}.jsonl`);
+      return fs.existsSync(jsonlPath) ? jsonlPath : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractAgentSessionFinalText(
+    agentId: string,
+    sessionKey: string,
+    startedAt = 0,
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [],
+  ): string {
+    const jsonlPath = this.resolveAgentSessionJsonlPath(agentId, sessionKey);
+    if (!jsonlPath) return '';
+
+    try {
+      const entries = fs.readFileSync(jsonlPath, 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => this.parseJsonLine(line))
+        .filter((item): item is Record<string, unknown> => Boolean(item));
+      const lastUserText = this.lastUserMessageText(messages);
+      const boundary = this.findMatchingUserEntryIndex(entries, lastUserText);
+
+      for (let index = entries.length - 1; index > boundary; index -= 1) {
+        const item = entries[index];
+        const itemTime = this.readSessionItemTime(item);
+        if (startedAt && itemTime && itemTime < startedAt - 5000) continue;
+        const message = item.message && typeof item.message === 'object' ? (item.message as Record<string, unknown>) : undefined;
+        if (!message || message.role !== 'assistant') continue;
+        const text = this.extractAssistantMessageText(message);
+        if (text) return text;
+      }
+
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  private extractSessionFinalText(sessionKey: string): string {
+    const jsonlPath = this.resolveSessionJsonlPath(sessionKey);
+    if (!jsonlPath) return '';
+
+    try {
+      const lines = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).filter(Boolean);
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const item = this.parseJsonLine(lines[index]);
+        const message = item?.message && typeof item.message === 'object' ? (item.message as Record<string, unknown>) : undefined;
+        if (!message || message.role !== 'assistant') continue;
+
+        const text = this.extractAssistantMessageText(message);
+        if (text) return text;
+      }
+
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  private extractAssistantMessageText(message: Record<string, unknown>): string {
+    const direct = this.firstString(message, ['content', 'text', 'finalAssistantVisibleText', 'finalAssistantRawText']);
+    if (direct.trim()) return direct.trim();
+
+    const content = Array.isArray(message.content) ? message.content : [];
+    const texts = content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        const part = item as Record<string, unknown>;
+        if (part.type === 'toolCall') return '';
+        return this.firstString(part, ['text', 'content', 'value']);
+      })
+      .filter((text) => text.trim());
+
+    return texts.join('\n\n').trim();
+  }
+
+  private lastUserMessageText(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): string {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== 'user') continue;
+      return this.stringifyChatContent(message.content).replace(/\s+/g, ' ').trim();
+    }
+    return '';
+  }
+
+  private findMatchingUserEntryIndex(entries: Record<string, unknown>[], userText: string): number {
+    const needle = userText.slice(0, 120);
+    if (!needle) return -1;
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const item = entries[index];
+      const message = item.message && typeof item.message === 'object' ? (item.message as Record<string, unknown>) : undefined;
+      if (!message || message.role !== 'user') continue;
+      const text = this.extractAssistantMessageText(message).replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      if (text.includes(needle) || needle.includes(text.slice(0, 120))) return index;
+    }
+    return -1;
+  }
+
+  private readSessionItemTime(item: Record<string, unknown>): number {
+    const message = item.message && typeof item.message === 'object' ? (item.message as Record<string, unknown>) : {};
+    for (const source of [item, message]) {
+      for (const key of ['createdAt', 'updatedAt', 'timestamp', 'time', 'startedAt', 'endedAt']) {
+        const value = source[key];
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string') {
+          const parsed = Date.parse(value);
+          if (Number.isFinite(parsed)) return parsed;
+        }
+      }
+    }
+    return 0;
+  }
+
+  private extractReportPathFromText(text: string): string {
+    const normalized = text.replaceAll('\\\\', '/');
+    const pattern = /(?:\/home\/node\/\.hermes\/workspace\/report-agent\/reports\/|\/usr\/docker\/hermes\/workspace\/report-agent\/reports\/)[^\r\n`"'<>|?*]+?\.md/gi;
+    const matches = Array.from(normalized.matchAll(pattern)).map((match) => match[0].trim());
+    return matches[matches.length - 1] || '';
+  }
+
+  private parseJsonLine(line: string): Record<string, unknown> | null {
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private emitSessionToolStart(
+    id: string,
+    name: string,
+    args: Record<string, unknown>,
+    onEvent: (event: ServerEvent) => void,
+    seen: Set<string>,
+    toolCalls: Map<string, { name: string; args: Record<string, unknown>; emittedStart: boolean }>,
+  ): void {
+    const key = `start:${id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const stored = toolCalls.get(id);
+    if (stored) stored.emittedStart = true;
+    const data = { phase: 'call', name, arguments: args };
+    const summary = this.summarizeToolEvent(data);
+    onEvent({
+      type: 'tool_start',
+      id,
+      name,
+      raw: {
+        phase: summary.phase || 'call',
+        toolPhase: 'call',
+        status: 'started',
+        label: summary.label,
+        summary: summary.summary,
+        command: summary.command,
+        actor: summary.actor,
+        detail: summary.detail,
+      },
+    });
+  }
+
+  private emitSessionToolEnd(
+    id: string,
+    name: string,
+    onEvent: (event: ServerEvent) => void,
+    seen: Set<string>,
+  ): void {
+    const key = `end:${id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const summary = this.summarizeToolEvent({ phase: 'output', name });
+    onEvent({
+      type: 'tool_end',
+      id,
+      name,
+      raw: {
+        phase: summary.phase || 'output',
+        toolPhase: 'output',
+        status: 'completed',
+        label: summary.label,
+        summary: summary.summary,
+        command: '',
+        actor: summary.actor,
+        detail: summary.detail,
+      },
+    });
+  }
+
+  private isQaSourceTool(toolName: string): boolean {
+    return /pg-sources__query|pg_sources__query|mysql-test__mysql_query|mysql_test__mysql_query/i.test(toolName);
+  }
+
+  private extractSourceRowsFromToolResult(message: Record<string, unknown>): Record<string, unknown>[] {
+    const candidates: unknown[] = [];
+    if (Array.isArray(message.content)) {
+      for (const item of message.content) {
+        if (!item || typeof item !== 'object') continue;
+        const text = (item as Record<string, unknown>).text;
+        if (typeof text === 'string') candidates.push(this.parseMaybeJson(text));
+      }
+    }
+    if (message.details && typeof message.details === 'object') candidates.push(message.details);
+
+    const rows: Record<string, unknown>[] = [];
+    for (const candidate of candidates) {
+      rows.push(...this.arrayFromQaSourceCandidate(candidate));
+    }
+    return rows;
+  }
+
+  private parseMaybeJson(text: string): unknown {
+    const trimmed = text.trim();
+    if (!trimmed || (!trimmed.startsWith('[') && !trimmed.startsWith('{'))) return null;
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  private arrayFromQaSourceCandidate(candidate: unknown): Record<string, unknown>[] {
+    if (Array.isArray(candidate)) {
+      return candidate.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+    }
+    if (!candidate || typeof candidate !== 'object') return [];
+    const object = candidate as Record<string, unknown>;
+    for (const key of ['rows', 'sources', 'data', 'items', 'results']) {
+      const value = object[key];
+      if (Array.isArray(value)) {
+        return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+      }
+    }
+    return [];
+  }
+
+  private normalizeQaSourceRow(row: Record<string, unknown>, toolName: string): Record<string, unknown> | null {
+    const title = this.firstString(row, ['title', 'ch_title', 'headline', 'sourceTitle', 'entitle']);
+    const url = this.firstString(row, ['url', 'source_url', 'data_source_url']);
+    const summary = this.firstString(row, ['summary', 'summary_snippet', 'abstract', 'description']);
+    const sourceName = this.firstString(row, ['publisher', 'website_name', 'source_name', 'site_name']);
+    const publishTime = this.firstString(row, ['published_at', 'publish_time', 'pub_time', 'source_time']);
+    const contentExcerpt = this.firstString(row, ['excerpt', 'content_excerpt', 'chunk_text', 'content_chunk', 'content']);
+    if (!title && !url && !summary && !contentExcerpt) return null;
+    return {
+      title,
+      ch_title: title,
+      url,
+      source_url: url,
+      data_source_url: url,
+      summary,
+      excerpt: contentExcerpt,
+      content_excerpt: contentExcerpt,
+      publisher: sourceName,
+      website_name: sourceName,
+      published_at: publishTime,
+      publish_time: publishTime,
+      source_type: /pg/i.test(toolName) ? 'PG 向量信源' : '数据库信源',
+      type: /pg/i.test(toolName) ? 'PG 向量信源' : '数据库信源',
+      relevance_score: this.firstNumber(row, ['relevance_score', 'relevanceScore', 'score', 'similarity', 'rank_score']),
+      method: /pg/i.test(toolName) ? 'PG 向量语义召回' : '数据库关键词召回',
+      status: 'hit',
+    };
+  }
+
+  private dedupeQaSources(sources: Record<string, unknown>[]): Record<string, unknown>[] {
+    const seen = new Set<string>();
+    const result: Record<string, unknown>[] = [];
+    for (const source of sources) {
+      const url = this.firstString(source, ['url', 'source_url', 'data_source_url']).toLowerCase();
+      const title = this.firstString(source, ['title', 'ch_title', 'headline', 'sourceTitle']).toLowerCase();
+      const publisher = this.firstString(source, ['publisher', 'website_name', 'source_name', 'site_name']).toLowerCase();
+      const key = url || `${title}|${publisher}`;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      result.push(source);
+    }
+    return result;
+  }
+
+  private inferReadRangeFromToolResult(message: Record<string, unknown>): { start: number; end: number } | null {
+    const content = Array.isArray(message.content) ? message.content : [];
+    const text = content
+      .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>).text : undefined))
+      .filter((value): value is string => typeof value === 'string')
+      .join('\n');
+    if (!text) return null;
+    const lineCount = text.split(/\r?\n/).length;
+    return { start: 1, end: Math.min(50, lineCount) };
+  }
+
+  private extractToolName(data: Record<string, unknown>): string | undefined {
+    const direct = typeof data.name === 'string' ? data.name : '';
+    const toolName = typeof data.toolName === 'string' ? data.toolName : '';
+    const type = typeof data.type === 'string' ? data.type : '';
+    const command = this.extractCommand(data);
+    const candidate = direct || toolName || type;
+    if (candidate) return candidate;
+    if (/search\.mjs/i.test(command)) return 'tavily-search';
+    if (/extract\.mjs/i.test(command)) return 'tavily-extract';
+    if (this.extractReadPath(data)) return 'read';
+    if (this.extractWritePath(data)) return 'write';
+    if (/\bnode\b|\bpython\b|\bbash\b|\bsh\b/i.test(command)) return 'exec';
+    return undefined;
+  }
+
+  private summarizeToolEvent(data: Record<string, unknown>) {
+    const phase = typeof data.phase === 'string' ? data.phase : '';
+    const name = this.extractToolName(data) || 'tool';
+    const detail = this.isDatabaseMcpTool(name) ? this.describeDatabaseMcpTool(name) : this.describeToolCall(name, data);
+    const command = this.sanitizeText(detail || this.extractCommand(data), 220);
+    const output = this.extractOutputText(data);
+    const status = this.detectToolStatus(data, phase, output);
+    const workflow = this.classifyReportWorkflowTool(name, phase, status, command, output, data);
+    const label = workflow?.label || this.labelTool(name, command);
+    const summary = workflow?.summary || this.buildToolSummary(name, phase, status, command, output, detail);
+    return {
+      status,
+      label,
+      command,
+      summary,
+      phase: workflow?.phase,
+      actor: workflow?.actor,
+      detail: workflow?.detail || detail,
+    };
+  }
+
+  private summarizeLifecycleEvent(phase: string, data: Record<string, unknown>): string {
+    const message = this.firstString(data, ['message', 'status', 'label']);
+    if (message) return this.sanitizeText(message, 180);
+    if (phase === 'start') return 'Hermes started the agent run.';
+    if (phase === 'complete' || phase === 'done') return 'Hermes completed the agent run.';
+    if (phase === 'error') return 'Hermes reported an agent run error.';
+    return `Hermes ${phase}`;
+  }
+
+  private classifyReportWorkflowTool(
+    name: string,
+    phase: string,
+    status: string,
+    command: string,
+    output: string,
+    data: Record<string, unknown>,
+  ): { phase: string; actor: string; label: string; summary: string; detail?: string } | null {
+    const args = this.extractToolArgs(data);
+    const sessionLabel = this.firstString(args, ['label', 'sessionLabel', 'name', 'sessionKey']);
+    const haystack = `${name} ${phase} ${command} ${output} ${sessionLabel}`.toLowerCase();
+    const completed = status === 'completed' ? '已完成' : status === 'failed' ? '失败' : '进行中';
+
+    if (this.isDatabaseMcpTool(name) || /pg-sources__query|pg_sources__query|mysql-test__mysql_query|mysql_test__mysql_query|database_sources|vector_sources|database_query_plan|database_source_fallback_reason/.test(haystack)) {
+      const pgSourceEvent = this.isPgSourceTool(name) || /pg-sources__query|pg_sources__query|vector_sources|pg_vector|pgvector/.test(haystack);
+      return {
+        phase: 'research_collecting',
+        actor: 'main-agent',
+        label: pgSourceEvent ? 'PG向量信源检索' : '数据库信源检索',
+        summary: `${pgSourceEvent ? 'PG向量信源召回' : '数据库信源检索'}${completed}。`,
+        detail: pgSourceEvent ? 'pg-sources__query PostgreSQL vector source lookup' : this.describeDatabaseMcpTool(name),
+      };
+    }
+
+    if (/context\.json/.test(haystack)) {
+      return {
+        phase: 'context_preparing',
+        actor: 'main-agent',
+        label: '准备任务上下文',
+        summary: `编报任务上下文${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/harness_cli\.py\s+plan|\/plan\.json|\bplan\.json\b/.test(haystack)) {
+      return {
+        phase: 'research_planning',
+        actor: 'main-agent',
+        label: '生成调研计划',
+        summary: `调研计划${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/group_[a-z0-9_-]+\.json/.test(haystack)) {
+      return {
+        phase: 'research_dispatch',
+        actor: 'main-agent',
+        label: '生成调研分组',
+        summary: `调研分组${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/sessions_spawn/.test(haystack) && (/research-group/.test(haystack) || /research-[a-f0-9]{8}-[a-z0-9_-]+/.test(haystack))) {
+      return {
+        phase: 'research_dispatch',
+        actor: 'main-agent',
+        label: '启动调研子任务',
+        summary: `调研子任务 ${sessionLabel || 'research-group'} ${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/sessions_spawn/.test(haystack) && /synthesis/.test(haystack)) {
+      return {
+        phase: 'synthesis_dispatch',
+        actor: 'main-agent',
+        label: '启动撰稿子任务',
+        summary: `撰稿子任务${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/sessions_yield/.test(haystack) && /synthesis/.test(haystack)) {
+      return {
+        phase: 'synthesis_waiting',
+        actor: 'main-agent',
+        label: '等待撰稿完成',
+        summary: '正在等待撰稿子任务完成。',
+        detail: command,
+      };
+    }
+
+    if (/sessions_yield/.test(haystack)) {
+      return {
+        phase: 'research_waiting',
+        actor: 'main-agent',
+        label: '等待调研完成',
+        summary: '正在等待调研子任务完成。',
+        detail: command,
+      };
+    }
+
+    if (/research\/consolidated\.json|\bconsolidated\.json\b/.test(haystack)) {
+      return {
+        phase: 'research_consolidating',
+        actor: 'main-agent',
+        label: '合并调研证据包',
+        summary: `调研证据包合并${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/research\/research_[a-z0-9_-]+\.json|\bresearch_[a-z0-9_-]+\.json\b/.test(haystack)) {
+      return {
+        phase: 'research_collecting',
+        actor: /research-[a-f0-9]{8}-/.test(haystack) || /research-group/.test(haystack) ? 'research-agent' : 'main-agent',
+        label: '保存调研结果',
+        summary: `调研结果文件${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/final\/report\.md|report_file|\/reports\/[^ ]+\.md|\.md\b/.test(haystack) && /write|output|final|report_file|report\.md/.test(haystack)) {
+      return {
+        phase: 'report_saving',
+        actor: /synthesis/.test(haystack) ? 'synthesis-agent' : 'main-agent',
+        label: '保存报告文件',
+        summary: `报告文件${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/\b(grep|wc|ls|test|stat)\b/.test(haystack) && /report|\.md|final/.test(haystack)) {
+      return {
+        phase: 'report_verifying',
+        actor: 'main-agent',
+        label: '校验报告文件',
+        summary: `报告文件校验${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/harness_cli\.py\s+run|research_cli\.py|firecrawl|tavily|search\.mjs|extract\.mjs/.test(haystack)) {
+      return {
+        phase: 'research_collecting',
+        actor: /research-group/.test(haystack) ? 'research-agent' : 'main-agent',
+        label: '执行资料调研',
+        summary: `资料检索与提取${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/synthesis|synthesizer|analysis/.test(haystack)) {
+      return {
+        phase: 'synthesis_writing',
+        actor: 'synthesis-agent',
+        label: '整合并撰写报告',
+        summary: `报告撰写${completed}。`,
+        detail: command,
+      };
+    }
+
+    if (/skill\.md|\/skills\/|uuid|sessions\.json|read completed|command completed/.test(haystack)) {
+      return {
+        phase: 'technical_detail',
+        actor: 'main-agent',
+        label: '读取配置与中间信息',
+        summary: `技术准备步骤${completed}。`,
+        detail: command,
+      };
+    }
+
+    return null;
+  }
+
+  private detectToolStatus(data: Record<string, unknown>, phase: string, output: string): 'started' | 'completed' | 'failed' | 'running' {
+    const status = this.firstString(data, ['status', 'state']);
+    const error = this.firstString(data, ['error', 'message']);
+    if (/fail|error|rejected/i.test(status) || (phase === 'error') || /error|failed|missing/i.test(error)) return 'failed';
+    if (/error|failed|missing api key|unauthorized/i.test(output)) return 'failed';
+    if (phase === 'start' || phase === 'call') return 'started';
+    if (phase === 'result' || phase === 'output' || phase === 'end' || phase === 'complete') return 'completed';
+    return 'running';
+  }
+
+  private buildToolSummary(name: string, phase: string, status: string, command: string, output: string, detail = ''): string {
+    if (this.isDatabaseMcpTool(name) || /pg-sources__query|pg_sources__query|mysql-test__mysql_query|mysql_test__mysql_query/i.test(command)) {
+      const pg = this.isPgSourceTool(name) || /pg-sources__query|pg_sources__query|pg_vector|pgvector/i.test(command);
+      if (status === 'failed') return pg ? 'PG向量信源召回失败，继续使用公开检索和必要兜底。' : '数据库信源检索失败，继续使用公开检索。';
+      if (status === 'started') return pg ? '正在召回PG向量信源库。' : '正在检索数据库信源。';
+      return pg ? 'PG向量信源召回完成。' : '数据库信源检索完成。';
+    }
+
+    if (status === 'started') {
+      if (detail) return detail;
+      if (/search\.mjs/i.test(command)) return `Searching public sources${this.extractQuotedQuery(command)}.`;
+      if (/extract\.mjs/i.test(command)) return 'Extracting selected source pages.';
+      if (/write/i.test(name)) return 'Writing the report file.';
+      if (/read/i.test(name)) return 'Reading generated report artifacts.';
+      return command ? `Running ${this.labelTool(name, command)}.` : `Starting ${this.labelTool(name, command)}.`;
+    }
+
+    if (status === 'failed') {
+      const text = output || this.extractFailureHint(command) || `${this.labelTool(name, command)} failed.`;
+      return this.sanitizeText(text, 220);
+    }
+
+    if (/read/i.test(name)) return 'Read completed.';
+    if (/write/i.test(name)) return 'Write completed.';
+    if (/exec/i.test(name)) return 'Command completed.';
+    if (/search\.mjs/i.test(command) || /tavily-search/i.test(name)) {
+      const count = this.countSearchResults(output);
+      return count ? `Search completed with ${count} candidate sources.` : 'Search completed; candidate sources were returned.';
+    }
+    if (/extract\.mjs/i.test(command) || /tavily-extract/i.test(name)) {
+      const failures = (output.match(/failed/gi) || []).length;
+      return failures ? `Extraction completed with ${failures} failed URL(s); usable content was retained.` : 'Source extraction completed.';
+    }
+    if (phase) return `${this.labelTool(name, command)} ${status}.`;
+    return this.sanitizeText(output || `${this.labelTool(name, command)} completed.`, 220);
+  }
+
+  private labelTool(name: string, command: string): string {
+    if (this.isPgSourceTool(name) || /pg-sources__query|pg_sources__query|pg_vector|pgvector/i.test(command)) return 'PG向量信源检索';
+    if (this.isDatabaseMcpTool(name) || /mysql-test__mysql_query|mysql_test__mysql_query/i.test(command)) return '数据库信源检索';
+    if (/search\.mjs/i.test(command) || /tavily-search/i.test(name)) return 'Tavily Search';
+    if (/extract\.mjs/i.test(command) || /tavily-extract/i.test(name)) return 'Tavily Extract';
+    if (/write/i.test(name)) return 'Write';
+    if (/read/i.test(name)) return 'Read';
+    if (/exec/i.test(name)) return 'Exec';
+    return name;
+  }
+
+  private isDatabaseMcpTool(name: string): boolean {
+    return this.isPgSourceTool(name) || /(?:^|[_-])mysql(?:[_-]|$)|mysql-test__mysql_query|mysql_query/i.test(name);
+  }
+
+  private isPgSourceTool(name: string): boolean {
+    return /pg-sources__query|pg_sources__query|(?:^|[_-])pg(?:[_-]|$)|pgvector|vector_materials/i.test(name);
+  }
+
+  private describeDatabaseMcpTool(name: string): string {
+    if (this.isPgSourceTool(name)) return 'pg-sources__query PostgreSQL vector source lookup';
+    return 'mysql-test__mysql_query fallback source lookup';
+  }
+
+  private describeToolCall(name: string, data: Record<string, unknown>): string {
+    if (/read/i.test(name)) {
+      const filePath = this.extractReadPath(data);
+      const range = this.extractReadRange(data);
+      return filePath ? `${range ? `with ${range} from ` : 'from '}${this.sanitizePathForLog(filePath)}` : '';
+    }
+
+    if (/write/i.test(name)) {
+      const filePath = this.extractWritePath(data);
+      return filePath ? `to ${this.sanitizePathForLog(filePath)}` : '';
+    }
+
+    const command = this.extractCommand(data);
+    if (command) return this.sanitizeText(command, 220);
+
+    const args = this.extractToolArgs(data);
+    if (Object.keys(args).length === 0) return '';
+    return this.sanitizeText(JSON.stringify(this.sanitizeToolArgs(args)), 220);
+  }
+
+  private extractReadPath(data: Record<string, unknown>): string {
+    const args = this.extractToolArgs(data);
+    return this.firstString(args, ['path', 'file', 'filepath', 'filePath', 'target', 'uri']);
+  }
+
+  private extractWritePath(data: Record<string, unknown>): string {
+    const args = this.extractToolArgs(data);
+    return this.firstString(args, ['path', 'file', 'filepath', 'filePath', 'target', 'uri', 'output', 'outputPath']);
+  }
+
+  private extractReadRange(data: Record<string, unknown>): string {
+    const args = this.extractToolArgs(data);
+    const start = this.firstNumber(args, ['start', 'lineStart', 'startLine', 'from', 'offset']);
+    const end = this.firstNumber(args, ['end', 'lineEnd', 'endLine', 'to', 'limit']);
+    if (start !== undefined && end !== undefined) return `lines ${start}-${end}`;
+    if (start !== undefined) return `from line ${start}`;
+    if (end !== undefined) return `first ${end} lines`;
+    return '';
+  }
+
+  private extractToolArgs(data: Record<string, unknown>): Record<string, unknown> {
+    const keys = ['params', 'arguments', 'args', 'input', 'request'];
+    for (const key of keys) {
+      const value = data[key];
+      const parsed = this.parseMaybeObject(value);
+      if (parsed) return parsed;
+    }
+    const toolCall = data.toolCall && typeof data.toolCall === 'object' ? (data.toolCall as Record<string, unknown>) : undefined;
+    if (toolCall) {
+      for (const key of keys) {
+        const parsed = this.parseMaybeObject(toolCall[key]);
+        if (parsed) return parsed;
+      }
+      const fn = toolCall.function && typeof toolCall.function === 'object' ? (toolCall.function as Record<string, unknown>) : undefined;
+      const parsed = fn ? this.parseMaybeObject(fn.arguments) : undefined;
+      if (parsed) return parsed;
+    }
+    return {};
+  }
+
+  private parseMaybeObject(value: unknown): Record<string, unknown> | undefined {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+    if (typeof value !== 'string' || !value.trim()) return undefined;
+    const text = value.trim();
+    if (!text.startsWith('{')) return undefined;
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private firstNumber(data: Record<string, unknown>, keys: string[]): number | undefined {
+    for (const key of keys) {
+      const value = data[key];
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value.trim());
+    }
+    return undefined;
+  }
+
+  private sanitizeToolArgs(args: Record<string, unknown>): Record<string, unknown> {
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args)) {
+      if (/key|token|secret|password|authorization/i.test(key)) {
+        sanitized[key] = '<redacted>';
+      } else if (typeof value === 'string') {
+        sanitized[key] = this.sanitizeText(value, 120);
+      } else if (typeof value === 'number' || typeof value === 'boolean') {
+        sanitized[key] = value;
+      }
+    }
+    return sanitized;
+  }
+
+  private sanitizePathForLog(filePath: string): string {
+    const clean = filePath.replace(/\\/g, '/');
+    if (clean.startsWith('/home/node/.hermes/workspace/')) return clean;
+    if (clean.startsWith('/home/node/.hermes/')) return clean.replace(/^\/home\/node\/\.hermes\/[^\s]+/, '<hermes-path>');
+    if (clean.startsWith('/usr/docker/hermes/')) return clean.replace(/^\/usr\/docker\/hermes\/[^\s]+/, '<hermes-host-path>');
+    return this.sanitizeText(clean, 180);
+  }
+
+  private countSearchResults(output: string): number {
+    const markdownItems = output.match(/^\s*-\s+\*\*/gm)?.length ?? 0;
+    if (markdownItems) return markdownItems;
+    const urls = output.match(/https?:\/\/\S+/g)?.length ?? 0;
+    return urls;
+  }
+
+  private extractQuotedQuery(command: string): string {
+    const match = command.match(/search\.mjs\s+"([^"]+)"/i) || command.match(/search\.mjs\s+'([^']+)'/i);
+    return match?.[1] ? ` for "${this.sanitizeText(match[1], 60)}"` : '';
+  }
+
+  private extractFailureHint(command: string): string {
+    if (/TAVILY_API_KEY/i.test(command)) return 'Tavily API key is missing.';
+    return '';
+  }
+
+  private extractCommand(data: Record<string, unknown>): string {
+    const command = this.firstString(data, ['command', 'cmd', 'input', 'args']);
+    if (command) return command;
+    const params = data.params && typeof data.params === 'object' ? (data.params as Record<string, unknown>) : undefined;
+    return params ? this.firstString(params, ['command', 'cmd', 'input', 'args']) : '';
+  }
+
+  private extractOutputText(data: Record<string, unknown>): string {
+    const result = data.result && typeof data.result === 'object' ? (data.result as Record<string, unknown>) : undefined;
+    const output =
+      this.firstString(data, ['summary', 'output', 'stdout', 'stderr', 'content', 'text', 'message', 'error']) ||
+      (result ? this.firstString(result, ['summary', 'output', 'stdout', 'stderr', 'content', 'text', 'message', 'error']) : '');
+    return this.sanitizeText(output, 600);
+  }
+
+  private firstString(data: Record<string, unknown>, keys: string[]): string {
+    for (const key of keys) {
+      const value = data[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (Array.isArray(value)) {
+        const joined = value.filter((item) => typeof item === 'string').join(' ');
+        if (joined.trim()) return joined.trim();
+      }
+    }
+    return '';
+  }
+
+  private sanitizeText(value: string, maxLength: number): string {
+    const redacted = value
+      .replace(/(api[_-]?key|token|secret|authorization|password)\s*[:=]\s*["']?[^"'\s,}]+/gi, '$1=<redacted>')
+      .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer <redacted>')
+      .replace(/\/home\/node\/\.hermes\/workspace\/[^\s"'`]+/g, '<hermes-workspace-path>')
+      .replace(/\/usr\/docker\/hermes\/[^\s"'`]+/g, '<hermes-host-path>')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return redacted.length > maxLength ? `${redacted.slice(0, maxLength - 1)}…` : redacted;
+  }
+
+  private extractAgentMarkdown(payload: unknown): string {
+    const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+    const result = root.result && typeof root.result === 'object' ? (root.result as Record<string, unknown>) : root;
+    const meta = result.meta && typeof result.meta === 'object' ? (result.meta as Record<string, unknown>) : undefined;
+    const fromMeta =
+      typeof meta?.finalAssistantVisibleText === 'string'
+        ? meta.finalAssistantVisibleText
+        : typeof meta?.finalAssistantRawText === 'string'
+          ? meta.finalAssistantRawText
+          : '';
+    const payloads = Array.isArray(result.payloads) ? result.payloads : [];
+    const fromPayloads = payloads
+      .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>).text : undefined))
+      .filter((text): text is string => typeof text === 'string' && text.trim().length > 0)
+      .join('\n\n');
+    return (fromPayloads || fromMeta).trim();
+  }
+
+  private extractAgentError(payload: unknown, markdown: string): string | null {
+    const root = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+    const result = root.result && typeof root.result === 'object' ? (root.result as Record<string, unknown>) : root;
+    const meta = result.meta && typeof result.meta === 'object' ? (result.meta as Record<string, unknown>) : undefined;
+    const stopReason = typeof meta?.stopReason === 'string' ? meta.stopReason : '';
+    const embeddedRunError = typeof meta?.embeddedRunError === 'string' ? meta.embeddedRunError : '';
+    const trimmed = markdown.trim();
+
+    if (stopReason === 'error' || embeddedRunError) {
+      return `Hermes report-agent failed: ${embeddedRunError || trimmed.slice(0, 300)}`;
+    }
+
+    const textError = this.extractTextError(trimmed);
+    if (textError) return `Hermes report-agent failed: ${textError}`;
+
+    return null;
+  }
+
+  private extractTextError(text: string): string | null {
+    const trimmed = text.trim();
+    if (!trimmed) return 'empty response';
+    if (/^no response from hermes\.?$/i.test(trimmed)) return 'No response from Hermes.';
+    if (/agent couldn't generate a response/i.test(trimmed)) return "Agent couldn't generate a response.";
+    if (/quota exhausted|429\s+quota|internal error|500\s+internal|failed to fetch/i.test(trimmed) && trimmed.length < 1000) {
+      return trimmed.slice(0, 300);
+    }
+    if (!trimmed.startsWith('{')) return null;
+
+    try {
+      const parsed = JSON.parse(trimmed.split('\n')[0]) as { error?: unknown };
+      return typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private assertNoApprovalCommands(text: string): void {
+    const approvalCommands = this.extractApprovalCommands(text);
+    if (approvalCommands.length > 0) {
+      throw new HermesApprovalRequiredError(approvalCommands, text);
+    }
+  }
+
+  private extractApprovalCommands(text: string): string[] {
+    const commands = new Set<string>();
+    const pattern = /\/approve\s+[a-zA-Z0-9_-]+\s+(?:allow-once|allow-always|deny)/g;
+    for (const match of text.matchAll(pattern)) {
+      commands.add(match[0]);
+    }
+    return Array.from(commands);
+  }
+}
+
+function cryptoSafeLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'report';
+}

@@ -1,0 +1,47 @@
+{
+  "name": "hermes-gaogao",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "server": "tsc -p tsconfig.server.json && node dist-server/server/index.js",
+    "backfill:vector-materials": "tsx scripts/backfill-vector-materials.ts",
+    "backfill:vector-materials:qwen3": "tsx scripts/backfill-vector-materials.ts --pg-table=vector_materials_qwen3 --embedding-model=Qwen3-Embedding-0.6B-Q8 --embedding-dimensions=1024 --max-text-chars=600 --batch-size=1",
+    "backfill:vector-materials:v4": "bash scripts/run-vector-materials-v4.sh",
+    "build": "tsc -p tsconfig.server.json",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.19",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.1.19",
+    "@nestjs/platform-express": "^11.1.19",
+    "cors": "^2.8.6",
+    "dompurify": "^3.4.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "marked": "^18.0.2",
+    "openai": "^6.34.0",
+    "pg": "^8.21.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "uuid": "^14.0.0",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/cors": "^2.8.19",
+    "@types/dompurify": "^3.2.0",
+    "@types/dotenv": "^8.2.3",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.12.2",
+    "@types/uuid": "^11.0.0",
+    "@types/ws": "^8.18.1",
+    "eslint": "^9.39.4",
+    "globals": "^17.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.58.2"
+  }
+}
