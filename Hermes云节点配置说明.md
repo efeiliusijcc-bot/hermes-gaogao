@@ -24,9 +24,9 @@
 ```env
 HERMES_BASE_URL=http://74.121.148.204:1888/v1
 HERMES_API_KEY=
-HERMES_MODEL=hermes/report-agent
+HERMES_MODEL=openclaw/report-agent
 HERMES_QA_AGENT_ID=qa-agent
-HERMES_QA_MODEL=hermes/qa-agent
+HERMES_QA_MODEL=openclaw/qa-agent
 HERMES_QA_MODE=direct_pg
 
 PGVECTOR_DATABASE_URL=

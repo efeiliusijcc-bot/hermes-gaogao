@@ -56,9 +56,9 @@ docker run -d \
   -e PORT=1555 \
   -e HERMES_BASE_URL=http://hermes:18789/v1 \
   -e HERMES_API_KEY=${HERMES_API_KEY} \
-  -e HERMES_MODEL=${HERMES_MODEL:-hermes/report-agent} \
+  -e HERMES_MODEL=${HERMES_MODEL:-openclaw/report-agent} \
   -e HERMES_QA_AGENT_ID=${HERMES_QA_AGENT_ID:-qa-agent} \
-  -e HERMES_QA_MODEL=${HERMES_QA_MODEL:-hermes/qa-agent} \
+  -e HERMES_QA_MODEL=${HERMES_QA_MODEL:-openclaw/qa-agent} \
   -e HERMES_QA_MODE=${HERMES_QA_MODE:-direct_pg} \
   -e HERMES_QA_TIMEOUT_MS=${HERMES_QA_TIMEOUT_MS:-900000} \
   -e HERMES_REMOTE_HOST= \

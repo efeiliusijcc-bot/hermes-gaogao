@@ -31,9 +31,9 @@ export const HERMES_HEALTH_URL =
   process.env.HERMES_HEALTH_URL || HERMES_BASE_URL.replace(/\/v1\/?$/, '/health');
 export const HERMES_API_KEY = process.env.HERMES_API_KEY || readGatewayToken() || 'hermes-local';
 export const HERMES_DEVICE_TOKEN = readDeviceAuthToken();
-export const HERMES_MODEL = process.env.HERMES_MODEL || 'hermes/report-agent';
+export const HERMES_MODEL = process.env.HERMES_MODEL || 'openclaw/report-agent';
 export const HERMES_QA_AGENT_ID = process.env.HERMES_QA_AGENT_ID || 'qa-agent';
-export const HERMES_QA_MODEL = process.env.HERMES_QA_MODEL || 'hermes/qa-agent';
+export const HERMES_QA_MODEL = process.env.HERMES_QA_MODEL || 'openclaw/qa-agent';
 export const HERMES_QA_MODE = process.env.HERMES_QA_MODE || 'direct_pg';
 export const DIRECT_QA_BASE_URL = process.env.DIRECT_QA_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 export const DIRECT_QA_API_KEY = process.env.DIRECT_QA_API_KEY || process.env.OPENAI_API_KEY || '';

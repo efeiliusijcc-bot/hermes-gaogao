@@ -18,11 +18,12 @@ For local testing against the cloud Hermes node:
 ```env
 HERMES_BASE_URL=http://74.121.148.204:1888/v1
 HERMES_API_KEY=
-HERMES_MODEL=hermes/report-agent
+HERMES_MODEL=openclaw/report-agent
 ```
 
 Keep using the existing pgvector database by setting `PGVECTOR_DATABASE_URL` in `.env`.
 Do not commit real tokens, database passwords, or `.env` files.
+Hermes currently accepts model IDs in the `openclaw/<agentId>` format; keep the `HERMES_*` variable names and use `openclaw/report-agent` as the model value.
 
 For Docker deployment on the same host/network as the `hermes` container:
 
