@@ -261,6 +261,14 @@ export class HermesService {
       'sys.exit(proc.returncode)',
     ].join('\n');
 
+    return this.runHermesRemoteCliScript(remoteScript, 1);
+  }
+
+  private runHermesRemoteCliScript(remoteScript: string, attemptsRemaining: number): Promise<string> {
+    const keyPath = HERMES_REMOTE_SSH_KEY.startsWith('~')
+      ? path.join(os.homedir(), HERMES_REMOTE_SSH_KEY.slice(1))
+      : HERMES_REMOTE_SSH_KEY;
+
     return new Promise((resolve, reject) => {
       const args = [
         '-i',
@@ -291,7 +299,14 @@ export class HermesService {
         const stdout = Buffer.concat(chunks).toString('utf-8');
         const stderr = Buffer.concat(errorChunks).toString('utf-8');
         if (code !== 0) {
-          reject(new Error(`Hermes remote CLI failed: ${stderr || `exit code ${code}`}`));
+          const message = stderr || `exit code ${code}`;
+          if (attemptsRemaining > 0 && /Invalid API Key|invalid_key|HTTP 401|Error code: 401/i.test(message)) {
+            setTimeout(() => {
+              this.runHermesRemoteCliScript(remoteScript, attemptsRemaining - 1).then(resolve, reject);
+            }, 5_000);
+            return;
+          }
+          reject(new Error(`Hermes remote CLI failed: ${message}`));
           return;
         }
         if (stderr.trim()) console.warn(`Hermes remote CLI stderr: ${stderr.trim().slice(0, 4000)}`);
