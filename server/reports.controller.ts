@@ -17,7 +17,7 @@ export class ReportsController {
   }
 
   @Get()
-  list(
+  async list(
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('type') type?: string,
@@ -29,6 +29,15 @@ export class ReportsController {
   @Get(':jobId')
   async get(@Param('jobId') jobId: string) {
     const job = await this.reports.getJobWithRecoveredReport(jobId);
+    if (!job) {
+      throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
+    }
+    return this.reports.serializeJob(job);
+  }
+
+  @Post(':jobId/cancel')
+  async cancel(@Param('jobId') jobId: string) {
+    const job = await this.reports.cancelJob(jobId);
     if (!job) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -55,14 +64,16 @@ export class ReportsController {
 
   @Sse(':jobId/events')
   events(@Param('jobId') jobId: string): Observable<MessageEvent> {
-    const job = this.reports.getJob(jobId);
-    const stream = this.reports.getStream(jobId);
-
     return new Observable((subscriber) => {
+      void (async () => {
+        await this.reports.waitUntilReady();
+        const job = this.reports.getJob(jobId);
+        const stream = this.reports.getStream(jobId);
+
       if (!job) {
         subscriber.next({ data: { type: 'error', message: 'Job not found' } as ServerEvent } as MessageEvent);
         subscriber.complete();
-        return undefined;
+        return;
       }
 
       for (const event of job.events) {
@@ -72,7 +83,7 @@ export class ReportsController {
       if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
         subscriber.next({ data: { type: 'done', jobId } as ServerEvent } as MessageEvent);
         subscriber.complete();
-        return undefined;
+        return;
       }
 
       if (!stream) {
@@ -80,14 +91,22 @@ export class ReportsController {
           data: { type: 'error', message: 'Job event stream is unavailable after service restart.' } as ServerEvent,
         } as MessageEvent);
         subscriber.complete();
-        return undefined;
+        return;
       }
 
       const subscription = stream.subscribe({
         next: (event) => subscriber.next({ data: event } as MessageEvent),
         complete: () => subscriber.complete(),
       });
-      return () => subscription.unsubscribe();
+        subscriber.add(() => subscription.unsubscribe());
+      })().catch((error) => {
+        subscriber.next({
+          data: { type: 'error', message: error instanceof Error ? error.message : String(error) } as ServerEvent,
+        } as MessageEvent);
+        subscriber.complete();
+      });
+
+      return undefined;
     });
   }
 

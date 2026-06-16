@@ -39,6 +39,35 @@ function execSsh(command: string, timeoutMs = 30000): Promise<string> {
   });
 }
 
+function execSshWithInput(command: string, input: string, timeoutMs = 30000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const args = [...sshArgs(), command];
+    const child = execFile(SSH_EXE, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(`SSH exec failed: ${stderr || error.message}`));
+        return;
+      }
+      resolve(stdout);
+    });
+    child.stdin?.end(input);
+  });
+}
+
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function reportJobDirFor(filePath: string): string | null {
+  const reportRoot = HERMES_REMOTE_REPORT_DIR.replace(/\/+$/g, '');
+  const normalized = filePath.replace(/\\/g, '/');
+  if (normalized === reportRoot) return reportRoot;
+  if (!normalized.startsWith(`${reportRoot}/`)) return null;
+  const rest = normalized.slice(reportRoot.length + 1);
+  const jobId = rest.split('/').find(Boolean);
+  if (!jobId) return reportRoot;
+  return `${reportRoot}/${jobId}`;
+}
+
 export interface RemoteDirent {
   name: string;
   isFile: boolean;
@@ -77,7 +106,12 @@ export class RemoteFileService {
       return;
     }
     const b64 = Buffer.from(content, 'utf-8').toString('base64');
-    await execSsh(`mkdir -p '${path.dirname(filePath)}' && echo '${b64}' | base64 -d > '${filePath}'`);
+    const reportJobDir = reportJobDirFor(filePath);
+    const chown = reportJobDir ? ` && chown -R 10000:10000 ${shQuote(reportJobDir)}` : '';
+    await execSshWithInput(
+      `mkdir -p ${shQuote(path.dirname(filePath))} && base64 -d > ${shQuote(filePath)}${chown}`,
+      b64,
+    );
   }
 
   async readdir(dirPath: string): Promise<RemoteDirent[]> {
@@ -125,7 +159,9 @@ export class RemoteFileService {
       await fs.promises.mkdir(dirPath, { recursive: true });
       return;
     }
-    await execSsh(`mkdir -p '${dirPath}'`);
+    const reportJobDir = reportJobDirFor(dirPath);
+    const chown = reportJobDir ? ` && chown -R 10000:10000 ${shQuote(reportJobDir)}` : '';
+    await execSsh(`mkdir -p ${shQuote(dirPath)}${chown}`);
   }
 
   async exists(filePath: string): Promise<boolean> {

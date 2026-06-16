@@ -25,6 +25,7 @@ import {
   HERMES_REMOTE_SSH_KEY,
   HERMES_REMOTE_USER,
   HERMES_RUN_MODE,
+  HERMES_RUNS_URL,
   HERMES_STATE_DIR,
   REPORT_TIMEOUT_MS,
 } from './config.js';
@@ -46,6 +47,7 @@ export class HermesApprovalRequiredError extends Error {
 const PLAN_MODEL_TIMEOUT_MS = Number(process.env.REPORT_PLAN_TIMEOUT_MS || 25000);
 const PLAN_SEARCH_QUERY_TIMEOUT_MS = Number(process.env.REPORT_PLAN_SEARCH_QUERY_TIMEOUT_MS || 2500);
 const GATEWAY_FINAL_POLL_INTERVAL_MS = 2000;
+const RUNS_API_POLL_INTERVAL_MS = Number(process.env.HERMES_RUNS_POLL_INTERVAL_MS || 2000);
 const SSH_EXE = process.platform === 'win32'
   ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
   : 'ssh';
@@ -116,32 +118,98 @@ export class HermesService {
   }
 
   async runReport(input: RunInput): Promise<RunResult> {
+    if (HERMES_RUN_MODE === 'runs') return this.runReportViaRunsApi(input);
     if (HERMES_RUN_MODE === 'remote_cli') return this.runReportViaRemoteCli(input);
+    if (HERMES_RUN_MODE === 'http') return this.runReportViaHttpSse(input);
 
+    return this.runReportViaHttpSse(input);
+  }
+
+  async runReportViaRunsApi(input: RunInput): Promise<RunResult> {
     const prompt = this.buildReportPrompt(input);
-    input.onEvent({ type: 'stage', stage: 'start', message: 'Preparing Hermes non-streaming request...' });
+    input.onEvent({ type: 'stage', stage: 'start', message: 'Preparing Hermes runs API request...' });
     input.onEvent({
       type: 'stage',
       stage: 'running',
-      message: `Running Hermes report-agent with stream=false (timeout ${Math.ceil(REPORT_TIMEOUT_MS / 1000)}s)...`,
+      message: `Running Hermes report-agent through /v1/runs (timeout ${Math.ceil(REPORT_TIMEOUT_MS / 1000)}s)...`,
+    });
+
+    const startedAt = Date.now();
+    const created = await this.fetchHermesRunsJson(HERMES_RUNS_URL, {
+      method: 'POST',
+      body: JSON.stringify({
+        model: HERMES_MODEL,
+        input: prompt,
+        ...(input.requestUser ? { user: input.requestUser } : {}),
+        metadata: {
+          jobId: input.jobId,
+          skill: input.skill,
+          source: 'hermes-gaogao',
+        },
+      }),
+    });
+
+    const immediateText = this.extractRunsFinalText(created).trim();
+    if (this.isFinalReportText(immediateText, input.skill === 'write-hb')) {
+      input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes runs API returned a complete response.' });
+      this.assertNoApprovalCommands(immediateText);
+      return { markdown: immediateText, artifacts: { runMode: 'runs_api', hermesRunId: this.extractRunsId(created) || '' } };
+    }
+
+    const runId = this.extractRunsId(created);
+    if (!runId) {
+      const fallbackText = immediateText || JSON.stringify(created).slice(0, 2000);
+      throw new Error(`Hermes runs API did not return a run id or final report text. Response: ${fallbackText}`);
+    }
+
+    let announcedPoll = false;
+    while (Date.now() - startedAt < REPORT_TIMEOUT_MS) {
+      if (!announcedPoll) {
+        input.onEvent({
+          type: 'stage',
+          stage: 'waiting_final_report',
+          message: `Hermes run ${runId} is still running.`,
+        });
+        announcedPoll = true;
+      }
+
+      await this.sleep(RUNS_API_POLL_INTERVAL_MS);
+      const run = await this.fetchHermesRunsJson(`${HERMES_RUNS_URL.replace(/\/$/, '')}/${encodeURIComponent(runId)}`, {
+        method: 'GET',
+      });
+      const status = this.extractRunsStatus(run);
+      const text = this.extractRunsFinalText(run).trim();
+
+      if (this.isFinalReportText(text, input.skill === 'write-hb')) {
+        input.onEvent({ type: 'stage', stage: 'received', message: `Hermes run ${runId} completed and returned REPORT_FILE.` });
+        this.assertNoApprovalCommands(text);
+        return { markdown: text, artifacts: { runMode: 'runs_api', hermesRunId: runId, hermesRunStatus: status } };
+      }
+
+      if (this.isRunsTerminalStatus(status)) {
+        const errorText = this.extractRunsError(run) || text || JSON.stringify(run).slice(0, 2000);
+        throw new Error(`Hermes run ${runId} ended with status ${status || 'unknown'}: ${errorText}`);
+      }
+    }
+
+    throw new Error(`Hermes run ${runId} timed out.`);
+  }
+
+  async runReportViaHttpSse(input: RunInput): Promise<RunResult> {
+    const prompt = this.buildReportPrompt(input);
+    input.onEvent({ type: 'stage', stage: 'start', message: 'Preparing Hermes HTTP/SSE request...' });
+    input.onEvent({
+      type: 'stage',
+      stage: 'running',
+      message: `Running Hermes report-agent through HTTP/SSE fallback (timeout ${Math.ceil(REPORT_TIMEOUT_MS / 1000)}s)...`,
     });
 
     const markdown = await this.completeReportPrompt(prompt, input.requestUser);
-    if (!markdown) throw new Error('Hermes report-agent returned no text.');
+    if (!markdown) throw new Error('Hermes HTTP/SSE fallback returned no text.');
 
-    const wholeReportError = this.extractTextError(markdown);
-    if (wholeReportError) {
-      input.onEvent({
-        type: 'stage',
-        stage: 'segmenting',
-        message: `Whole-report generation failed (${wholeReportError}); retrying as segmented non-streaming generation.`,
-      });
-      return this.runReportSegmented(input, prompt);
-    }
-
-    input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes returned a complete non-streaming response.' });
+    input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes HTTP/SSE fallback returned a complete response.' });
     this.assertNoApprovalCommands(markdown);
-    return { markdown, artifacts: {} };
+    return { markdown, artifacts: { runMode: 'http_sse' } };
   }
 
   private async runReportViaRemoteCli(input: RunInput): Promise<RunResult> {
@@ -485,6 +553,83 @@ export class HermesService {
     return trimmed.length >= 1000 && !/REPORT_FILE\s*:/i.test(trimmed);
   }
 
+  private async fetchHermesRunsJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {
+    const headers = new Headers(init.headers);
+    headers.set('Content-Type', 'application/json');
+    if (HERMES_API_KEY) headers.set('Authorization', `Bearer ${HERMES_API_KEY}`);
+
+    const response = await fetch(url, { ...init, headers });
+    const text = await response.text();
+    const payload = this.parseJsonObject(text) || { raw: text };
+    if (!response.ok) {
+      const errorText = this.extractRunsError(payload) || text || response.statusText;
+      throw new Error(`Hermes runs API ${response.status} ${response.statusText}: ${errorText}`);
+    }
+    return payload;
+  }
+
+  private extractRunsId(payload: unknown): string {
+    const root = this.asRecord(payload);
+    const result = this.asRecord(root.result);
+    return this.firstString(root, ['id', 'run_id', 'runId']) || this.firstString(result, ['id', 'run_id', 'runId']);
+  }
+
+  private extractRunsStatus(payload: unknown): string {
+    const root = this.asRecord(payload);
+    const result = this.asRecord(root.result);
+    return (this.firstString(root, ['status', 'state']) || this.firstString(result, ['status', 'state'])).toLowerCase();
+  }
+
+  private extractRunsError(payload: unknown): string {
+    const root = this.asRecord(payload);
+    const result = this.asRecord(root.result);
+    const error = root.error ?? result.error;
+    if (typeof error === 'string') return error;
+    if (error && typeof error === 'object') {
+      const record = error as Record<string, unknown>;
+      return this.firstString(record, ['message', 'detail', 'error', 'code']) || JSON.stringify(record).slice(0, 1000);
+    }
+    return this.firstString(root, ['message', 'detail']) || this.firstString(result, ['message', 'detail']);
+  }
+
+  private extractRunsFinalText(payload: unknown): string {
+    const found = this.findRunsFinalText(payload, new Set<unknown>());
+    return found.trim();
+  }
+
+  private findRunsFinalText(value: unknown, seen: Set<unknown>): string {
+    if (typeof value === 'string') {
+      return /REPORT_FILE\s*:/i.test(value) || value.length >= 1000 ? value : '';
+    }
+    if (!value || typeof value !== 'object' || seen.has(value)) return '';
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.findRunsFinalText(item, seen)).filter(Boolean).join('\n\n');
+    }
+
+    const record = value as Record<string, unknown>;
+    const direct =
+      this.firstString(record, ['output_text', 'final_response', 'finalResponse', 'response', 'text', 'content', 'message']) ||
+      '';
+    if (/REPORT_FILE\s*:/i.test(direct) || direct.length >= 1000) return direct;
+
+    for (const key of ['output', 'outputs', 'messages', 'choices', 'data', 'result', 'payloads', 'content']) {
+      const nested = this.findRunsFinalText(record[key], seen);
+      if (nested) return nested;
+    }
+
+    return '';
+  }
+
+  private isRunsTerminalStatus(status: string): boolean {
+    return /^(completed|complete|succeeded|success|failed|error|cancelled|canceled|timeout|timed_out|expired)$/i.test(status);
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -780,8 +925,11 @@ export class HermesService {
 
     const skillLabel = this.getSkillLabel(input);
     const extraRequirements = this.getSkillRequirements(input);
+    const workflowContract = this.getSkillWorkflowContract(input);
 
     return [
+      ...workflowContract,
+      workflowContract.length ? '' : '',
       `请使用 Hermes Skill: ${input.skill} 生成${skillLabel}。`,
       '',
       '输入参数如下：',
@@ -799,6 +947,46 @@ export class HermesService {
       '格式硬约束B：K报最终结构必须是：居中加粗标题；**编号：**K-YYYY-MMDD-NNN；**签发日期：**YYYY年M月D日；一段无标题开场自然段；## **一、基本情况**；## **二、涉我风险**；## **三、对策建议**；## **四、参考资料**。不得在“一、基本情况”前插入任何“导语”或“摘要”模块。',
       ...extraRequirements,
     ].join('\n');
+  }
+
+  private getSkillWorkflowContract(input: RunInput): string[] {
+    if (input.skill !== 'write-hb') return [];
+
+    const shortJobId = input.jobId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'job';
+    const reportDir = `${HERMES_CONTAINER_REPORT_DIR.replace(/\/$/, '')}/${input.jobId}`;
+    const finalPath = `${reportDir}/final/report.md`;
+    const harnessPath = '/opt/data/workspace/report-agent/skills/web-research-firecrawl/scripts/harness_cli.py';
+
+    return [
+      'WORKFLOW ENFORCEMENT CONTRACT FOR HERMES',
+      'This contract is mandatory execution policy, not background guidance.',
+      `Job id: ${input.jobId}`,
+      `Short job id: ${shortJobId}`,
+      `Report directory: ${reportDir}`,
+      `Final report path: ${finalPath}`,
+      `Research harness: ${harnessPath}`,
+      '',
+      'Mandatory execution order:',
+      '1. Load the write-hb skill and treat SKILL.md plus workflow.yaml as binding instructions.',
+      `2. Verify or create ${reportDir}/context.json before public web research.`,
+      `3. Preserve existing PG/vector artifacts under ${reportDir}/database/ and use them as first-class sources.`,
+      `4. The first public research action MUST run: python ${harnessPath} plan --job-dir ${reportDir}`,
+      `5. The plan step MUST create ${reportDir}/plan.json before any large page extraction or summarization.`,
+      `6. Run: python ${harnessPath} run --job-dir ${reportDir} for every planned group and create ${reportDir}/research/research_*.json.`,
+      `7. Merge research outputs into ${reportDir}/research/consolidated.json.`,
+      `8. Only after plan.json, research/research_*.json, and research/consolidated.json exist, write ${finalPath}.`,
+      `9. The final assistant response must be exactly: REPORT_FILE: ${finalPath}`,
+      '',
+      'Tool restrictions:',
+      '- Do not use Hermes native web_search or web_extract as the main research path.',
+      '- Do not directly use Tavily Extract through native Hermes tools for large-page summarization.',
+      '- Native web tools are allowed only after the harness plan/run path fails, and you must record firecrawl_fallback_reason in the job artifacts.',
+      '',
+      'Failure rules:',
+      '- If plan.json is missing, stop and report a workflow failure instead of continuing.',
+      '- If no research/research_*.json files exist, stop and report a workflow failure.',
+      '- If research/consolidated.json is missing, do not write the final report.',
+    ];
   }
 
   private getSkillLabel(input: RunInput): string {

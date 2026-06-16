@@ -29,6 +29,7 @@ function readDeviceAuthToken(): string | undefined {
 export const HERMES_BASE_URL = process.env.HERMES_BASE_URL || 'http://localhost:18789/v1';
 export const HERMES_HEALTH_URL =
   process.env.HERMES_HEALTH_URL || HERMES_BASE_URL.replace(/\/v1\/?$/, '/health');
+export const HERMES_RUNS_URL = process.env.HERMES_RUNS_URL || HERMES_BASE_URL.replace(/\/v1\/?$/, '/v1/runs');
 export const HERMES_API_KEY = process.env.HERMES_API_KEY || readGatewayToken() || 'hermes-local';
 export const HERMES_DEVICE_TOKEN = readDeviceAuthToken();
 export const HERMES_MODEL = process.env.HERMES_MODEL || 'openclaw/report-agent';
@@ -68,3 +69,13 @@ export const HERMES_REMOTE_CLI_HOME = process.env.HERMES_REMOTE_CLI_HOME || '/op
 export const HERMES_REMOTE_CLI_PROVIDER = process.env.HERMES_REMOTE_CLI_PROVIDER || '';
 export const HERMES_REMOTE_CLI_MODEL = process.env.HERMES_REMOTE_CLI_MODEL || '';
 export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
+
+export const REPORT_AGENT_PROVIDER = process.env.REPORT_AGENT_PROVIDER || 'hermes';
+export const REPORT_AGENT_BASE_URL =
+  process.env.REPORT_AGENT_BASE_URL || process.env.DIRECT_QA_BASE_URL || DIRECT_QA_BASE_URL;
+export const REPORT_AGENT_API_KEY =
+  process.env.REPORT_AGENT_API_KEY || process.env.DIRECT_QA_API_KEY || DIRECT_QA_API_KEY;
+export const REPORT_AGENT_MODEL =
+  process.env.REPORT_AGENT_MODEL || process.env.DIRECT_QA_MODEL || DIRECT_QA_MODEL;
+export const REPORT_AGENT_CLI_COMMAND = process.env.REPORT_AGENT_CLI_COMMAND || '';
+export const REPORT_AGENT_CLI_ARGS_JSON = process.env.REPORT_AGENT_CLI_ARGS_JSON || '[]';

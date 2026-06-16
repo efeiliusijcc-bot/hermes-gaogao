@@ -181,6 +181,8 @@ export function useReportJobs() {
   let progressPollJobId = null
   let activeExecutionLogJobId = null
   let historyOpenRequestId = 0
+  let jobListRequestId = 0
+  let recentJobsRequestId = 0
   let databaseSourcesRequestId = 0
   const activeWorkspaceSnapshot = ref(null)
   const executionLogsByJobId = new Map()
@@ -202,7 +204,11 @@ export function useReportJobs() {
   })
 
   const filteredJobs = computed(() => {
-    return [...jobList.value].sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt))
+    return [...jobList.value].sort((a, b) => {
+      const createdDiff = new Date(b.createdAt) - new Date(a.createdAt)
+      if (createdDiff) return createdDiff
+      return String(b.jobId || '').localeCompare(String(a.jobId || ''))
+    })
   })
 
   const succeededCount = computed(() => listStatusCounts.value.succeeded)
@@ -396,6 +402,7 @@ export function useReportJobs() {
     if (recentLoadingMore.value) return
     if (!reset && !recentHasMore.value) return
 
+    const requestId = ++recentJobsRequestId
     recentLoadingMore.value = true
     recentLoadError.value = ''
     try {
@@ -406,6 +413,7 @@ export function useReportJobs() {
         pageSize: recentPageSize,
         type: 'all',
       })
+      if (requestId !== recentJobsRequestId) return
       const items = (Array.isArray(response) ? response : response.items || []).map((item) => ({
         ...item,
         displayTitle: drafts[item.jobId]?.title || undefined,
@@ -426,9 +434,10 @@ export function useReportJobs() {
         recentHasMore.value = recentPage.value < (response.totalPages || 1)
       }
     } catch (error) {
+      if (requestId !== recentJobsRequestId) return
       recentLoadError.value = error instanceof Error ? error.message : String(error)
     } finally {
-      recentLoadingMore.value = false
+      if (requestId === recentJobsRequestId) recentLoadingMore.value = false
     }
   }
 
@@ -560,6 +569,31 @@ export function useReportJobs() {
       databaseSources.value = null
     } finally {
       if (requestId === databaseSourcesRequestId && shouldApply()) databaseSourcesLoading.value = false
+    }
+  }
+
+  function applyLiveDatabaseSources(sources, jobId = activeExecutionLogJobId) {
+    if (!Array.isArray(sources)) return
+    const nextSources = sources.filter(Boolean)
+    const nextData = {
+      ...(databaseSources.value && typeof databaseSources.value === 'object' ? databaseSources.value : {}),
+      status: nextSources.length ? 'hit' : 'empty',
+      sources: nextSources,
+      fallbackReason: '',
+      totalHits: Math.max(databaseSources.value?.totalHits || 0, nextSources.length),
+      updatedAt: new Date().toISOString(),
+      retrievalMode: 'vector',
+      queryPlan: databaseSources.value?.queryPlan || null,
+      vectorPlan: {
+        ...(databaseSources.value?.vectorPlan || {}),
+        returnedSources: nextSources.length,
+      },
+    }
+    databaseSources.value = nextData
+    databaseSourcesLoading.value = false
+    databaseSourcesRequestId += 1
+    if (activeWorkspaceSnapshot.value?.job?.jobId === jobId) {
+      patchActiveWorkspaceSnapshot({ databaseSources: nextData, __force: true })
     }
   }
 
@@ -729,6 +763,17 @@ export function useReportJobs() {
 
     if (event.type === 'error') {
       const message = event.message || '任务失败'
+      if (String(message).includes('Job event stream is unavailable after service restart')) {
+        appendExecutionLog({
+          type: 'stage',
+          label: '执行日志',
+          status: 'fallback',
+          summary: '服务重启后实时日志通道不可用，已切换为任务状态轮询。',
+        }, eventJobId)
+        closeJobEvents()
+        startProgressPolling(eventJobId)
+        return
+      }
       if (visibleForEvent) {
         errorMessage.value = message
         phase.value = 'error'
@@ -747,6 +792,10 @@ export function useReportJobs() {
       }
       stopProgressPolling(eventJobId)
       closeJobEvents()
+    }
+
+    if (event.type === 'sources') {
+      applyLiveDatabaseSources(event.sources, eventJobId)
     }
 
     if (event.type === 'done') {
@@ -1511,6 +1560,7 @@ export function useReportJobs() {
 
   async function loadJobList(switchView = true, overrides = {}) {
     if (switchView) currentView.value = 'list'
+    const requestId = ++jobListRequestId
     try {
       if (overrides.page !== undefined) listPage.value = overrides.page
       if (overrides.pageSize !== undefined) listPageSize.value = overrides.pageSize
@@ -1522,6 +1572,7 @@ export function useReportJobs() {
         pageSize: listPageSize.value,
         q: listSearch.value.trim(),
       })
+      if (requestId !== jobListRequestId) return
       const items = Array.isArray(response) ? response : response.items || []
       jobList.value = items.map((item) => ({
         ...item,
@@ -1542,6 +1593,7 @@ export function useReportJobs() {
         listStatusCounts.value = response.statusCounts || { succeeded: 0, running: 0 }
       }
     } catch (error) {
+      if (requestId !== jobListRequestId) return
       errorMessage.value = error instanceof Error ? error.message : String(error)
       pushLog(`历史任务加载失败：${errorMessage.value}`)
     }

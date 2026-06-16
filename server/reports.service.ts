@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { marked } from 'marked';
 import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
+import { HERMES_RUN_MODE, REPORT_AGENT_PROVIDER } from './config.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
@@ -134,6 +135,7 @@ interface ReportSourceSummary {
 export class ReportsService {
   private readonly jobs = new Map<string, JobRecord>();
   private readonly streams = new Map<string, Subject<ServerEvent>>();
+  private readonly jobsReady: Promise<void>;
   private dailySequence = new Map<string, number>();
 
   constructor(
@@ -141,7 +143,7 @@ export class ReportsService {
     private readonly remoteFs: RemoteFileService,
     private readonly vectorSources: VectorSourceService,
   ) {
-    void this.loadPersistedJobs();
+    this.jobsReady = this.loadPersistedJobs();
   }
 
   createJob(req: CreateJobRequest): { jobId: string; status: string } {
@@ -163,12 +165,21 @@ export class ReportsService {
     this.jobs.set(jobId, job);
     this.streams.set(jobId, new Subject<ServerEvent>());
     void this.writeJobState(job);
-    setImmediate(() => void this.runJob(job));
+    setImmediate(() => {
+      void this.runJob(job).catch((error) => {
+        console.error('runJob unhandled failure:', error instanceof Error ? error.message : error);
+      });
+    });
 
     return { jobId, status: job.status };
   }
 
-  listJobs(options: JobListOptions = {}) {
+  async waitUntilReady(): Promise<void> {
+    await this.jobsReady;
+  }
+
+  async listJobs(options: JobListOptions = {}) {
+    await this.jobsReady;
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 20), 100);
     const type = this.normalizeTypeFilter(options.type);
@@ -177,7 +188,11 @@ export class ReportsService {
     const filtered = Array.from(this.jobs.values())
       .filter((job) => type === 'all' || this.jobTypeKey(job) === type)
       .filter((job) => !query || this.jobSearchText(job).includes(query))
-      .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      .sort((a, b) => {
+        const createdDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        if (createdDiff) return createdDiff;
+        return b.jobId.localeCompare(a.jobId);
+      });
 
     const total = filtered.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -202,15 +217,42 @@ export class ReportsService {
     return this.jobs.get(jobId);
   }
 
-  async getJobWithRecoveredReport(jobId: string): Promise<JobRecord | undefined> {
+  async cancelJob(jobId: string): Promise<JobRecord | undefined> {
+    await this.jobsReady;
     const job = this.jobs.get(jobId);
     if (!job) return undefined;
-    await this.recoverJobFromExistingReport(job, 'detail_lookup');
+    if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') return job;
+
+    job.status = 'cancelled';
+    job.stage = 'cancelled';
+    job.errorMessage = '任务已手动停止。';
+    job.updatedAt = new Date().toISOString();
+    this.pushEvent(job, { type: 'stage', stage: 'cancelled', message: '任务已手动停止。' });
+    this.pushEvent(job, { type: 'done', jobId });
+    this.streams.get(jobId)?.complete();
+    this.streams.delete(jobId);
+    await this.writeJobState(job);
+    return job;
+  }
+
+  async getJobWithRecoveredReport(jobId: string): Promise<JobRecord | undefined> {
+    await this.jobsReady;
+    const job = this.jobs.get(jobId);
+    if (!job) return undefined;
+    if (!(job.status === 'succeeded' && job.resultPath)) {
+      await this.recoverJobFromExistingReport(job, 'detail_lookup');
+    }
     return job;
   }
 
   getStream(jobId: string): Subject<ServerEvent> | undefined {
-    return this.streams.get(jobId);
+    const existing = this.streams.get(jobId);
+    if (existing) return existing;
+    const job = this.jobs.get(jobId);
+    if (!job || job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') return undefined;
+    const stream = new Subject<ServerEvent>();
+    this.streams.set(jobId, stream);
+    return stream;
   }
 
   getEventLog(jobId: string): { jobId: string; items: EventLogEntry[] } | undefined {
@@ -349,7 +391,10 @@ export class ReportsService {
       });
     }
 
-    const artifactEvidence = await this.collectTrustedProgressArtifactEvidence(job);
+    const artifactEvidence =
+      job.status === 'succeeded' || Boolean(job.resultPath)
+        ? await this.collectTrustedProgressArtifactEvidence(job)
+        : [];
     for (const item of artifactEvidence) addEvidence(item.key, item.status, item.evidence);
 
     if (job.status === 'succeeded') {
@@ -592,7 +637,9 @@ export class ReportsService {
   async getResultFromDisk(jobId: string) {
     const job = this.jobs.get(jobId);
     if (!job) return undefined;
-    await this.recoverJobFromExistingReport(job, 'result_lookup');
+    if (!(job.status === 'succeeded' && job.resultPath)) {
+      await this.recoverJobFromExistingReport(job, 'result_lookup');
+    }
     if (job.status !== 'succeeded') return null;
 
     const reportDir = this.remoteFs.remoteDir;
@@ -631,7 +678,9 @@ export class ReportsService {
   async getMarkdownFromDisk(jobId: string) {
     const job = this.jobs.get(jobId);
     if (!job) return undefined;
-    await this.recoverJobFromExistingReport(job, 'download_lookup');
+    if (!(job.status === 'succeeded' && job.resultPath)) {
+      await this.recoverJobFromExistingReport(job, 'download_lookup');
+    }
     if (job.status !== 'succeeded' || !job.resultPath) return null;
 
     const markdown = await this.remoteFs.readFile(job.resultPath);
@@ -822,8 +871,140 @@ export class ReportsService {
       vectorDatabaseSources: result.sources,
       vectorDatabaseQueryPlan: result.queryPlan,
     };
+
+    await this.writeBackendDatabaseRecallArtifacts(job, enrichedContext, result, {
+      maxRows,
+      lookbackDays,
+      databaseOptions,
+    });
+
+    const liveSources = this.normalizeVectorSources(result.sources).slice(0, 50);
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'database_sources',
+      message: liveSources.length
+        ? `PG vector sources recalled: ${liveSources.length} items.`
+        : 'PG vector source recall completed with no matching sources.',
+    });
+    this.pushEvent(job, { type: 'sources', sources: liveSources.map((source) => ({ ...source })) });
+
     payload.known_context = JSON.stringify(enrichedContext, null, 2);
     return payload;
+  }
+
+  private async writeBackendDatabaseRecallArtifacts(
+    job: JobRecord,
+    context: Record<string, unknown>,
+    result: VectorSearchResult,
+    options: {
+      maxRows: number;
+      lookbackDays: number;
+      databaseOptions: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const databaseDir = this.remoteFs.joinPath(jobDir, 'database');
+    const now = new Date().toISOString();
+    const vectorSources = result.sources.slice(0, options.maxRows);
+    const databaseSources = vectorSources.map((source, index) => ({
+      id: `pg-vector-${index + 1}`,
+      source_type: 'pg_vector',
+      retrieval_channel: 'backend_pre_recall',
+      ch_title: source.title,
+      data_source_url: source.url,
+      summary: source.summary,
+      content_excerpt: source.contentExcerpt || '',
+      website_name: source.websiteName,
+      publish_time: source.publishTime,
+      similarity: source.similarity,
+      relevance_score: source.relevanceScore,
+      relevance_level: this.databaseRelevanceLevel(source.relevanceScore),
+      relevance_reason: '后端在调用编报执行器前通过 PostgreSQL pgvector 语义召回命中。',
+      needs_verification: true,
+    }));
+    const queryPlan = {
+      schema_version: 1,
+      generated_by: 'backend_pre_recall',
+      generated_at: now,
+      retrieval_mode: 'pg_vector',
+      mcp_server: 'pg-sources',
+      actual_connector: 'backend_pgvector_direct',
+      compatibility_note: 'This artifact mirrors the old MCP pg-sources output shape, but was produced by backend pre-recall before invoking the report agent.',
+      storageMode: result.queryPlan.storageMode,
+      sourceTable: result.queryPlan.sourceTable || String(options.databaseOptions.sourceTable || ''),
+      activeTable: result.queryPlan.activeTable,
+      indexTable: result.queryPlan.indexTable,
+      embeddingModel: result.queryPlan.embeddingModel,
+      embeddingDimensions: result.queryPlan.embeddingDimensions,
+      indexedRows: result.queryPlan.indexedRows,
+      lookbackDays: options.lookbackDays,
+      maxMetadataRows: options.maxRows,
+      query_terms: this.databaseQueryTerms(context),
+      vector_hits: result.queryPlan.vectorHits,
+      keyword_boosted_hits: result.queryPlan.keywordBoostedHits,
+      total_hits: result.totalHits,
+      returned_sources: databaseSources.length,
+      broadening_applied: result.queryPlan.broadeningApplied,
+      content_rows_read: Math.min(databaseSources.length, this.boundInt(options.databaseOptions.maxContentRows, 8, 0, 20)),
+      status: result.status,
+      database_source_fallback_reason: result.status === 'hit' ? '' : result.queryPlan.fallbackReason || 'PG vector pre-recall returned no usable source.',
+      fallback_mcp: '',
+    };
+
+    await this.remoteFs.mkdir(databaseDir);
+    await Promise.all([
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(jobDir, 'context.json'),
+        `${JSON.stringify(context, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'vector_sources.json'),
+        `${JSON.stringify(vectorSources, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'database_sources.json'),
+        `${JSON.stringify(databaseSources, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'database_query_plan.json'),
+        `${JSON.stringify(queryPlan, null, 2)}\n`,
+      ),
+    ]);
+
+    job.artifacts = {
+      ...job.artifacts,
+      hermesJobDir: jobDir,
+      backendDatabaseSourcesPath: this.remoteFs.joinPath(databaseDir, 'database_sources.json'),
+      backendDatabaseQueryPlanPath: this.remoteFs.joinPath(databaseDir, 'database_query_plan.json'),
+      backendVectorSourcesPath: this.remoteFs.joinPath(databaseDir, 'vector_sources.json'),
+    };
+    await this.writeJobState(job);
+  }
+
+  private databaseRelevanceLevel(score: number): 'high' | 'medium' | 'low' {
+    if (score >= 0.72) return 'high';
+    if (score >= 0.55) return 'medium';
+    return 'low';
+  }
+
+  private databaseQueryTerms(context: Record<string, unknown>): string[] {
+    const terms = new Set<string>();
+    const add = (value: unknown) => {
+      const text = String(value ?? '').trim();
+      if (text) terms.add(this.sanitizeLogText(text, 120));
+    };
+    add(context.topic);
+    const intent = context.databaseQueryIntent && typeof context.databaseQueryIntent === 'object'
+      ? context.databaseQueryIntent as Record<string, unknown>
+      : {};
+    for (const key of ['topic', 'normalizedTopic']) add(intent[key]);
+    for (const key of ['coreTerms', 'entityTerms', 'actionTerms', 'domainTerms', 'ngrams', 'queries']) {
+      const values = intent[key];
+      if (Array.isArray(values)) values.slice(0, 20).forEach(add);
+    }
+    const selectedSearchQueries = context.selectedSearchQueries;
+    if (Array.isArray(selectedSearchQueries)) selectedSearchQueries.slice(0, 10).forEach(add);
+    return Array.from(terms).filter(Boolean).slice(0, 80);
   }
 
   private parseJsonObject(text: string): Record<string, unknown> | null {
@@ -860,40 +1041,92 @@ export class ReportsService {
       };
       let result;
       let recoveredReport: Awaited<ReturnType<typeof this.resolveHermesReportFile>> = null;
-      try {
-        result = await this.hermes.runReportViaGateway(runInput);
-      } catch (gatewayError) {
-        const message = this.sanitizeUserVisibleText(gatewayError instanceof Error ? gatewayError.message : String(gatewayError), 300);
-        this.pushEvent(job, {
-          type: 'stage',
-          stage: 'gateway_fallback',
-          message: `任务通道暂不可用，已切换为普通生成模式。${message}`,
-        });
-        recoveredReport = await this.resolveHermesReportFile('', startedAtMs);
-        if (recoveredReport) {
+      if (REPORT_AGENT_PROVIDER !== 'hermes') {
+        result = await this.hermes.runReport(runInput);
+      } else if (HERMES_RUN_MODE === 'runs') {
+        try {
+          result = await this.hermes.runReportViaRunsApi(runInput);
+        } catch (runsError) {
+          const message = this.sanitizeUserVisibleText(runsError instanceof Error ? runsError.message : String(runsError), 300);
           this.pushEvent(job, {
             type: 'stage',
-            stage: 'report_file_recovered',
-            message: `Recovered generated report file after empty Gateway response: ${recoveredReport.filePath}`,
+            stage: 'http_fallback',
+            message: `Hermes runs API failed; falling back to HTTP/SSE Gateway. ${message}`,
           });
-          result = { markdown: `REPORT_FILE: ${recoveredReport.filePath}`, artifacts: {} };
-        } else {
-          try {
-            result = await this.hermes.runReport(runInput);
-          } catch (fallbackError) {
-            recoveredReport = await this.resolveHermesReportFile('', startedAtMs);
-            if (!recoveredReport) throw fallbackError;
+          recoveredReport = await this.resolveHermesReportFile('', startedAtMs, job.jobId);
+          if (recoveredReport) {
             this.pushEvent(job, {
               type: 'stage',
               stage: 'report_file_recovered',
-              message: `Recovered generated report file after empty fallback response: ${recoveredReport.filePath}`,
+              message: `Recovered generated report file after Hermes runs API failure: ${recoveredReport.filePath}`,
+            });
+            result = { markdown: `REPORT_FILE: ${recoveredReport.filePath}`, artifacts: { runMode: 'runs_api_recovered' } };
+          } else {
+            result = await this.hermes.runReportViaHttpSse(runInput);
+          }
+        }
+      } else if (HERMES_RUN_MODE === 'remote_cli') {
+        try {
+          result = await this.hermes.runReport(runInput);
+        } catch (cliError) {
+          const message = this.sanitizeUserVisibleText(cliError instanceof Error ? cliError.message : String(cliError), 300);
+          this.pushEvent(job, {
+            type: 'stage',
+            stage: 'http_fallback',
+            message: `Hermes remote CLI failed; falling back to HTTP/SSE Gateway. ${message}`,
+          });
+          recoveredReport = await this.resolveHermesReportFile('', startedAtMs, job.jobId);
+          if (recoveredReport) {
+            this.pushEvent(job, {
+              type: 'stage',
+              stage: 'report_file_recovered',
+              message: `Recovered generated report file after remote CLI failure: ${recoveredReport.filePath}`,
+            });
+            result = { markdown: `REPORT_FILE: ${recoveredReport.filePath}`, artifacts: { runMode: 'remote_cli_recovered' } };
+          } else {
+            result = await this.hermes.runReportViaHttpSse(runInput);
+          }
+        }
+      } else if (HERMES_RUN_MODE === 'http') {
+        result = await this.hermes.runReportViaHttpSse(runInput);
+      } else {
+        try {
+          result = await this.hermes.runReportViaGateway(runInput);
+        } catch (gatewayError) {
+          const message = this.sanitizeUserVisibleText(gatewayError instanceof Error ? gatewayError.message : String(gatewayError), 300);
+          this.pushEvent(job, {
+            type: 'stage',
+            stage: 'gateway_fallback',
+            message: `任务通道暂不可用，已切换为普通生成模式。${message}`,
+          });
+          recoveredReport = await this.resolveHermesReportFile('', startedAtMs);
+          if (recoveredReport) {
+            this.pushEvent(job, {
+              type: 'stage',
+              stage: 'report_file_recovered',
+              message: `Recovered generated report file after empty Gateway response: ${recoveredReport.filePath}`,
             });
             result = { markdown: `REPORT_FILE: ${recoveredReport.filePath}`, artifacts: {} };
+          } else {
+            try {
+              result = await this.hermes.runReport(runInput);
+            } catch (fallbackError) {
+              recoveredReport = await this.resolveHermesReportFile('', startedAtMs);
+              if (!recoveredReport) throw fallbackError;
+              this.pushEvent(job, {
+                type: 'stage',
+                stage: 'report_file_recovered',
+                message: `Recovered generated report file after empty fallback response: ${recoveredReport.filePath}`,
+              });
+              result = { markdown: `REPORT_FILE: ${recoveredReport.filePath}`, artifacts: {} };
+            }
           }
         }
       }
+      if (this.isJobCancelled(job)) return;
 
       let resolvedReport = recoveredReport ?? (await this.resolveHermesReportFile(result.markdown, startedAtMs, job.jobId));
+      if (this.isJobCancelled(job)) return;
       const finalMarkdown = resolvedReport?.markdown ?? result.markdown;
       if (!resolvedReport && /^\s*REPORT_FILE\s*:/im.test(finalMarkdown)) {
         throw new Error('Hermes returned a REPORT_FILE pointer, but no valid Markdown report file was found.');
@@ -944,7 +1177,7 @@ export class ReportsService {
       }
 
       const message = this.sanitizeUserVisibleText(error instanceof Error ? error.message : String(error), 300);
-      const recovered = await this.recoverJobFromExistingReport(job, 'failure_handler');
+      const recovered = await this.safeRecoverJobFromExistingReport(job, 'failure_handler');
       if (recovered) {
         this.pushEvent(job, { type: 'done', jobId: job.jobId });
         this.streams.get(job.jobId)?.complete();
@@ -1477,6 +1710,19 @@ export class ReportsService {
     }
   }
 
+  private async safeRecoverJobFromExistingReport(job: JobRecord, reason: string): Promise<boolean> {
+    try {
+      return await this.recoverJobFromExistingReport(job, reason);
+    } catch (error) {
+      console.error('recoverJobFromExistingReport failed:', error instanceof Error ? error.message : error);
+      return false;
+    }
+  }
+
+  private isJobCancelled(job: JobRecord): boolean {
+    return String(job.status) === 'cancelled';
+  }
+
   private async reconcileInterruptedJob(job: JobRecord, reason: string): Promise<void> {
     if (job.status !== 'queued' && job.status !== 'running') return;
     if (this.streams.has(job.jobId)) return;
@@ -1641,6 +1887,7 @@ export class ReportsService {
     return (job.eventLog || []).some((entry) => {
       const text = [entry.phase, entry.status, entry.summary, entry.detail, entry.command].filter(Boolean).join(' ');
       if (this.hasReportFilePointer(text)) return true;
+      if (entry.type === 'stage' && entry.phase === 'received') return true;
       return entry.type === 'stage'
         && entry.phase === 'done'
         && /report generation completed|报告.*完成|最终报告.*确认/i.test(entry.summary || '');
@@ -1655,12 +1902,24 @@ export class ReportsService {
       const entries = await this.remoteFs.readdir(reportDir);
       const files: { filePath: string; stat: { size: number; mtimeMs: number } }[] = [];
       for (const entry of entries) {
-        if (!entry.isFile || !entry.name.toLowerCase().endsWith('.md')) continue;
-        const filePath = this.remoteFs.joinPath(reportDir, entry.name);
-        try {
-          const stat = await this.remoteFs.stat(filePath);
-          files.push({ filePath, stat });
-        } catch { continue; }
+        if (entry.isFile && entry.name.toLowerCase().endsWith('.md')) {
+          const filePath = this.remoteFs.joinPath(reportDir, entry.name);
+          try {
+            const stat = await this.remoteFs.stat(filePath);
+            files.push({ filePath, stat });
+          } catch { continue; }
+        }
+        if (!entry.isDirectory) continue;
+        const dir = this.remoteFs.joinPath(reportDir, entry.name);
+        for (const nested of [
+          this.remoteFs.joinPath(dir, 'final', 'report.md'),
+          this.remoteFs.joinPath(dir, 'report.md'),
+        ]) {
+          try {
+            const stat = await this.remoteFs.stat(nested);
+            if (stat.isFile) files.push({ filePath: nested, stat });
+          } catch { continue; }
+        }
       }
 
       const candidates = files
