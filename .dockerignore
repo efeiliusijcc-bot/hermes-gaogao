@@ -1,7 +1,9 @@
 node_modules
 dist
 dist-server
-src
+src/*
+!src/types/
+!src/types/report.ts
 public
 *.log
 .env
