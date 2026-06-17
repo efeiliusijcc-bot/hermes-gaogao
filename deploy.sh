@@ -6,9 +6,12 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+ENV_FILE=$(mktemp)
+sed '1s/^\xef\xbb\xbf//' .env > "$ENV_FILE"
 set -a
-source .env
+source "$ENV_FILE"
 set +a
+rm -f "$ENV_FILE"
 
 : "${REMOTE_HOST:?Missing REMOTE_HOST}"
 : "${REMOTE_USER:?Missing REMOTE_USER}"
@@ -16,7 +19,7 @@ set +a
 : "${HERMES_API_KEY:?Missing HERMES_API_KEY}"
 : "${PGVECTOR_DATABASE_URL:?Missing PGVECTOR_DATABASE_URL}"
 
-REMOTE_DIR=/usr/docker/gaogao-api
+REMOTE_DIR=/usr/docker/hermes-api
 SRC_DIR=$REMOTE_DIR/src
 
 echo "=== 1. Upload backend source ==="
@@ -33,30 +36,35 @@ echo "=== 2. Build and deploy backend remotely ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << REMOTE_SCRIPT
 set -euo pipefail
 
-SRC_DIR=/usr/docker/gaogao-api/src
+SRC_DIR=/usr/docker/hermes-api/src
 cd "\$SRC_DIR"
 
 echo "--- Build image ---"
-docker build -t gaogao-api:latest .
+IMAGE_TAG=hermes-api:latest
+docker build -t "\$IMAGE_TAG" .
 
 echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true
-docker network connect hermes-net hermes 2>/dev/null || true
-docker network connect hermes-net todo_postgres 2>/dev/null || true
+docker network connect --alias hermes hermes-net hermes 2>/dev/null || true
+docker network connect --alias todo_postgres hermes-net todo_postgres 2>/dev/null || true
 
-echo "--- Replace old container ---"
-docker stop gaogao-api 2>/dev/null || true
-docker rm gaogao-api 2>/dev/null || true
+echo "--- Replace hermes-api container ---"
+docker stop hermes-api 2>/dev/null || true
+docker rm hermes-api 2>/dev/null || true
 
 docker run -d \
-  --name gaogao-api \
+  --name hermes-api \
   --network hermes-net \
   --restart=unless-stopped \
-  -p 1555:1555 \
+  --user 0:0 \
+  -p 1556:1555 \
   -e PORT=1555 \
-  -e HERMES_BASE_URL=http://hermes:18789/v1 \
+  -e HERMES_RUN_MODE=${HERMES_RUN_MODE:-runs} \
+  -e HERMES_BASE_URL=${HERMES_BASE_URL:-http://hermes:8642/v1} \
+  -e HERMES_HEALTH_URL=${HERMES_HEALTH_URL:-http://hermes:8642/health} \
+  -e HERMES_RUNS_URL=${HERMES_RUNS_URL:-http://hermes:8642/v1/runs} \
   -e HERMES_API_KEY=${HERMES_API_KEY} \
-  -e HERMES_MODEL=${HERMES_MODEL:-openclaw/report-agent} \
+  -e HERMES_MODEL=${HERMES_MODEL:-hermes-agent} \
   -e HERMES_QA_AGENT_ID=${HERMES_QA_AGENT_ID:-qa-agent} \
   -e HERMES_QA_MODEL=${HERMES_QA_MODEL:-openclaw/qa-agent} \
   -e HERMES_QA_MODE=${HERMES_QA_MODE:-direct_pg} \
@@ -74,11 +82,14 @@ docker run -d \
   -e PGVECTOR_EMBEDDING_BASE_URL=${PGVECTOR_EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1} \
   -e OPENAI_API_KEY=${OPENAI_API_KEY:-} \
   -v /opt/hermes:/opt/data \
-  gaogao-api:latest
+  "\$IMAGE_TAG"
 
 sleep 3
-docker ps --filter name=gaogao-api --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-docker logs --tail 30 gaogao-api
+docker exec hermes-api getent hosts todo_postgres
+curl -fsS http://127.0.0.1:1556/api/hermes/health
+curl -fsS http://127.0.0.1:1556/api/vector-sources/status
+docker ps --filter name=hermes-api --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+docker logs --tail 30 hermes-api
 REMOTE_SCRIPT
 
 echo "=== Deploy complete ==="

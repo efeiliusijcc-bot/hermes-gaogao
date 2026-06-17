@@ -1050,10 +1050,10 @@ export class ReportsService {
           const message = this.sanitizeUserVisibleText(runsError instanceof Error ? runsError.message : String(runsError), 300);
           this.pushEvent(job, {
             type: 'stage',
-            stage: 'http_fallback',
-            message: `Hermes runs API failed; falling back to HTTP/SSE Gateway. ${message}`,
+            stage: 'runs_recovering',
+            message: `Hermes runs API failed; checking for an already written report file. ${message}`,
           });
-          recoveredReport = await this.resolveHermesReportFile('', startedAtMs, job.jobId);
+          recoveredReport = await this.findMarkdownFileInJobDir(job.jobId) ?? await this.findBestMarkdownFileForJob(job);
           if (recoveredReport) {
             this.pushEvent(job, {
               type: 'stage',
@@ -1062,7 +1062,8 @@ export class ReportsService {
             });
             result = { markdown: `REPORT_FILE: ${recoveredReport.filePath}`, artifacts: { runMode: 'runs_api_recovered' } };
           } else {
-            result = await this.hermes.runReportViaHttpSse(runInput);
+            const artifactSummary = await this.describeHermesJobArtifacts(job);
+            throw new Error(`Hermes runs API failed and no final report file was recovered. ${artifactSummary} ${message}`.trim());
           }
         }
       } else if (HERMES_RUN_MODE === 'remote_cli') {
@@ -1851,6 +1852,31 @@ export class ReportsService {
     }
 
     return null;
+  }
+
+  private async describeHermesJobArtifacts(job: JobRecord): Promise<string> {
+    try {
+      const dir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+      const checks: Array<[string, string]> = [
+        ['context.json', this.remoteFs.joinPath(dir, 'context.json')],
+        ['database/vector_sources.json', this.remoteFs.joinPath(dir, 'database', 'vector_sources.json')],
+        ['database/database_sources.json', this.remoteFs.joinPath(dir, 'database', 'database_sources.json')],
+        ['plan.json', this.remoteFs.joinPath(dir, 'plan.json')],
+        ['research/research_A.json', this.remoteFs.joinPath(dir, 'research', 'research_A.json')],
+        ['research/research_B.json', this.remoteFs.joinPath(dir, 'research', 'research_B.json')],
+        ['research/consolidated.json', this.remoteFs.joinPath(dir, 'research', 'consolidated.json')],
+        ['final/report.md', this.remoteFs.joinPath(dir, 'final', 'report.md')],
+      ];
+      const existing: string[] = [];
+      const missing: string[] = [];
+      for (const [label, filePath] of checks) {
+        if (await this.remoteFs.exists(filePath)) existing.push(label);
+        else missing.push(label);
+      }
+      return `Artifacts existing: ${existing.join(', ') || 'none'}. Missing: ${missing.join(', ') || 'none'}.`;
+    } catch {
+      return 'Artifact status could not be inspected.';
+    }
   }
 
   private async recoverJobFromExistingReport(job: JobRecord, reason: string): Promise<boolean> {

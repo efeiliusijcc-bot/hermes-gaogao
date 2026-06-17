@@ -956,6 +956,8 @@ export class HermesService {
     const reportDir = `${HERMES_CONTAINER_REPORT_DIR.replace(/\/$/, '')}/${input.jobId}`;
     const finalPath = `${reportDir}/final/report.md`;
     const harnessPath = '/opt/data/workspace/report-agent/skills/web-research-firecrawl/scripts/harness_cli.py';
+    const researchKeysEnv = '/opt/data/workspace/report-agent/config/research-keys.env';
+    const harnessEnvPrefix = `set -a; [ -f ${researchKeysEnv} ] && . ${researchKeysEnv}; set +a;`;
 
     return [
       'WORKFLOW ENFORCEMENT CONTRACT FOR HERMES',
@@ -965,24 +967,29 @@ export class HermesService {
       `Report directory: ${reportDir}`,
       `Final report path: ${finalPath}`,
       `Research harness: ${harnessPath}`,
+      `Research keys env: ${researchKeysEnv}`,
       '',
       'Mandatory execution order:',
       '1. Load the write-hb skill and treat SKILL.md plus workflow.yaml as binding instructions.',
       `2. Verify or create ${reportDir}/context.json before public web research.`,
       `3. Preserve existing PG/vector artifacts under ${reportDir}/database/ and use them as first-class sources.`,
-      `4. The first public research action MUST run: python ${harnessPath} plan --job-dir ${reportDir}`,
-      `5. The plan step MUST create ${reportDir}/plan.json before any large page extraction or summarization.`,
-      `6. Run: python ${harnessPath} run --job-dir ${reportDir} for every planned group and create ${reportDir}/research/research_*.json.`,
-      `7. Merge research outputs into ${reportDir}/research/consolidated.json.`,
-      `8. Only after plan.json, research/research_*.json, and research/consolidated.json exist, write ${finalPath}.`,
-      `9. The final assistant response must be exactly: REPORT_FILE: ${finalPath}`,
+      `4. Before every harness command, load research keys with: ${harnessEnvPrefix}`,
+      `5. The first public research action MUST run: ${harnessEnvPrefix} python ${harnessPath} plan --job-dir ${reportDir}`,
+      `6. The plan step MUST create ${reportDir}/plan.json before any large page extraction or summarization.`,
+      `7. Run: ${harnessEnvPrefix} python ${harnessPath} run --job-dir ${reportDir} for every planned group and create ${reportDir}/research/research_*.json.`,
+      `8. Merge research outputs into ${reportDir}/research/consolidated.json.`,
+      `9. Only after plan.json, research/research_*.json, and research/consolidated.json exist, write ${finalPath}.`,
+      `10. The final assistant response must be exactly: REPORT_FILE: ${finalPath}`,
       '',
       'Tool restrictions:',
       '- Do not use Hermes native web_search or web_extract as the main research path.',
       '- Do not directly use Tavily Extract through native Hermes tools for large-page summarization.',
-      '- Native web tools are allowed only after the harness plan/run path fails, and you must record firecrawl_fallback_reason in the job artifacts.',
+      '- Missing FIRECRAWL_API_KEY is not permission to bypass the harness. Run harness_cli.py anyway and let the harness record Firecrawl failure while using its own fallback chain.',
+      '- Native web tools are allowed only after the harness process itself fails after dependency/key loading, and you must record firecrawl_fallback_reason in the job artifacts.',
       '',
       'Failure rules:',
+      '- If harness_cli.py fails with ModuleNotFoundError, stop and report a workflow dependency failure. Do not continue with native web_search/web_extract.',
+      '- If FIRECRAWL_API_KEY is absent, record firecrawl_fallback_reason="FIRECRAWL_API_KEY not configured" in plan/research artifacts and continue only through the harness fallback chain.',
       '- If plan.json is missing, stop and report a workflow failure instead of continuing.',
       '- If no research/research_*.json files exist, stop and report a workflow failure.',
       '- If research/consolidated.json is missing, do not write the final report.',
