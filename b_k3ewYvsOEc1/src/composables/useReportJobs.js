@@ -1147,7 +1147,7 @@ export function useReportJobs() {
         status: option.status || '',
       }))
       if (step.type === 'source_scope') {
-        selectedSources.push(...selectedOptions.filter((option) => option.id !== 'database-source'))
+        selectedSources.push(...selectedOptions)
         continue
       }
       if (step.type === 'report_section') {

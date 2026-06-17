@@ -446,6 +446,39 @@ function normalizePlanningItems(items) {
     : []
 }
 
+function databaseSourceEnabledInContext(context) {
+  const options = context?.databaseSourceOptions || context?.vectorDatabaseSourceOptions
+  if (!options || typeof options !== 'object') return false
+  return options.enabled === true || String(options.enabled || '').toLowerCase() === 'true'
+}
+
+function planningDatabaseSourceItem(context) {
+  if (!databaseSourceEnabledInContext(context)) return null
+  const options = context?.databaseSourceOptions || {}
+  const sourceTable = options.sourceTable ? `来源表：${options.sourceTable}` : ''
+  const mode = options.mode ? `召回模式：${options.mode}` : ''
+  const rows = options.maxMetadataRows ? `最多展示：${options.maxMetadataRows} 条` : ''
+  const detail = [sourceTable, mode, rows].filter(Boolean).join('；')
+  return {
+    id: 'database-source',
+    label: 'PG 数据库信源',
+    detail: detail || '已选择 PG 向量数据库召回，提交后优先进行数据库信源检索。',
+    sourceGroup: 'verified',
+    status: 'available',
+  }
+}
+
+function planningSourceScopes(context) {
+  const sources = normalizePlanningItems(context?.selectedSources)
+  const hasDatabaseSource = sources.some((source) => source.id === 'database-source')
+  const visibleSources = databaseSourceEnabledInContext(context)
+    ? sources
+    : sources.filter((source) => source.id !== 'database-source')
+  const databaseSource = planningDatabaseSourceItem(context)
+  if (databaseSource && !hasDatabaseSource) return [databaseSource, ...visibleSources]
+  return visibleSources
+}
+
 const planningSelectionView = computed(() => {
   const context = planningContext.value
   if (!context) {
@@ -478,7 +511,7 @@ const planningSelectionView = computed(() => {
   return {
     available: true,
     searchQueries: Array.isArray(context.selectedSearchQueries) ? context.selectedSearchQueries.filter(Boolean) : [],
-    sourceScopes: normalizePlanningItems(context.selectedSources).filter((source) => source.id !== 'database-source'),
+    sourceScopes: planningSourceScopes(context),
     modules,
     manualSources: Array.isArray(context.userProvidedSources) ? context.userProvidedSources.filter(Boolean) : [],
     parameterEntries,
