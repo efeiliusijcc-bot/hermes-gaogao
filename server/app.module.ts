@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { AuthController } from './auth.controller.js';
+import { AuthGuard } from './auth.guard.js';
+import { AuthService } from './auth.service.js';
 import { ChatController } from './chat.controller.js';
 import { ChatService } from './chat.service.js';
 import { HealthController } from './health.controller.js';
@@ -15,8 +18,10 @@ import { VectorSourcesController } from './vector-sources.controller.js';
 import { VectorSourceService } from './vector-source.service.js';
 
 @Module({
-  controllers: [HealthController, ReportsController, ReportPlansController, ResearchKeysController, VectorSourcesController, ChatController],
+  controllers: [HealthController, AuthController, ReportsController, ReportPlansController, ResearchKeysController, VectorSourcesController, ChatController],
   providers: [
+    AuthService,
+    AuthGuard,
     HermesService,
     HermesGatewayDeviceService,
     RemoteFileService,
