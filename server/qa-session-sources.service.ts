@@ -1,8 +1,8 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
-import { createRequire } from 'module';
 import { HERMES_QA_ARTIFACT_DIR } from './config.js';
 import type { AuthUser } from './auth-user.interface.js';
 import { RemoteFileService } from './remote-file.service.js';
+import { createAuthPool, type PgPool } from './auth-database.js';
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -19,11 +19,6 @@ interface UpsertSourcesInput {
   merge?: boolean;
 }
 
-type PgPool = {
-  query: (text: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>;
-  end: () => Promise<void>;
-};
-
 interface ChatSessionOwner {
   sessionId: string;
   ownerUserId: string;
@@ -36,7 +31,6 @@ const MAX_STRING_LENGTH = 2000;
 const MAX_OBJECT_KEYS = 80;
 const MAX_ARRAY_ITEMS = 50;
 const MAX_DEPTH = 4;
-const require = createRequire(import.meta.url);
 
 @Injectable()
 export class QaSessionSourcesService implements OnModuleDestroy {
@@ -284,15 +278,7 @@ export class QaSessionSourcesService implements OnModuleDestroy {
 
   private async getPool(): Promise<PgPool> {
     if (this.pool) return this.pool;
-    const connectionString = process.env.PGVECTOR_DATABASE_URL || process.env.POSTGRES_DATABASE_URL || process.env.DATABASE_URL;
-    if (!connectionString) throw new Error('PGVECTOR_DATABASE_URL is not configured');
-    const { Pool } = require('pg') as { Pool: new (config: Record<string, unknown>) => PgPool };
-    this.pool = new Pool({
-      connectionString,
-      max: 4,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 5000,
-    });
+    this.pool = createAuthPool();
     return this.pool;
   }
 }

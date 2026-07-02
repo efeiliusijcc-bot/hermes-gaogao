@@ -19,6 +19,7 @@ rm -f "$ENV_FILE"
 : "${HERMES_API_KEY:?Missing HERMES_API_KEY}"
 : "${PGVECTOR_DATABASE_URL:?Missing PGVECTOR_DATABASE_URL}"
 : "${JWT_SECRET:?Missing JWT_SECRET}"
+: "${AUTH_DATABASE_URL:=${PGVECTOR_DATABASE_URL%/*}/hermes_auth}"
 
 REMOTE_DIR=/usr/docker/hermes-api
 SRC_DIR=$REMOTE_DIR/src
@@ -39,6 +40,7 @@ ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << REMOTE_SCRIPT
 set -euo pipefail
 
 SRC_DIR=/usr/docker/hermes-api/src
+AUTH_DATABASE_URL='${AUTH_DATABASE_URL}'
 cd "\$SRC_DIR"
 
 echo "--- Build image ---"
@@ -46,8 +48,12 @@ IMAGE_TAG=hermes-api:latest
 docker build -t "\$IMAGE_TAG" .
 
 echo "--- Apply database migrations ---"
-docker exec -i todo_postgres psql "${PGVECTOR_DATABASE_URL}" < scripts/init-auth-users.sql
-docker exec -i todo_postgres psql "${PGVECTOR_DATABASE_URL}" < scripts/init-chat-sessions.sql
+AUTH_DATABASE_NAME="\${AUTH_DATABASE_URL##*/}"
+AUTH_DATABASE_NAME="\${AUTH_DATABASE_NAME%%\?*}"
+docker exec todo_postgres psql -U postgres -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '\$AUTH_DATABASE_NAME'" | grep -q 1 \
+  || docker exec todo_postgres createdb -U postgres "\$AUTH_DATABASE_NAME"
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-auth-users.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-chat-sessions.sql
 
 echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true
@@ -71,6 +77,7 @@ docker run -d \
   -e HERMES_RUNS_URL=${HERMES_RUNS_URL:-http://hermes:8642/v1/runs} \
   -e HERMES_API_KEY=${HERMES_API_KEY} \
   -e JWT_SECRET=${JWT_SECRET} \
+  -e AUTH_DATABASE_URL=${AUTH_DATABASE_URL} \
   -e HERMES_MODEL=${HERMES_MODEL:-hermes-agent} \
   -e HERMES_QA_AGENT_ID=${HERMES_QA_AGENT_ID:-qa-agent} \
   -e HERMES_QA_MODEL=${HERMES_QA_MODEL:-openclaw/qa-agent} \

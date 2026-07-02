@@ -1,12 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import bcrypt from 'bcrypt';
-import { createRequire } from 'module';
 import type { AuthUser, UserRole } from './auth-user.interface.js';
-
-type PgPool = {
-  query: (text: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>;
-  end: () => Promise<void>;
-};
+import { createAuthPool, type PgPool } from './auth-database.js';
 
 interface UserRow {
   id: string;
@@ -45,7 +40,6 @@ interface UpdateUserInput {
   isActive?: boolean;
 }
 
-const require = createRequire(import.meta.url);
 const USER_ROLES: UserRole[] = ['admin', 'operator', 'viewer'];
 
 @Injectable()
@@ -250,15 +244,7 @@ export class UsersService implements OnModuleDestroy {
 
   private async getPool(): Promise<PgPool> {
     if (this.pool) return this.pool;
-    const connectionString = process.env.PGVECTOR_DATABASE_URL || process.env.POSTGRES_DATABASE_URL || process.env.DATABASE_URL;
-    if (!connectionString) throw new Error('PGVECTOR_DATABASE_URL is not configured');
-    const { Pool } = require('pg') as { Pool: new (config: Record<string, unknown>) => PgPool };
-    this.pool = new Pool({
-      connectionString,
-      max: 4,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 5000,
-    });
+    this.pool = createAuthPool();
     return this.pool;
   }
 }
