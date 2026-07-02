@@ -9,6 +9,7 @@ import {
   HERMES_REMOTE_REPORT_DIR,
   HERMES_REMOTE_SSH_KEY,
   HERMES_REMOTE_USER,
+  REPORT_OUTPUT_DIR,
 } from './config.js';
 
 function isRemote(): boolean {
@@ -82,7 +83,7 @@ export interface RemoteStat {
 
 @Injectable()
 export class RemoteFileService {
-  readonly remoteDir = HERMES_REMOTE_REPORT_DIR;
+  readonly remoteDir = isRemote() ? HERMES_REMOTE_REPORT_DIR : REPORT_OUTPUT_DIR;
 
   private toHostPath(filePath: string): string {
     if (!isRemote()) return filePath;
