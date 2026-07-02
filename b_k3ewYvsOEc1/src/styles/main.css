@@ -902,6 +902,46 @@ canvas {
   z-index: 30;
 }
 
+.header-login-btn {
+  min-height: 34px;
+  padding: 8px 12px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.header-user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  max-width: 220px;
+  padding: 6px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+}
+
+.header-user-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.header-user-role {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .settings-icon-btn {
   width: 38px;
   height: 38px;
@@ -960,6 +1000,86 @@ canvas {
   justify-content: center;
   color: #64748b;
   font-size: 14px;
+}
+
+.login-dialog {
+  width: min(100%, 420px);
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.24);
+}
+
+.login-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 18px 20px;
+}
+
+.login-dialog-head h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.login-dialog-head p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.login-dialog-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px 20px;
+}
+
+.login-dialog-body label {
+  display: grid;
+  gap: 6px;
+}
+
+.login-dialog-body label span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.login-dialog-error,
+.login-dialog-notice {
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.login-dialog-error {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.login-dialog-notice {
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.login-submit {
+  width: 100%;
+  justify-content: center;
+  min-height: 40px;
+}
+
+.login-dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
 
 .sidebar-shell {
@@ -6534,4 +6654,9 @@ body {
   .generate-btn {
     width: 100% !important;
   }
+}
+
+.user-management-main {
+  min-height: calc(100vh - 80px);
+  padding-top: 80px;
 }

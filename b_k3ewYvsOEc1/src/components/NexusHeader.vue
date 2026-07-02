@@ -1,8 +1,27 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { fetchResearchKeys, fetchVectorSourceStatus, switchVectorSourceProfile, updateResearchKeys } from '../lib/api.js'
 
-const emit = defineEmits(['return-home'])
+const props = defineProps({
+  user: {
+    type: Object,
+    default: null,
+  },
+  authLoading: {
+    type: Boolean,
+    default: false,
+  },
+  authError: {
+    type: String,
+    default: '',
+  },
+  authNotice: {
+    type: String,
+    default: '',
+  },
+})
+
+const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management'])
 
 const currentTime = ref('')
 const canvasRef = ref(null)
@@ -31,6 +50,14 @@ const keyNotice = ref('')
 const vectorStatus = ref(null)
 const vectorRefreshing = ref(false)
 const vectorSwitching = ref(false)
+const showLoginDialog = ref(false)
+const loginForm = reactive({
+  username: '',
+  password: '',
+})
+
+const isAdmin = computed(() => props.user?.role === 'admin')
+const displayUserName = computed(() => props.user?.displayName || props.user?.username || '')
 
 const keyFields = [
   { key: 'tavilyApiKey', label: 'Tavily', placeholder: 'tvly-...，每行一个，可配置多个' },
@@ -122,6 +149,42 @@ function openKeySettings() {
   void loadResearchKeys()
 }
 
+function openLoginDialog() {
+  closeSettingsMenu()
+  loginForm.username = ''
+  loginForm.password = ''
+  showLoginDialog.value = true
+}
+
+function closeLoginDialog() {
+  if (!props.authLoading) showLoginDialog.value = false
+}
+
+function submitLogin() {
+  if (props.authLoading) return
+  emit('login', {
+    username: loginForm.username,
+    password: loginForm.password,
+  })
+}
+
+function logout() {
+  closeSettingsMenu()
+  emit('logout')
+}
+
+function openUserManagement() {
+  closeSettingsMenu()
+  emit('open-user-management')
+}
+
+function roleLabel(role) {
+  if (role === 'admin') return '管理员'
+  if (role === 'operator') return '操作员'
+  if (role === 'viewer') return '观察员'
+  return role || '--'
+}
+
 function closeKeySettings() {
   if (!keySaving.value) {
     showKeySettings.value = false
@@ -158,6 +221,7 @@ function handleDocumentClick(event) {
 
 function handleDocumentKeydown(event) {
   if (event.key === 'Escape') closeSettingsMenu()
+  if (event.key === 'Escape') closeLoginDialog()
 }
 
 function handleWindowResize() {
@@ -296,6 +360,14 @@ onUnmounted(() => {
   window.removeEventListener('resize', handleWindowResize)
   if (animFrameId) cancelAnimationFrame(animFrameId)
 })
+
+watch(() => props.user, (user) => {
+  if (user) showLoginDialog.value = false
+})
+
+watch(() => props.authNotice, (notice) => {
+  if (!props.user && notice) showLoginDialog.value = true
+})
 </script>
 
 <template>
@@ -324,6 +396,39 @@ onUnmounted(() => {
         <span class="font-mono text-[8px] text-slate-400 tracking-widest mb-1">系统时间</span>
         <span class="font-mono text-xs text-slate-700 tracking-wider">{{ currentTime }}</span>
       </div>
+
+      <button
+        v-if="!user"
+        class="sci-btn header-login-btn"
+        type="button"
+        :disabled="authLoading"
+        @click="openLoginDialog"
+      >
+        登录
+      </button>
+
+      <div v-else class="header-user-chip">
+        <span class="header-user-name">{{ displayUserName }}</span>
+        <span class="header-user-role">{{ roleLabel(user.role) }}</span>
+      </div>
+
+      <button
+        v-if="isAdmin"
+        class="sci-btn header-login-btn"
+        type="button"
+        @click="openUserManagement"
+      >
+        用户管理
+      </button>
+
+      <button
+        v-if="user"
+        class="sci-btn header-login-btn"
+        type="button"
+        @click="logout"
+      >
+        退出登录
+      </button>
 
       <div class="header-settings relative">
         <button
@@ -354,6 +459,42 @@ onUnmounted(() => {
       <span class="settings-menu-icon">⌁</span>
       <span>信源设置</span>
     </button>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="showLoginDialog"
+      class="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm"
+      @click.self="closeLoginDialog"
+    >
+      <section class="login-dialog">
+        <div class="login-dialog-head">
+          <div>
+            <h2>账号登录</h2>
+            <p>使用系统账号进入编报工作台</p>
+          </div>
+          <button class="sci-btn px-3 py-2 text-[10px]" type="button" :disabled="authLoading" @click="closeLoginDialog">关闭</button>
+        </div>
+        <form class="login-dialog-body" @submit.prevent="submitLogin">
+          <label>
+            <span>用户名</span>
+            <input v-model="loginForm.username" class="sci-input" autocomplete="username" placeholder="请输入用户名" />
+          </label>
+          <label>
+            <span>密码</span>
+            <input v-model="loginForm.password" class="sci-input" type="password" autocomplete="current-password" placeholder="请输入密码" />
+          </label>
+          <div v-if="authError" class="login-dialog-error">{{ authError }}</div>
+          <div v-else-if="authNotice" class="login-dialog-notice">{{ authNotice }}</div>
+          <div class="login-dialog-actions">
+            <button class="sci-btn login-submit" type="button" :disabled="authLoading" @click="closeLoginDialog">取消</button>
+            <button class="sci-btn sci-btn-primary login-submit" type="submit" :disabled="authLoading">
+              {{ authLoading ? '登录中...' : '登录' }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   </Teleport>
 
   <Teleport to="body">

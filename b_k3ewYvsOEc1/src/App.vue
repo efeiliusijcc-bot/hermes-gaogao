@@ -2,8 +2,10 @@
 import NexusHeader from './components/NexusHeader.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import DataCanvas from './components/DataCanvas.vue'
+import UserManagement from './components/UserManagement.vue'
+import { useAuth } from './composables/useAuth.js'
 import { useReportJobs } from './composables/useReportJobs.js'
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 const {
   currentView,
@@ -90,6 +92,17 @@ const {
 const QA_HISTORY_KEY = 'nexus-qa-history'
 const homeMode = ref('report')
 const selectedQaSessionId = ref('')
+const showUserManagement = ref(false)
+const {
+  currentUser: authUser,
+  isLoading: authLoading,
+  errorMessage: authError,
+  notice: authNotice,
+  initializeAuth,
+  login: loginUser,
+  logout: logoutUser,
+  setNotice: setAuthNotice,
+} = useAuth()
 const qaSessions = ref(loadStoredQaSessions())
 
 const selectedQaSession = computed(() => {
@@ -117,9 +130,36 @@ const sidebarCurrentJobId = computed(() => {
   return openedHistoryJobId.value || job.value?.jobId || activeWorkspaceJobId.value
 })
 
+async function handleLogin(credentials) {
+  return loginUser(credentials?.username || '', credentials?.password || '')
+}
+
+function handleLogout() {
+  logoutUser()
+  showUserManagement.value = false
+  returnHome()
+}
+
+function openUserManagement() {
+  if (!authUser.value) {
+    setAuthNotice('\u8bf7\u5148\u767b\u5f55')
+    return
+  }
+  if (authUser.value.role !== 'admin') {
+    setAuthNotice('\u65e0\u6743\u9650\u8bbf\u95ee\u7528\u6237\u7ba1\u7406')
+    return
+  }
+  backgroundActiveWorkspace()
+  showUserManagement.value = true
+}
+
+function qaHistoryStorageKey(userId = '') {
+  return `${QA_HISTORY_KEY}:${userId || 'guest'}`
+}
+
 function loadStoredQaSessions() {
   try {
-    const raw = localStorage.getItem(QA_HISTORY_KEY)
+    const raw = localStorage.getItem(qaHistoryStorageKey(authUser.value?.id))
     const parsed = JSON.parse(raw || '[]')
     return Array.isArray(parsed) ? parsed.slice(0, 30) : []
   } catch {
@@ -129,7 +169,7 @@ function loadStoredQaSessions() {
 
 function persistQaSessions() {
   try {
-    localStorage.setItem(QA_HISTORY_KEY, JSON.stringify(qaSessions.value.slice(0, 30)))
+    localStorage.setItem(qaHistoryStorageKey(authUser.value?.id), JSON.stringify(qaSessions.value.slice(0, 30)))
   } catch {
     // Local storage is best-effort; the current in-memory session still works.
   }
@@ -145,6 +185,7 @@ function countQaSessionTurns(session) {
 }
 
 function setHomeMode(mode) {
+  showUserManagement.value = false
   if (mode === 'qa') backgroundActiveWorkspace()
   homeMode.value = mode === 'qa' ? 'qa' : 'report'
   if (homeMode.value === 'report') selectedQaSessionId.value = ''
@@ -168,18 +209,21 @@ function upsertQaSession(session) {
 
 function openQaSession(session) {
   if (!session?.id) return
+  showUserManagement.value = false
   backgroundActiveWorkspace()
   homeMode.value = 'qa'
   selectedQaSessionId.value = session.id
 }
 
 function openReportJob(item) {
+  showUserManagement.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   monitorJobFromList(item)
 }
 
 function startQaFromSidebar() {
+  showUserManagement.value = false
   backgroundActiveWorkspace()
   homeMode.value = 'qa'
   selectedQaSessionId.value = ''
@@ -190,29 +234,45 @@ function clearSelectedQaSession() {
 }
 
 function startReportFromSidebar() {
+  showUserManagement.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
 }
 
 function openReportHistoryList() {
+  showUserManagement.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   loadJobList(true)
 }
 
 function resetForNewReportFromCanvas() {
+  showUserManagement.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   resetForNewReport()
 }
 
 function returnHome() {
+  showUserManagement.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   resetForNewReport()
 }
 
 watch(qaSessions, persistQaSessions, { deep: true })
+
+watch(authUser, (user) => {
+  if (showUserManagement.value && user?.role !== 'admin') {
+    showUserManagement.value = false
+  }
+  selectedQaSessionId.value = ''
+  qaSessions.value = loadStoredQaSessions()
+})
+
+onMounted(() => {
+  void initializeAuth()
+})
 
 function jobStatusType(status) {
   if (status === 'succeeded') return 'success'
@@ -247,9 +307,22 @@ function jobActionLabel(status) {
     <div class="crt-overlay"></div>
     <div class="crt-scanline"></div>
 
-    <NexusHeader @return-home="returnHome" />
+    <NexusHeader
+      :user="authUser"
+      :auth-loading="authLoading"
+      :auth-error="authError"
+      :auth-notice="authNotice"
+      @return-home="returnHome"
+      @login="handleLogin"
+      @logout="handleLogout"
+      @open-user-management="openUserManagement"
+    />
 
-    <div v-if="currentView === 'generator'" class="app-body">
+    <main v-if="showUserManagement" class="user-management-main">
+      <UserManagement :current-user="authUser" @back="returnHome" />
+    </main>
+
+    <div v-else-if="currentView === 'generator'" class="app-body">
       <ControlPanel
         :health="health"
         :mode="homeMode"

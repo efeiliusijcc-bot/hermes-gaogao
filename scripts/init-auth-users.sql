@@ -6,11 +6,32 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash VARCHAR(255) NOT NULL,
   display_name VARCHAR(128) NOT NULL DEFAULT '',
   email VARCHAR(255),
-  role VARCHAR(32) NOT NULL DEFAULT 'user',
+  role VARCHAR(32) NOT NULL DEFAULT 'viewer',
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT users_role_check CHECK (role IN ('admin', 'operator', 'viewer'))
 );
+
+ALTER TABLE users ALTER COLUMN role SET DEFAULT 'viewer';
+
+UPDATE users
+SET role = 'viewer'
+WHERE role NOT IN ('admin', 'operator', 'viewer');
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'users_role_check'
+      AND conrelid = 'users'::regclass
+  ) THEN
+    ALTER TABLE users
+      ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'operator', 'viewer'));
+  END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION set_users_updated_at()
 RETURNS TRIGGER AS $$

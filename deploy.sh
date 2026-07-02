@@ -7,7 +7,7 @@ if [ ! -f .env ]; then
 fi
 
 ENV_FILE=$(mktemp)
-sed '1s/^\xef\xbb\xbf//' .env > "$ENV_FILE"
+sed '1s/^\xef\xbb\xbf//' .env | tr -d '\r' > "$ENV_FILE"
 set -a
 source "$ENV_FILE"
 set +a
@@ -18,12 +18,13 @@ rm -f "$ENV_FILE"
 : "${SSH_KEY:=~/.ssh/id_ed25519}"
 : "${HERMES_API_KEY:?Missing HERMES_API_KEY}"
 : "${PGVECTOR_DATABASE_URL:?Missing PGVECTOR_DATABASE_URL}"
+: "${JWT_SECRET:?Missing JWT_SECRET}"
 
 REMOTE_DIR=/usr/docker/hermes-api
 SRC_DIR=$REMOTE_DIR/src
 
 echo "=== 1. Upload backend source ==="
-ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p '$SRC_DIR/server' '$SRC_DIR/src/types'"
+ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p '$SRC_DIR/server' '$SRC_DIR/src/types' '$SRC_DIR/scripts'"
 
 scp -i "$SSH_KEY" \
   package.json pnpm-lock.yaml tsconfig.server.json Dockerfile \
@@ -31,6 +32,7 @@ scp -i "$SSH_KEY" \
 
 scp -i "$SSH_KEY" server/*.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/server/"
 scp -i "$SSH_KEY" src/types/report.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/src/types/"
+scp -i "$SSH_KEY" scripts/init-auth-users.sql scripts/init-chat-sessions.sql "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/scripts/"
 
 echo "=== 2. Build and deploy backend remotely ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << REMOTE_SCRIPT
@@ -42,6 +44,10 @@ cd "\$SRC_DIR"
 echo "--- Build image ---"
 IMAGE_TAG=hermes-api:latest
 docker build -t "\$IMAGE_TAG" .
+
+echo "--- Apply database migrations ---"
+docker exec -i todo_postgres psql "${PGVECTOR_DATABASE_URL}" < scripts/init-auth-users.sql
+docker exec -i todo_postgres psql "${PGVECTOR_DATABASE_URL}" < scripts/init-chat-sessions.sql
 
 echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true
@@ -64,6 +70,7 @@ docker run -d \
   -e HERMES_HEALTH_URL=${HERMES_HEALTH_URL:-http://hermes:8642/health} \
   -e HERMES_RUNS_URL=${HERMES_RUNS_URL:-http://hermes:8642/v1/runs} \
   -e HERMES_API_KEY=${HERMES_API_KEY} \
+  -e JWT_SECRET=${JWT_SECRET} \
   -e HERMES_MODEL=${HERMES_MODEL:-hermes-agent} \
   -e HERMES_QA_AGENT_ID=${HERMES_QA_AGENT_ID:-qa-agent} \
   -e HERMES_QA_MODEL=${HERMES_QA_MODEL:-openclaw/qa-agent} \
@@ -87,7 +94,9 @@ docker run -d \
 sleep 3
 docker exec hermes-api getent hosts todo_postgres
 curl -fsS http://127.0.0.1:1556/api/hermes/health
-curl -fsS http://127.0.0.1:1556/api/vector-sources/status
+AUTH_TOKEN=\$(curl -fsS -X POST http://127.0.0.1:1556/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).access_token")
+curl -fsS -H "Authorization: Bearer \$AUTH_TOKEN" http://127.0.0.1:1556/api/auth/me
+curl -fsS -H "Authorization: Bearer \$AUTH_TOKEN" http://127.0.0.1:1556/api/vector-sources/status
 docker ps --filter name=hermes-api --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 docker logs --tail 30 hermes-api
 REMOTE_SCRIPT

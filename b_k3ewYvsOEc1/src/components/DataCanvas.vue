@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
-import { createChatCompletion, fetchQaSessionSources, fetchReportSources, getChatStreamUrl } from '../lib/api.js'
+import { createChatCompletion, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl } from '../lib/api.js'
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -1509,6 +1509,11 @@ async function startQa(questionOverride = '') {
     nextTick(() => qaInputRef.value?.focus())
     return
   }
+  const authToken = getAuthToken()
+  if (!authToken) {
+    qaValidationError.value = '???????????'
+    return
+  }
   closeQaStream()
   qaError.value = ''
   qaImportNotice.value = ''
@@ -1550,7 +1555,8 @@ async function startQa(questionOverride = '') {
     })
     const url = getChatStreamUrl(response?.eventsUrl)
     if (!url) throw new Error('未获得回答通道')
-    const source = new EventSource(url)
+    const separator = url.includes('?') ? '&' : '?'
+    const source = new EventSource(`${url}${separator}access_token=${encodeURIComponent(authToken)}`)
     if (state) state.source = source
     if (sessionId === currentQaSessionId.value) qaEventSource = source
     source.onmessage = (message) => {
@@ -1608,6 +1614,13 @@ async function startQa(questionOverride = '') {
     }
   } catch (error) {
     qaStatus.value = 'failed'
+    if (error?.status === 401) {
+      qaError.value = '??????????????'
+    } else if (error?.status === 403) {
+      qaError.value = '???????????'
+    } else {
+      qaError.value = '?????????????'
+    }
     qaError.value = '回答生成失败，请稍后重试。'    updateActiveQaTurn({ status: 'failed' })
     emitQaSession('failed')
     rememberCurrentQaStreamSession('failed')

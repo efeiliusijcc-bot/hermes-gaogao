@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { marked } from 'marked';
 import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
@@ -7,6 +7,7 @@ import { HermesApprovalRequiredError, HermesService } from './hermes.service.js'
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
 import type { CreateJobRequest } from '../src/types/report.js';
+import type { AuthUser } from './auth-user.interface.js';
 import type {
   EventLogEntry,
   JobRecord,
@@ -26,6 +27,7 @@ interface JobListOptions {
   pageSize?: string | number;
   type?: string;
   q?: string;
+  mine?: string | boolean;
 }
 
 interface DatabaseSourceItem {
@@ -146,13 +148,19 @@ export class ReportsService {
     this.jobsReady = this.loadPersistedJobs();
   }
 
-  createJob(req: CreateJobRequest): { jobId: string; status: string } {
+  createJob(req: CreateJobRequest, user: AuthUser): { jobId: string; status: string } {
+    if (!this.canCreateReport(user)) {
+      throw new ForbiddenException({ error: 'Viewer cannot create report jobs' });
+    }
     const jobId = uuid();
     const now = new Date().toISOString();
     const job: JobRecord = {
       jobId,
       skill: req.skill,
       payload: req.payload,
+      ownerUserId: user.id,
+      ownerUsername: user.username,
+      ownerRole: user.role,
       status: 'queued',
       artifacts: {},
       createdAt: now,
@@ -178,14 +186,16 @@ export class ReportsService {
     await this.jobsReady;
   }
 
-  async listJobs(options: JobListOptions = {}) {
+  async listJobs(options: JobListOptions = {}, user: AuthUser) {
     await this.jobsReady;
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 20), 100);
     const type = this.normalizeTypeFilter(options.type);
     const query = String(options.q ?? '').trim().toLowerCase();
+    const mineOnly = options.mine === true || String(options.mine || '').toLowerCase() === 'true';
 
     const filtered = Array.from(this.jobs.values())
+      .filter((job) => this.canListJob(job, user, mineOnly))
       .filter((job) => type === 'all' || this.jobTypeKey(job) === type)
       .filter((job) => !query || this.jobSearchText(job).includes(query))
       .sort((a, b) => {
@@ -213,14 +223,15 @@ export class ReportsService {
     };
   }
 
-  getJob(jobId: string): JobRecord | undefined {
-    return this.jobs.get(jobId);
+  getJob(jobId: string, user?: AuthUser): JobRecord | undefined {
+    const job = this.jobs.get(jobId);
+    if (job && user) this.assertCanAccessJobRecord(job, user);
+    return job;
   }
 
-  async cancelJob(jobId: string): Promise<JobRecord | undefined> {
+  async cancelJob(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
     await this.jobsReady;
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+    const job = this.assertCanAccessJob(jobId, user);
     if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') return job;
 
     job.status = 'cancelled';
@@ -235,10 +246,30 @@ export class ReportsService {
     return job;
   }
 
-  async getJobWithRecoveredReport(jobId: string): Promise<JobRecord | undefined> {
+  async deleteJob(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
     await this.jobsReady;
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+    if (!this.canDeleteReport(user)) {
+      throw new ForbiddenException({ error: 'Only admin can delete report jobs' });
+    }
+    const job = this.assertCanAccessJob(jobId, user);
+    job.status = job.status === 'running' || job.status === 'queued' ? 'cancelled' : job.status;
+    job.updatedAt = new Date().toISOString();
+    this.streams.get(jobId)?.complete();
+    this.streams.delete(jobId);
+    this.jobs.delete(jobId);
+    await this.writeJobState({
+      ...job,
+      status: 'cancelled',
+      stage: 'deleted',
+      errorMessage: 'Job deleted by admin',
+      artifacts: { ...job.artifacts, deleted: true },
+    });
+    return job;
+  }
+
+  async getJobWithRecoveredReport(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
+    await this.jobsReady;
+    const job = this.assertCanAccessJob(jobId, user);
     if (!(job.status === 'succeeded' && job.resultPath)) {
       await this.recoverJobFromExistingReport(job, 'detail_lookup');
     }
@@ -255,15 +286,13 @@ export class ReportsService {
     return stream;
   }
 
-  getEventLog(jobId: string): { jobId: string; items: EventLogEntry[] } | undefined {
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+  getEventLog(jobId: string, user: AuthUser): { jobId: string; items: EventLogEntry[] } | undefined {
+    const job = this.assertCanAccessJob(jobId, user);
     return { jobId, items: (job.eventLog ?? []).map((item) => this.sanitizeEventLogEntry(item)) };
   }
 
-  async getProgressState(jobId: string): Promise<ReportProgressState | undefined> {
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+  async getProgressState(jobId: string, user: AuthUser): Promise<ReportProgressState | undefined> {
+    const job = this.assertCanAccessJob(jobId, user);
     await this.refreshProgressState(job);
     return this.sanitizeProgressState(job.progressState);
   }
@@ -273,6 +302,8 @@ export class ReportsService {
       jobId: job.jobId,
       skill: job.skill,
       payload: job.payload,
+      ownerUserId: job.ownerUserId ?? null,
+      ownerUsername: job.ownerUsername ?? null,
       status: job.status,
       stage: job.stage,
       errorMessage: this.sanitizeUserVisibleText(job.errorMessage || '', 300) || undefined,
@@ -281,6 +312,43 @@ export class ReportsService {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
     };
+  }
+
+  isAdmin(user: AuthUser): boolean {
+    return user.role === 'admin';
+  }
+
+  canCreateReport(user: AuthUser): boolean {
+    return user.role === 'admin' || user.role === 'operator';
+  }
+
+  canDeleteReport(user: AuthUser): boolean {
+    return this.isAdmin(user);
+  }
+
+  canAccessJob(job: JobRecord, user: AuthUser): boolean {
+    if (this.isAdmin(user)) return true;
+    if (!job.ownerUserId) return false;
+    return job.ownerUserId === user.id;
+  }
+
+  assertCanAccessJob(jobId: string, user: AuthUser): JobRecord {
+    const job = this.jobs.get(jobId);
+    if (!job) throw new NotFoundException({ error: 'Job not found' });
+    this.assertCanAccessJobRecord(job, user);
+    return job;
+  }
+
+  private assertCanAccessJobRecord(job: JobRecord, user: AuthUser): void {
+    if (!this.canAccessJob(job, user)) {
+      throw new ForbiddenException({ error: 'Insufficient report job permissions' });
+    }
+  }
+
+  private canListJob(job: JobRecord, user: AuthUser, mineOnly = false): boolean {
+    if (this.isAdmin(user) && !mineOnly) return true;
+    if (!job.ownerUserId) return false;
+    return job.ownerUserId === user.id;
   }
 
   private parsePositiveInt(value: string | number | undefined, fallback: number): number {
@@ -318,6 +386,7 @@ export class ReportsService {
       job.stage,
       job.errorMessage,
       job.resultPath,
+      job.ownerUsername,
       this.payloadSearchText(job.payload),
     ].join(' ').toLowerCase();
   }
@@ -627,16 +696,14 @@ export class ReportsService {
     return null;
   }
 
-  async getResult(jobId: string) {
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+  async getResult(jobId: string, user: AuthUser) {
+    const job = this.assertCanAccessJob(jobId, user);
     if (job.status !== 'succeeded') return null;
     return { html: await this.renderMarkdownToHtml(job.markdown ?? ''), artifacts: job.artifacts };
   }
 
-  async getResultFromDisk(jobId: string) {
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+  async getResultFromDisk(jobId: string, user: AuthUser) {
+    const job = this.assertCanAccessJob(jobId, user);
     if (!(job.status === 'succeeded' && job.resultPath)) {
       await this.recoverJobFromExistingReport(job, 'result_lookup');
     }
@@ -675,9 +742,8 @@ export class ReportsService {
     return { html: await this.renderMarkdownToHtml(markdown), artifacts: job.artifacts, resultPath: fallback?.filePath ?? job.resultPath };
   }
 
-  async getMarkdownFromDisk(jobId: string) {
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+  async getMarkdownFromDisk(jobId: string, user: AuthUser) {
+    const job = this.assertCanAccessJob(jobId, user);
     if (!(job.status === 'succeeded' && job.resultPath)) {
       await this.recoverJobFromExistingReport(job, 'download_lookup');
     }
@@ -687,8 +753,8 @@ export class ReportsService {
     return { markdown, artifacts: job.artifacts, resultPath: job.resultPath };
   }
 
-  async getDatabaseSources(jobId: string): Promise<DatabaseSourcesResponse | undefined> {
-    const job = this.jobs.get(jobId);
+  async getDatabaseSources(jobId: string, user?: AuthUser): Promise<DatabaseSourcesResponse | undefined> {
+    const job = user ? this.assertCanAccessJob(jobId, user) : this.jobs.get(jobId);
     if (!job) return undefined;
 
     const dir = await this.resolveHermesJobDir(job);
@@ -769,9 +835,8 @@ export class ReportsService {
     return { status, sources, fallbackReason, totalHits, updatedAt, queryPlan, retrievalMode, vectorPlan };
   }
 
-  async getSources(jobId: string, options: ReportSourcesOptions = {}): Promise<ReportSourcesResponse | undefined> {
-    const job = this.jobs.get(jobId);
-    if (!job) return undefined;
+  async getSources(jobId: string, options: ReportSourcesOptions = {}, user: AuthUser): Promise<ReportSourcesResponse | undefined> {
+    const job = this.assertCanAccessJob(jobId, user);
 
     const type = this.normalizeReportSourceType(options.type);
     const page = this.parsePositiveInt(options.page, 1);
@@ -1683,11 +1748,15 @@ export class ReportsService {
               const filePath = this.remoteFs.joinPath(reportDir, entry.name);
               const parsed = JSON.parse(await this.remoteFs.readFile(filePath)) as Partial<JobRecord>;
               if (!parsed.jobId || this.jobs.has(parsed.jobId)) return;
+              if ((parsed.artifacts as Record<string, unknown> | undefined)?.deleted === true) return;
 
               const job = {
                 jobId: parsed.jobId,
                 skill: parsed.skill ?? 'risk-assessment-reports',
                 payload: parsed.payload ?? {},
+                ownerUserId: parsed.ownerUserId ?? null,
+                ownerUsername: parsed.ownerUsername ?? null,
+                ownerRole: parsed.ownerRole,
                 status: parsed.status ?? 'failed',
                 artifacts: parsed.artifacts ?? {},
                 createdAt: parsed.createdAt ?? new Date().toISOString(),

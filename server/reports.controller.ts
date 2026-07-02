@@ -1,34 +1,40 @@
-import { Body, Controller, Get, Header, HttpException, HttpStatus, Param, Post, Query, Sse } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, HttpException, HttpStatus, Param, Post, Query, Sse, UseGuards } from '@nestjs/common';
 import { Observable } from 'rxjs';
+import { AuthGuard } from './auth.guard.js';
+import type { AuthUser } from './auth-user.interface.js';
+import { CurrentUser } from './current-user.decorator.js';
 import { ReportsService } from './reports.service.js';
 import type { CreateJobRequest } from '../src/types/report.js';
 import type { ServerEvent } from './types.js';
 
 @Controller('/api/report-jobs')
+@UseGuards(AuthGuard)
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
 
   @Post()
-  create(@Body() body: CreateJobRequest) {
+  create(@Body() body: CreateJobRequest, @CurrentUser() user: AuthUser) {
     if (!body.skill || !body.payload) {
       throw new HttpException({ error: 'Missing skill or payload' }, HttpStatus.BAD_REQUEST);
     }
-    return this.reports.createJob(body);
+    return this.reports.createJob(body, user);
   }
 
   @Get()
   async list(
+    @CurrentUser() user: AuthUser,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('type') type?: string,
     @Query('q') q?: string,
+    @Query('mine') mine?: string,
   ) {
-    return this.reports.listJobs({ page, pageSize, type, q });
+    return this.reports.listJobs({ page, pageSize, type, q, mine }, user);
   }
 
   @Get(':jobId')
-  async get(@Param('jobId') jobId: string) {
-    const job = await this.reports.getJobWithRecoveredReport(jobId);
+  async get(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const job = await this.reports.getJobWithRecoveredReport(jobId, user);
     if (!job) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -36,8 +42,17 @@ export class ReportsController {
   }
 
   @Post(':jobId/cancel')
-  async cancel(@Param('jobId') jobId: string) {
-    const job = await this.reports.cancelJob(jobId);
+  async cancel(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const job = await this.reports.cancelJob(jobId, user);
+    if (!job) {
+      throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
+    }
+    return this.reports.serializeJob(job);
+  }
+
+  @Delete(':jobId')
+  async delete(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const job = await this.reports.deleteJob(jobId, user);
     if (!job) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -45,8 +60,8 @@ export class ReportsController {
   }
 
   @Get(':jobId/progress')
-  async progress(@Param('jobId') jobId: string) {
-    const result = await this.reports.getProgressState(jobId);
+  async progress(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const result = await this.reports.getProgressState(jobId, user);
     if (!result) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -54,8 +69,8 @@ export class ReportsController {
   }
 
   @Get(':jobId/event-log')
-  eventLog(@Param('jobId') jobId: string) {
-    const result = this.reports.getEventLog(jobId);
+  eventLog(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const result = this.reports.getEventLog(jobId, user);
     if (!result) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -63,11 +78,11 @@ export class ReportsController {
   }
 
   @Sse(':jobId/events')
-  events(@Param('jobId') jobId: string): Observable<MessageEvent> {
+  events(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser): Observable<MessageEvent> {
     return new Observable((subscriber) => {
       void (async () => {
         await this.reports.waitUntilReady();
-        const job = this.reports.getJob(jobId);
+        const job = this.reports.getJob(jobId, user);
         const stream = this.reports.getStream(jobId);
 
       if (!job) {
@@ -111,8 +126,8 @@ export class ReportsController {
   }
 
   @Get(':jobId/result')
-  async result(@Param('jobId') jobId: string) {
-    const result = await this.reports.getResultFromDisk(jobId);
+  async result(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const result = await this.reports.getResultFromDisk(jobId, user);
     if (result === undefined) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -124,8 +139,8 @@ export class ReportsController {
   }
 
   @Get(':jobId/database-sources')
-  async databaseSources(@Param('jobId') jobId: string) {
-    const result = await this.reports.getDatabaseSources(jobId);
+  async databaseSources(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const result = await this.reports.getDatabaseSources(jobId, user);
     if (result === undefined) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -135,11 +150,12 @@ export class ReportsController {
   @Get(':jobId/sources')
   async sources(
     @Param('jobId') jobId: string,
+    @CurrentUser() user: AuthUser,
     @Query('type') type?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
-    const result = await this.reports.getSources(jobId, { type, page, pageSize });
+    const result = await this.reports.getSources(jobId, { type, page, pageSize }, user);
     if (result === undefined) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
@@ -148,8 +164,8 @@ export class ReportsController {
 
   @Get(':jobId/download')
   @Header('Content-Type', 'text/markdown; charset=utf-8')
-  async download(@Param('jobId') jobId: string, @Query('format') format = 'md') {
-    const result = await this.reports.getMarkdownFromDisk(jobId);
+  async download(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser, @Query('format') format = 'md') {
+    const result = await this.reports.getMarkdownFromDisk(jobId, user);
     if (result === undefined) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }

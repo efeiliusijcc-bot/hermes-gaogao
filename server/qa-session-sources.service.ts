@@ -1,5 +1,7 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
+import { createRequire } from 'module';
 import { HERMES_QA_ARTIFACT_DIR } from './config.js';
+import type { AuthUser } from './auth-user.interface.js';
 import { RemoteFileService } from './remote-file.service.js';
 
 type JsonPrimitive = string | number | boolean | null;
@@ -17,43 +19,56 @@ interface UpsertSourcesInput {
   merge?: boolean;
 }
 
+type PgPool = {
+  query: (text: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>;
+  end: () => Promise<void>;
+};
+
+interface ChatSessionOwner {
+  sessionId: string;
+  ownerUserId: string;
+  ownerUsername: string | null;
+}
+
 const MAX_SESSION_ID_LENGTH = 120;
 const MAX_SOURCES = 100;
 const MAX_STRING_LENGTH = 2000;
 const MAX_OBJECT_KEYS = 80;
 const MAX_ARRAY_ITEMS = 50;
 const MAX_DEPTH = 4;
+const require = createRequire(import.meta.url);
 
 @Injectable()
-export class QaSessionSourcesService {
+export class QaSessionSourcesService implements OnModuleDestroy {
+  private pool: PgPool | null = null;
+
   constructor(private readonly remoteFs: RemoteFileService) {}
 
-  async getSources(sessionId: string): Promise<QaSessionSourcesRecord> {
+  async onModuleDestroy() {
+    if (this.pool) await this.pool.end();
+  }
+
+  async getSources(sessionId: string, user: AuthUser): Promise<QaSessionSourcesRecord> {
     const safeSessionId = this.safeSessionId(sessionId);
-    const filePath = this.sourcesFilePath(safeSessionId);
+    const owner = await this.assertCanAccessSession(safeSessionId, user, { allowAdminLegacy: true });
+    if (!owner) {
+      const legacyPath = this.legacySourcesFilePath(safeSessionId);
+      if (user.role === 'admin' && await this.remoteFs.exists(legacyPath)) return this.readSourcesFile(safeSessionId, legacyPath);
+      throw new NotFoundException({ error: 'Chat session not found' });
+    }
+    const filePath = this.sourcesFilePath(owner.ownerUserId, safeSessionId);
     const exists = await this.remoteFs.exists(filePath);
     if (!exists) return this.emptyRecord(safeSessionId);
 
-    try {
-      const parsed = JSON.parse(await this.remoteFs.readFile(filePath)) as Partial<QaSessionSourcesRecord>;
-      const sources = Array.isArray(parsed.sources) ? this.normalizeSources(parsed.sources) : [];
-      const updatedAt = typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null;
-      return {
-        sessionId: safeSessionId,
-        updatedAt,
-        sourceCount: sources.length,
-        sources,
-      };
-    } catch {
-      return this.emptyRecord(safeSessionId);
-    }
+    return this.readSourcesFile(safeSessionId, filePath);
   }
 
-  async upsertSources(sessionId: string, input: UpsertSourcesInput): Promise<QaSessionSourcesRecord> {
+  async upsertSources(sessionId: string, input: UpsertSourcesInput, user: AuthUser): Promise<QaSessionSourcesRecord> {
     const safeSessionId = this.safeSessionId(sessionId);
+    const owner = await this.ensureSessionOwner(safeSessionId, user);
     const incoming = this.normalizeSources(input.sources);
     const merge = input.merge !== false;
-    const current = merge ? await this.getSources(safeSessionId) : this.emptyRecord(safeSessionId);
+    const current = merge ? await this.getSources(safeSessionId, user) : this.emptyRecord(safeSessionId);
     const sources = this.dedupeSources([...(merge ? current.sources : []), ...incoming]).slice(0, MAX_SOURCES);
     const record: QaSessionSourcesRecord = {
       sessionId: safeSessionId,
@@ -62,10 +77,64 @@ export class QaSessionSourcesService {
       sources,
     };
 
-    const dirPath = this.sessionDirPath(safeSessionId);
+    const dirPath = this.sessionDirPath(owner.ownerUserId, safeSessionId);
     await this.remoteFs.mkdir(dirPath);
-    await this.remoteFs.writeFile(this.sourcesFilePath(safeSessionId), `${JSON.stringify(record, null, 2)}\n`);
+    await this.remoteFs.writeFile(this.sourcesFilePath(owner.ownerUserId, safeSessionId), `${JSON.stringify(record, null, 2)}\n`);
     return record;
+  }
+
+  async ensureSessionOwner(sessionId: string, user: AuthUser, title = ''): Promise<ChatSessionOwner> {
+    const safeSessionId = this.safeSessionId(sessionId);
+    const existing = await this.findSessionOwner(safeSessionId);
+    if (existing) {
+      this.assertOwner(existing, user);
+      await this.touchSession(safeSessionId, title);
+      return existing;
+    }
+
+    const pool = await this.getPool();
+    try {
+      await pool.query(
+        `INSERT INTO chat_sessions (session_id, owner_id, owner_username, title, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, now(), now())`,
+        [safeSessionId, user.id, user.username, title.slice(0, 256) || null],
+      );
+    } catch (error) {
+      const raced = await this.findSessionOwner(safeSessionId);
+      if (raced) {
+        this.assertOwner(raced, user);
+        return raced;
+      }
+      throw error;
+    }
+    return { sessionId: safeSessionId, ownerUserId: user.id, ownerUsername: user.username };
+  }
+
+  async assertCanAccessSession(sessionId: string, user: AuthUser, options: { allowAdminLegacy?: boolean } = {}): Promise<ChatSessionOwner | null> {
+    const safeSessionId = this.safeSessionId(sessionId);
+    const owner = await this.findSessionOwner(safeSessionId);
+    if (!owner) {
+      if (options.allowAdminLegacy && user.role === 'admin') return null;
+      throw new NotFoundException({ error: 'Chat session not found' });
+    }
+    this.assertOwner(owner, user);
+    return owner;
+  }
+
+  private async readSourcesFile(sessionId: string, filePath: string): Promise<QaSessionSourcesRecord> {
+    try {
+      const parsed = JSON.parse(await this.remoteFs.readFile(filePath)) as Partial<QaSessionSourcesRecord>;
+      const sources = Array.isArray(parsed.sources) ? this.normalizeSources(parsed.sources) : [];
+      const updatedAt = typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null;
+      return {
+        sessionId,
+        updatedAt,
+        sourceCount: sources.length,
+        sources,
+      };
+    } catch {
+      return this.emptyRecord(sessionId);
+    }
   }
 
   private safeSessionId(sessionId: string): string {
@@ -77,12 +146,22 @@ export class QaSessionSourcesService {
     return safe;
   }
 
-  private sessionDirPath(safeSessionId: string): string {
-    return this.remoteFs.joinPath(HERMES_QA_ARTIFACT_DIR, safeSessionId);
+  private safeOwnerId(ownerUserId: string): string {
+    const safe = String(ownerUserId || '').trim().replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80);
+    if (!safe || safe === '.' || safe === '..') throw new BadRequestException({ error: 'ownerUserId is required' });
+    return safe;
   }
 
-  private sourcesFilePath(safeSessionId: string): string {
-    return this.remoteFs.joinPath(this.sessionDirPath(safeSessionId), 'sources.json');
+  private sessionDirPath(ownerUserId: string, safeSessionId: string): string {
+    return this.remoteFs.joinPath(HERMES_QA_ARTIFACT_DIR, this.safeOwnerId(ownerUserId), safeSessionId);
+  }
+
+  private sourcesFilePath(ownerUserId: string, safeSessionId: string): string {
+    return this.remoteFs.joinPath(this.sessionDirPath(ownerUserId, safeSessionId), 'sources.json');
+  }
+
+  private legacySourcesFilePath(safeSessionId: string): string {
+    return this.remoteFs.joinPath(HERMES_QA_ARTIFACT_DIR, safeSessionId, 'sources.json');
   }
 
   private emptyRecord(sessionId: string): QaSessionSourcesRecord {
@@ -167,5 +246,53 @@ export class QaSessionSourcesService {
       if (typeof value === 'string' && value.trim()) return value.trim().toLowerCase();
     }
     return '';
+  }
+
+  private assertOwner(owner: ChatSessionOwner, user: AuthUser): void {
+    if (user.role === 'admin' || owner.ownerUserId === user.id) return;
+    throw new ForbiddenException({ error: 'Insufficient chat session permissions' });
+  }
+
+  private async findSessionOwner(sessionId: string): Promise<ChatSessionOwner | null> {
+    const pool = await this.getPool();
+    const result = await pool.query(
+      `SELECT session_id, owner_id, owner_username
+         FROM chat_sessions
+        WHERE session_id = $1
+        LIMIT 1`,
+      [sessionId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      sessionId: String(row.session_id || ''),
+      ownerUserId: String(row.owner_id || ''),
+      ownerUsername: row.owner_username ? String(row.owner_username) : null,
+    };
+  }
+
+  private async touchSession(sessionId: string, title = ''): Promise<void> {
+    const pool = await this.getPool();
+    await pool.query(
+      `UPDATE chat_sessions
+          SET updated_at = now(),
+              title = COALESCE(NULLIF($2, ''), title)
+        WHERE session_id = $1`,
+      [sessionId, title.slice(0, 256)],
+    );
+  }
+
+  private async getPool(): Promise<PgPool> {
+    if (this.pool) return this.pool;
+    const connectionString = process.env.PGVECTOR_DATABASE_URL || process.env.POSTGRES_DATABASE_URL || process.env.DATABASE_URL;
+    if (!connectionString) throw new Error('PGVECTOR_DATABASE_URL is not configured');
+    const { Pool } = require('pg') as { Pool: new (config: Record<string, unknown>) => PgPool };
+    this.pool = new Pool({
+      connectionString,
+      max: 4,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 5000,
+    });
+    return this.pool;
   }
 }

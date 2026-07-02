@@ -118,7 +118,7 @@ export class AuthService implements OnModuleDestroy {
       username: row.username,
       displayName: row.display_name || '',
       email: row.email || null,
-      role: this.isUserRole(row.role) ? row.role : 'user',
+      role: this.isUserRole(row.role) ? row.role : 'viewer',
     };
   }
 
@@ -130,13 +130,13 @@ export class AuthService implements OnModuleDestroy {
       password_hash: String(row.password_hash || ''),
       display_name: String(row.display_name || ''),
       email: row.email ? String(row.email) : null,
-      role: String(row.role || 'user'),
+      role: String(row.role || 'viewer'),
       is_active: row.is_active === true || String(row.is_active).toLowerCase() === 'true',
     };
   }
 
   private isUserRole(value: unknown): value is UserRole {
-    return value === 'admin' || value === 'user';
+    return value === 'admin' || value === 'operator' || value === 'viewer';
   }
 
   private async getPool(): Promise<PgPool> {

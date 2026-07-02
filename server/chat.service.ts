@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { createRequire } from 'module';
 import OpenAI from 'openai';
 import { Subject } from 'rxjs';
@@ -11,6 +11,7 @@ import {
   DIRECT_QA_MODEL,
   HERMES_QA_MODE,
 } from './config.js';
+import type { AuthUser } from './auth-user.interface.js';
 import { HermesService } from './hermes.service.js';
 import { QaSessionSourcesService } from './qa-session-sources.service.js';
 import { ResearchKeysService } from './research-keys.service.js';
@@ -27,6 +28,13 @@ interface ChatRequest {
   sessionId?: string;
 }
 
+interface ChatStreamMeta {
+  ownerUserId: string;
+  ownerUsername: string;
+  ownerRole: string;
+  sessionId: string;
+}
+
 const require = createRequire(import.meta.url);
 const PG_SOURCE_TABLE = process.env.PGVECTOR_NEWS_TABLE || 'vector_materials_text_embedding_v4';
 const VECTOR_RECALL_TIMEOUT_MS = Math.max(3000, Number(process.env.DIRECT_QA_VECTOR_TIMEOUT_MS || 8000));
@@ -40,6 +48,7 @@ const KEYWORD_CANDIDATE_LIMIT = Math.max(40, Math.min(160, Number(process.env.DI
 export class ChatService {
   private readonly streams = new Map<string, Subject<ServerEvent>>();
   private readonly history = new Map<string, ServerEvent[]>();
+  private readonly streamOwners = new Map<string, ChatStreamMeta>();
   private directClient: OpenAI | null = null;
   private directClientKey = '';
   private pgPool: PgPool | null = null;
@@ -53,33 +62,47 @@ export class ChatService {
     private readonly researchKeys: ResearchKeysService,
   ) {}
 
-  async complete(body: ChatRequest) {
+  async complete(body: ChatRequest, user: AuthUser) {
+    const sessionId = this.resolveSessionId(body.sessionId);
+    await this.qaSources.ensureSessionOwner(sessionId, user, this.sessionTitle(body.messages));
     if (body.stream) {
       const streamId = uuid();
       this.streams.set(streamId, new Subject<ServerEvent>());
       this.history.set(streamId, []);
-      setImmediate(() => void this.runStream(streamId, body.messages, body.sessionId));
-      return { streamId, eventsUrl: `/api/chat/streams/${streamId}` };
+      this.streamOwners.set(streamId, {
+        ownerUserId: user.id,
+        ownerUsername: user.username,
+        ownerRole: user.role,
+        sessionId,
+      });
+      setImmediate(() => void this.runStream(streamId, body.messages, sessionId, user));
+      return { streamId, sessionId, eventsUrl: `/api/chat/streams/${streamId}` };
     }
 
     const events: ServerEvent[] = [];
-    const text = await this.completeQa(body.messages, (event) => events.push(event), body.sessionId);
+    const text = await this.completeQa(body.messages, (event) => events.push(event), sessionId, user);
     return {
+      sessionId,
       choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
       events,
     };
   }
 
-  stream(streamId: string) {
+  stream(streamId: string, user: AuthUser) {
+    const meta = this.streamOwners.get(streamId);
+    if (!meta) return { events: undefined, subject: undefined };
+    if (user.role !== 'admin' && meta.ownerUserId !== user.id) {
+      throw new ForbiddenException({ error: 'Insufficient chat stream permissions' });
+    }
     return {
       events: this.history.get(streamId),
       subject: this.streams.get(streamId),
     };
   }
 
-  private async runStream(streamId: string, messages: ChatRequest['messages'], sessionId?: string) {
+  private async runStream(streamId: string, messages: ChatRequest['messages'], sessionId: string, user: AuthUser) {
     try {
-      await this.completeQa(messages, (event) => this.push(streamId, event), sessionId);
+      await this.completeQa(messages, (event) => this.push(streamId, event), sessionId, user);
       this.push(streamId, { type: 'done', jobId: streamId });
       this.streams.get(streamId)?.complete();
     } catch (error) {
@@ -96,30 +119,32 @@ export class ChatService {
   private async completeQa(
     messages: ChatRequest['messages'],
     onEvent: (event: ServerEvent) => void,
-    sessionId?: string,
+    sessionId: string,
+    user: AuthUser,
   ): Promise<string> {
     if (HERMES_QA_MODE === 'direct_pg') {
       try {
-        return await this.streamQaWithPgContext(messages, onEvent, sessionId);
+        return await this.streamQaWithPgContext(messages, onEvent, sessionId, user);
       } catch (error) {
         onEvent({
           type: 'status',
           status: 'fallback',
           message: 'PG 检索直连链路暂不可用，已切换备用问答链路。',
         });
-        return this.streamQaViaAgent(messages, onEvent, sessionId);
+        return this.streamQaViaAgent(messages, onEvent, sessionId, user);
       }
     }
-    return this.streamQaViaAgent(messages, onEvent, sessionId);
+    return this.streamQaViaAgent(messages, onEvent, sessionId, user);
   }
 
   private async streamQaViaAgent(
     messages: ChatRequest['messages'],
     onEvent: (event: ServerEvent) => void,
-    sessionId?: string,
+    sessionId: string,
+    user: AuthUser,
   ): Promise<string> {
     const text = await this.hermes.streamQa(messages, onEvent, sessionId);
-    const sourceEvent = await this.buildQaSourcesEvent(sessionId, messages);
+    const sourceEvent = await this.buildQaSourcesEvent(sessionId, messages, user);
     if (sourceEvent) onEvent(sourceEvent);
     return text;
   }
@@ -127,7 +152,8 @@ export class ChatService {
   private async streamQaWithPgContext(
     messages: ChatRequest['messages'],
     onEvent: (event: ServerEvent) => void,
-    sessionId?: string,
+    sessionId: string,
+    user: AuthUser,
   ): Promise<string> {
     const client = await this.getDirectClient();
     const question = this.lastUserMessage(messages);
@@ -136,7 +162,7 @@ export class ChatService {
     const sources = await this.recallPgSources(question, topic);
     if (sources.length) {
       onEvent({ type: 'sources', sources });
-      if (sessionId) await this.qaSources.upsertSources(sessionId, { sources, merge: true });
+      await this.qaSources.upsertSources(sessionId, { sources, merge: true }, user);
     }
     onEvent({
       type: 'stage',
@@ -606,15 +632,25 @@ export class ChatService {
     return messages.map((item) => item.content).filter(Boolean).join('\n').slice(-1000);
   }
 
-  private async buildQaSourcesEvent(sessionId?: string, messages: ChatRequest['messages'] = []): Promise<ServerEvent | null> {
-    if (!sessionId) return null;
+  private async buildQaSourcesEvent(sessionId: string, messages: ChatRequest['messages'] = [], user: AuthUser): Promise<ServerEvent | null> {
     let sources = this.hermes.extractQaSessionSources(sessionId);
     if (!sources.length) {
       const question = this.lastUserMessage(messages);
       sources = await this.recallPgSources(question, this.buildQuestionEmbeddingText(messages));
     }
     if (!sources.length) return null;
-    await this.qaSources.upsertSources(sessionId, { sources, merge: true });
+    await this.qaSources.upsertSources(sessionId, { sources, merge: true }, user);
     return { type: 'sources', sources };
+  }
+
+  private resolveSessionId(sessionId?: string): string {
+    return String(sessionId || `qa_${Date.now()}_${uuid().slice(0, 8)}`)
+      .trim()
+      .replace(/[^a-zA-Z0-9_.:-]/g, '_')
+      .slice(0, 120);
+  }
+
+  private sessionTitle(messages: ChatRequest['messages']): string {
+    return this.lastUserMessage(messages).replace(/\s+/g, ' ').trim().slice(0, 256);
   }
 }

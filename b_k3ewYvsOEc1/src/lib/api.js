@@ -1,8 +1,67 @@
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001/api'
+export const AUTH_TOKEN_KEY = 'gaogao_access_token'
+export const AUTH_USER_KEY = 'gaogao_current_user'
+
+let unauthorizedHandler = null
+
+export class ApiError extends Error {
+  constructor(message, status, data) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.data = data
+  }
+}
+
+export function getAuthToken() {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function getStoredAuthUser() {
+  try {
+    const raw = localStorage.getItem(AUTH_USER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+export function setAuthSession(token, user) {
+  try {
+    if (token) localStorage.setItem(AUTH_TOKEN_KEY, token)
+    else localStorage.removeItem(AUTH_TOKEN_KEY)
+    if (user) localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user))
+    else localStorage.removeItem(AUTH_USER_KEY)
+  } catch {
+    // Storage is best-effort; API calls still use the in-memory response path.
+  }
+}
+
+export function clearAuthSession() {
+  setAuthSession('', null)
+}
+
+export function logout() {
+  clearAuthSession()
+}
+
+export function setUnauthorizedHandler(handler) {
+  unauthorizedHandler = typeof handler === 'function' ? handler : null
+}
 
 async function request(path, options = {}) {
+  const token = getAuthToken()
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options.headers || {}),
+  }
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers,
     ...options,
   })
 
@@ -10,10 +69,61 @@ async function request(path, options = {}) {
   const data = text ? JSON.parse(text) : null
 
   if (!response.ok) {
-    throw new Error(data?.error || data?.message || data?.details?.[0] || `HTTP ${response.status}`)
+    const fallbackMessage = response.status === 403 ? '无权限访问用户管理' : `HTTP ${response.status}`
+    const error = new ApiError(data?.error || data?.message || data?.details?.[0] || fallbackMessage, response.status, data)
+    if (response.status === 401) {
+      clearAuthSession()
+      unauthorizedHandler?.(error)
+    }
+    throw error
   }
 
   return data
+}
+
+export function login(username, password) {
+  return request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+}
+
+export function getCurrentUser() {
+  return request('/auth/me')
+}
+
+export const loginAuth = (body) => login(body?.username || '', body?.password || '')
+export const fetchCurrentUser = getCurrentUser
+
+export function getUsers() {
+  return request('/users')
+}
+
+export function createUser(payload) {
+  return request('/users', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateUser(id, payload) {
+  return request(`/users/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function resetUserPassword(id, password) {
+  return request(`/users/${encodeURIComponent(id)}/password`, {
+    method: 'PUT',
+    body: JSON.stringify({ password }),
+  })
+}
+
+export function disableUser(id) {
+  return request(`/users/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
 }
 
 export function fetchHermesHealth() {

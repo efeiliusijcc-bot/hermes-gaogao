@@ -29,6 +29,9 @@ export interface JobRecord {
   jobId: string;
   skill: SkillName;
   payload: ReportPayload;
+  ownerUserId: string | null;
+  ownerUsername: string | null;
+  ownerRole?: string;
   status: ReportJobStatus;
   stage?: string;
   markdown?: string;

@@ -14,14 +14,19 @@ import { ResearchKeysController } from './research-keys.controller.js';
 import { ResearchKeysService } from './research-keys.service.js';
 import { ReportsController } from './reports.controller.js';
 import { ReportsService } from './reports.service.js';
+import { RolesGuard } from './roles.guard.js';
+import { UsersController } from './users.controller.js';
+import { UsersService } from './users.service.js';
 import { VectorSourcesController } from './vector-sources.controller.js';
 import { VectorSourceService } from './vector-source.service.js';
 
 @Module({
-  controllers: [HealthController, AuthController, ReportsController, ReportPlansController, ResearchKeysController, VectorSourcesController, ChatController],
+  controllers: [HealthController, AuthController, UsersController, ReportsController, ReportPlansController, ResearchKeysController, VectorSourcesController, ChatController],
   providers: [
     AuthService,
     AuthGuard,
+    RolesGuard,
+    UsersService,
     HermesService,
     HermesGatewayDeviceService,
     RemoteFileService,

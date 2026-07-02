@@ -10,6 +10,7 @@ import {
   fetchReportProgress,
   fetchReportResult,
   fetchVectorSourceStatus,
+  getAuthToken,
   getJobEventsUrl,
 } from '../lib/api.js'
 
@@ -813,10 +814,22 @@ export function useReportJobs() {
     if (subscribedJobId === jobId && jobEventSource) return
 
     closeJobEvents()
+    const token = getAuthToken()
+    if (!token) {
+      appendExecutionLog({
+        type: 'error',
+        label: '执行日志',
+        status: 'failed',
+        summary: '请先登录后查看实时任务日志。',
+      }, jobId)
+      return
+    }
     if (activeExecutionLogJobId !== jobId) setActiveExecutionLogJob(jobId)
     startProgressPolling(jobId)
     subscribedJobId = jobId
-    const source = new EventSource(getJobEventsUrl(jobId))
+    const eventsUrl = getJobEventsUrl(jobId)
+    const separator = eventsUrl.includes('?') ? '&' : '?'
+    const source = new EventSource(`${eventsUrl}${separator}access_token=${encodeURIComponent(token)}`)
     jobEventSource = source
 
     source.onmessage = (message) => {
@@ -1522,6 +1535,9 @@ export function useReportJobs() {
 
     try {
       pushLog('提交报告生成任务到后端。')
+      if (!getAuthToken()) {
+        throw new Error('请先登录后再创建编报任务。')
+      }
       await refreshHealth()
       const created = await createReportJob(buildPayload(plannedContext))
       job.value = { jobId: created.jobId, status: created.status }
