@@ -197,6 +197,24 @@ export function fetchReportJob(jobId) {
   return request(`/report-jobs/${jobId}`)
 }
 
+export function deleteReportJob(jobId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function restoreReportJob(jobId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/restore`, {
+    method: 'POST',
+  })
+}
+
+export function permanentlyDeleteReportJob(jobId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/permanent`, {
+    method: 'DELETE',
+  })
+}
+
 export function fetchReportJobEventLog(jobId) {
   return request(`/report-jobs/${jobId}/event-log`)
 }

@@ -2,6 +2,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   createReportPlan,
   createReportJob,
+  deleteReportJob,
   fetchHermesHealth,
   fetchReportDatabaseSources,
   fetchReportJob,
@@ -12,6 +13,8 @@ import {
   fetchVectorSourceStatus,
   getAuthToken,
   getJobEventsUrl,
+  permanentlyDeleteReportJob,
+  restoreReportJob,
 } from '../lib/api.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
@@ -152,6 +155,7 @@ export function useReportJobs() {
   const listTotal = ref(0)
   const listTotalPages = ref(1)
   const listStatusCounts = ref({ succeeded: 0, running: 0 })
+  const listTrashMode = ref(false)
   const recentJobs = ref([])
   const recentPage = ref(0)
   const recentPageSize = 8
@@ -1581,12 +1585,17 @@ export function useReportJobs() {
       if (overrides.page !== undefined) listPage.value = overrides.page
       if (overrides.pageSize !== undefined) listPageSize.value = overrides.pageSize
       if (overrides.q !== undefined) listSearch.value = overrides.q
+      if (overrides.trash !== undefined) {
+        listTrashMode.value = Boolean(overrides.trash)
+        listPage.value = overrides.page !== undefined ? listPage.value : 1
+      }
 
       const drafts = readDrafts()
       const response = await fetchReportJobs({
         page: listPage.value,
         pageSize: listPageSize.value,
         q: listSearch.value.trim(),
+        trash: listTrashMode.value ? 'true' : '',
       })
       if (requestId !== jobListRequestId) return
       const items = Array.isArray(response) ? response : response.items || []
@@ -1767,6 +1776,82 @@ export function useReportJobs() {
     if (item) await openReportFromList(item)
   }
 
+  async function deleteReportFromList(item) {
+    const jobId = item?.jobId || ''
+    if (!jobId) return
+    const title = getJobTitle(item)
+    const confirmed = window.confirm(`确认将编报「${title}」移入垃圾箱？\n\n可在垃圾箱中恢复，或再次确认后永久删除。`)
+    if (!confirmed) return
+
+    try {
+      await deleteReportJob(jobId)
+      jobList.value = jobList.value.filter((entry) => entry.jobId !== jobId)
+      recentJobs.value = recentJobs.value.filter((entry) => entry.jobId !== jobId)
+      listTotal.value = Math.max(0, Number(listTotal.value || 0) - 1)
+      listStatusCounts.value = {
+        succeeded: Math.max(0, Number(listStatusCounts.value?.succeeded || 0) - (item.status === 'succeeded' ? 1 : 0)),
+        running: Math.max(0, Number(listStatusCounts.value?.running || 0) - ((item.status === 'running' || item.status === 'queued') ? 1 : 0)),
+      }
+      if (job.value?.jobId === jobId) {
+        closeJobEvents()
+        openedHistoryJobId.value = ''
+        job.value = null
+        selectedReport.value = null
+        generatedHtml.value = ''
+        detailLoadError.value = ''
+        detailLoading.value = false
+        currentView.value = 'list'
+        phase.value = 'input'
+        loadingStep.value = '等待输入任务'
+      }
+      await Promise.allSettled([loadJobList(false, { trash: listTrashMode.value }), refreshRecentReports()])
+      pushLog(`已移入垃圾箱：${jobId}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      errorMessage.value = message
+      pushLog(`删除编报失败：${message}`)
+      throw error
+    }
+  }
+
+  async function restoreReportFromTrash(item) {
+    const jobId = item?.jobId || ''
+    if (!jobId) return
+    try {
+      await restoreReportJob(jobId)
+      jobList.value = jobList.value.filter((entry) => entry.jobId !== jobId)
+      listTotal.value = Math.max(0, Number(listTotal.value || 0) - 1)
+      await Promise.allSettled([loadJobList(false, { trash: listTrashMode.value }), refreshRecentReports()])
+      pushLog(`已从垃圾箱恢复：${jobId}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      errorMessage.value = message
+      pushLog(`恢复编报失败：${message}`)
+      throw error
+    }
+  }
+
+  async function permanentlyDeleteReportFromTrash(item) {
+    const jobId = item?.jobId || ''
+    if (!jobId) return
+    const title = getJobTitle(item)
+    const confirmed = window.confirm(`永久删除编报「${title}」？\n\n这会删除任务状态、任务目录和已生成报告文件，操作不可恢复。`)
+    if (!confirmed) return
+    try {
+      await permanentlyDeleteReportJob(jobId)
+      jobList.value = jobList.value.filter((entry) => entry.jobId !== jobId)
+      recentJobs.value = recentJobs.value.filter((entry) => entry.jobId !== jobId)
+      listTotal.value = Math.max(0, Number(listTotal.value || 0) - 1)
+      await Promise.allSettled([loadJobList(false, { trash: true }), refreshRecentReports()])
+      pushLog(`已永久删除编报：${jobId}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      errorMessage.value = message
+      pushLog(`永久删除编报失败：${message}`)
+      throw error
+    }
+  }
+
   function showGenerator() {
     if (!restoreWorkspaceSnapshot()) currentView.value = 'generator'
   }
@@ -1836,6 +1921,7 @@ export function useReportJobs() {
     listPageSize,
     listTotal,
     listTotalPages,
+    listTrashMode,
     health,
     errorMessage,
     selectedReport,
@@ -1877,6 +1963,9 @@ export function useReportJobs() {
     updateListPageSize,
     openReportFromList,
     monitorJobFromList,
+    deleteReportFromList,
+    restoreReportFromTrash,
+    permanentlyDeleteReportFromTrash,
     retryOpenCurrentHistoryReport,
     showGenerator,
     backgroundActiveWorkspace,

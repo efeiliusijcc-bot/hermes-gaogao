@@ -94,6 +94,7 @@ const props = defineProps({
   },
   isLogDrawerOpen: Boolean,
   hasReturnableWorkspace: Boolean,
+  canDeleteReport: Boolean,
   homeMode: {
     type: String,
     default: 'report',
@@ -110,6 +111,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'list',
+  'delete-report',
   'new-report',
   'retry-history-report',
   'show-active-workspace',
@@ -4839,6 +4841,14 @@ function exportPdf() {
               </button>
               <button @click="emit('list')" class="result-action-btn" type="button">
                 <span>☷</span> 报告列表
+              </button>
+              <button
+                v-if="canDeleteReport && job?.jobId"
+                @click="emit('delete-report', job)"
+                class="result-action-btn result-action-danger"
+                type="button"
+              >
+                <span>!</span> 删除编报
               </button>
               <button @click="emit('new-report')" class="result-action-btn result-action-primary" type="button">
                 <span>＋</span> 新开一篇

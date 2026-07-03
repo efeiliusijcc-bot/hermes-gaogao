@@ -165,6 +165,19 @@ export class RemoteFileService {
     await execSsh(`mkdir -p ${shQuote(dirPath)}${chown}`);
   }
 
+  async remove(filePath: string, options: { recursive?: boolean } = {}): Promise<void> {
+    filePath = this.toHostPath(filePath);
+    if (!this.isInsideReportDir(filePath)) {
+      throw new Error(`Refusing to remove path outside report directory: ${filePath}`);
+    }
+    if (!isRemote()) {
+      await fs.promises.rm(filePath, { force: true, recursive: Boolean(options.recursive) });
+      return;
+    }
+    const flag = options.recursive ? '-rf' : '-f';
+    await execSsh(`rm ${flag} -- ${shQuote(filePath)}`);
+  }
+
   async exists(filePath: string): Promise<boolean> {
     filePath = this.toHostPath(filePath);
     if (!isRemote()) {

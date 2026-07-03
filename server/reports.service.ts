@@ -28,6 +28,7 @@ interface JobListOptions {
   type?: string;
   q?: string;
   mine?: string | boolean;
+  trash?: string | boolean;
 }
 
 interface DatabaseSourceItem {
@@ -193,8 +194,10 @@ export class ReportsService {
     const type = this.normalizeTypeFilter(options.type);
     const query = String(options.q ?? '').trim().toLowerCase();
     const mineOnly = options.mine === true || String(options.mine || '').toLowerCase() === 'true';
+    const trashOnly = options.trash === true || String(options.trash || '').toLowerCase() === 'true';
 
     const filtered = Array.from(this.jobs.values())
+      .filter((job) => this.isDeletedJob(job) === trashOnly)
       .filter((job) => this.canListJob(job, user, mineOnly))
       .filter((job) => type === 'all' || this.jobTypeKey(job) === type)
       .filter((job) => !query || this.jobSearchText(job).includes(query))
@@ -256,18 +259,51 @@ export class ReportsService {
     }
     const job = this.assertCanAccessJob(jobId, user);
     job.status = job.status === 'running' || job.status === 'queued' ? 'cancelled' : job.status;
+    job.stage = 'deleted';
+    job.errorMessage = 'Job moved to trash by admin';
     job.updatedAt = new Date().toISOString();
+    job.artifacts = {
+      ...job.artifacts,
+      deleted: true,
+      deletedAt: job.updatedAt,
+      deletedBy: user.username,
+    };
+    this.streams.get(jobId)?.complete();
+    this.streams.delete(jobId);
+    await this.writeJobState(job);
+    return job;
+  }
+
+  async restoreJob(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
+    await this.jobsReady;
+    if (!this.canDeleteReport(user)) {
+      throw new ForbiddenException({ error: 'Only admin can restore report jobs' });
+    }
+    const job = this.assertCanAccessJob(jobId, user);
+    if (!this.isDeletedJob(job)) return job;
+    const { deleted: _deleted, deletedAt: _deletedAt, deletedBy: _deletedBy, ...restArtifacts } = job.artifacts || {};
+    job.artifacts = restArtifacts;
+    job.stage = undefined;
+    job.errorMessage = undefined;
+    job.updatedAt = new Date().toISOString();
+    await this.writeJobState(job);
+    return job;
+  }
+
+  async permanentlyDeleteJob(jobId: string, user: AuthUser): Promise<{ jobId: string; deleted: true }> {
+    await this.jobsReady;
+    if (!this.canDeleteReport(user)) {
+      throw new ForbiddenException({ error: 'Only admin can permanently delete report jobs' });
+    }
+    const job = this.assertCanAccessJob(jobId, user);
+    if (!this.isDeletedJob(job)) {
+      throw new ForbiddenException({ error: 'Move report job to trash before permanent deletion' });
+    }
     this.streams.get(jobId)?.complete();
     this.streams.delete(jobId);
     this.jobs.delete(jobId);
-    await this.writeJobState({
-      ...job,
-      status: 'cancelled',
-      stage: 'deleted',
-      errorMessage: 'Job deleted by admin',
-      artifacts: { ...job.artifacts, deleted: true },
-    });
-    return job;
+    await this.removeJobArtifacts(job);
+    return { jobId, deleted: true };
   }
 
   async getJobWithRecoveredReport(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
@@ -307,6 +343,9 @@ export class ReportsService {
       payload: job.payload,
       ownerUserId: job.ownerUserId ?? null,
       ownerUsername: job.ownerUsername ?? null,
+      isDeleted: this.isDeletedJob(job),
+      deletedAt: typeof job.artifacts?.deletedAt === 'string' ? job.artifacts.deletedAt : null,
+      deletedBy: typeof job.artifacts?.deletedBy === 'string' ? job.artifacts.deletedBy : null,
       status: job.status,
       stage: job.stage,
       errorMessage: this.sanitizeUserVisibleText(job.errorMessage || '', 300) || undefined,
@@ -362,6 +401,10 @@ export class ReportsService {
     if (this.canReadAllReports(user) && !mineOnly) return true;
     if (!job.ownerUserId) return false;
     return job.ownerUserId === user.id;
+  }
+
+  private isDeletedJob(job: JobRecord): boolean {
+    return job.artifacts?.deleted === true || job.stage === 'deleted';
   }
 
   private parsePositiveInt(value: string | number | undefined, fallback: number): number {
@@ -1748,6 +1791,36 @@ export class ReportsService {
     }
   }
 
+  private async removeJobArtifacts(job: JobRecord): Promise<void> {
+    const reportDir = this.remoteFs.remoteDir;
+    const paths = new Map<string, { recursive: boolean }>();
+    const addFile = (filePath: unknown) => {
+      const value = String(filePath || '').trim();
+      if (!value || !this.remoteFs.isInsideReportDir(value)) return;
+      paths.set(value, { recursive: false });
+      if (value.toLowerCase().endsWith('.md')) {
+        paths.set(value.replace(/\.md$/i, '.html'), { recursive: false });
+      }
+    };
+    const addDir = (dirPath: unknown) => {
+      const value = String(dirPath || '').trim();
+      if (!value || !this.remoteFs.isInsideReportDir(value)) return;
+      paths.set(value, { recursive: true });
+    };
+
+    addFile(this.remoteFs.joinPath(reportDir, `${job.jobId}.json`));
+    addFile(job.resultPath);
+    addDir(await this.resolveHermesJobDir(job));
+
+    for (const [filePath, options] of paths) {
+      try {
+        await this.remoteFs.remove(filePath, options);
+      } catch (error) {
+        console.error('removeJobArtifacts failed:', filePath, error instanceof Error ? error.message : error);
+      }
+    }
+  }
+
   private async loadPersistedJobs(): Promise<void> {
     try {
       const reportDir = this.remoteFs.remoteDir;
@@ -1761,8 +1834,6 @@ export class ReportsService {
               const filePath = this.remoteFs.joinPath(reportDir, entry.name);
               const parsed = JSON.parse(await this.remoteFs.readFile(filePath)) as Partial<JobRecord>;
               if (!parsed.jobId || this.jobs.has(parsed.jobId)) return;
-              if ((parsed.artifacts as Record<string, unknown> | undefined)?.deleted === true) return;
-
               const job = {
                 jobId: parsed.jobId,
                 skill: parsed.skill ?? 'risk-assessment-reports',

@@ -4630,6 +4630,65 @@ canvas {
   color: #fff;
 }
 
+.result-action-danger {
+  border-color: rgba(220, 38, 38, 0.28);
+  color: #b91c1c;
+  background: rgba(254, 242, 242, 0.94);
+}
+
+.result-action-danger:hover:not(:disabled) {
+  border-color: rgba(220, 38, 38, 0.42);
+  background: rgba(254, 226, 226, 0.96);
+  color: #991b1b;
+}
+
+.trash-mode-banner {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(220, 38, 38, 0.20);
+  border-radius: 12px;
+  background: rgba(254, 242, 242, 0.82);
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.archive-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.archive-delete-btn,
+.archive-restore-btn {
+  padding: 4px 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.88);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.archive-delete-btn {
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.22);
+}
+
+.archive-delete-btn:hover {
+  background: rgba(254, 226, 226, 0.92);
+}
+
+.archive-restore-btn {
+  color: #047857;
+  border-color: rgba(5, 150, 105, 0.22);
+}
+
+.archive-restore-btn:hover {
+  background: rgba(209, 250, 229, 0.92);
+}
+
 .result-info-bar {
   display: flex;
   flex-wrap: wrap;

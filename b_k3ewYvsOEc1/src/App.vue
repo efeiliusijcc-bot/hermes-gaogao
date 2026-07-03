@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import NexusHeader from './components/NexusHeader.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import DataCanvas from './components/DataCanvas.vue'
@@ -52,6 +52,7 @@ const {
   listPageSize,
   listTotal,
   listTotalPages,
+  listTrashMode,
   isHistoryMode,
   hasActiveWorkspace,
   activeWorkspaceJobId,
@@ -81,6 +82,9 @@ const {
   updateListPage,
   updateListPageSize,
   monitorJobFromList,
+  deleteReportFromList,
+  restoreReportFromTrash,
+  permanentlyDeleteReportFromTrash,
   retryOpenCurrentHistoryReport,
   showGenerator,
   backgroundActiveWorkspace,
@@ -125,6 +129,8 @@ const hasGeneratingWorkspace = computed(() => {
 const hasReturnableWorkspace = computed(() => {
   return Boolean(returnableWorkspaceJobId.value)
 })
+
+const canDeleteReports = computed(() => authUser.value?.role === 'admin')
 
 const sidebarCurrentJobId = computed(() => {
   return openedHistoryJobId.value || job.value?.jobId || activeWorkspaceJobId.value
@@ -385,6 +391,7 @@ function jobActionLabel(status) {
         :unreadLogCount="unreadLogCount"
         :isLogDrawerOpen="isLogDrawerOpen"
         :hasReturnableWorkspace="hasReturnableWorkspace"
+        :canDeleteReport="canDeleteReports"
         @generate="handleGenerate"
         @confirm-plan="confirmReportPlan"
         @cancel-plan="cancelReportPlan"
@@ -397,6 +404,7 @@ function jobActionLabel(status) {
         @qa-session-upsert="upsertQaSession"
         @qa-session-clear-selection="clearSelectedQaSession"
         @list="loadJobList"
+        @delete-report="deleteReportFromList"
         @new-report="resetForNewReportFromCanvas"
         @retry-history-report="retryOpenCurrentHistoryReport"
         @show-active-workspace="showGenerator"
@@ -421,12 +429,23 @@ function jobActionLabel(status) {
             {{ hasGeneratingWorkspace ? '返回生成编报' : '返回当前编报' }}
           </button>
           <button class="sci-btn text-[10px] px-3 py-2" @click="resetForNewReport">新建编报</button>
-          <button class="sci-btn text-[10px] px-3 py-2" @click="loadJobList(false)">刷新列表</button>
+          <button
+            v-if="canDeleteReports"
+            class="sci-btn text-[10px] px-3 py-2"
+            :class="listTrashMode ? 'border-red-300/50 text-red-600' : ''"
+            @click="loadJobList(false, { trash: !listTrashMode })"
+          >
+            {{ listTrashMode ? '返回报告列表' : '垃圾箱' }}
+          </button>
+          <button class="sci-btn text-[10px] px-3 py-2" @click="loadJobList(false, { trash: listTrashMode })">刷新列表</button>
         </div>
       </div>
 
       <div class="panel p-4 mb-6 archive-filter-panel">
         <div class="archive-search-only">
+          <div v-if="listTrashMode" class="trash-mode-banner">
+            当前为垃圾箱视图。恢复会回到报告列表，永久删除会清理服务器上的任务状态和报告文件。
+          </div>
           <div class="relative flex-1">
             <input
               :value="listSearch"
@@ -463,13 +482,40 @@ function jobActionLabel(status) {
             <div class="col-span-2 font-mono text-xs text-[#374151]" style="font-size: 14px; font-weight: 500; line-height: 1.7">{{ item.updatedAt || item.createdAt }}</div>
             <div class="col-span-1 font-mono text-xs text-[#374151] truncate" style="font-size: 14px; font-weight: 500; line-height: 1.7">{{ item.resultPath ? '已生成' : '未生成' }}</div>
             <div class="col-span-1">
-              <button
-                class="font-mono text-[10px] hover:text-neon-green disabled:opacity-30"
-                style="color: #0369a1; font-weight: 700"
-                @click="monitorJobFromList(item)"
-              >
-                {{ jobActionLabel(item.status) }}
-              </button>
+              <div class="archive-row-actions">
+                <button
+                  class="font-mono text-[10px] hover:text-neon-green disabled:opacity-30"
+                  style="color: #0369a1; font-weight: 700"
+                  @click="monitorJobFromList(item)"
+                >
+                  {{ jobActionLabel(item.status) }}
+                </button>
+                <button
+                  v-if="canDeleteReports && !listTrashMode"
+                  class="archive-delete-btn"
+                  type="button"
+                  title="移入垃圾箱"
+                  @click.stop="deleteReportFromList(item)"
+                >
+                  删除
+                </button>
+                <button
+                  v-if="canDeleteReports && listTrashMode"
+                  class="archive-restore-btn"
+                  type="button"
+                  @click.stop="restoreReportFromTrash(item)"
+                >
+                  恢复
+                </button>
+                <button
+                  v-if="canDeleteReports && listTrashMode"
+                  class="archive-delete-btn"
+                  type="button"
+                  @click.stop="permanentlyDeleteReportFromTrash(item)"
+                >
+                  永久删除
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -477,7 +523,7 @@ function jobActionLabel(status) {
         <div v-else class="py-16 text-center">
           <div class="font-mono text-4xl mb-4" style="color: #94a3b8">{{ listSearch ? 'NO MATCH' : 'NO DATA' }}</div>
           <div class="font-mono text-sm text-slate-400">
-            {{ listSearch ? '未找到匹配编报' : '暂无报告任务' }}
+            {{ listTrashMode ? '垃圾箱为空' : (listSearch ? '未找到匹配编报' : '暂无报告任务') }}
           </div>
         </div>
       </div>
@@ -505,3 +551,6 @@ function jobActionLabel(status) {
     </main>
   </div>
 </template>
+
+
+

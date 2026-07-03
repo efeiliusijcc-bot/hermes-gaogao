@@ -28,8 +28,9 @@ export class ReportsController {
     @Query('type') type?: string,
     @Query('q') q?: string,
     @Query('mine') mine?: string,
+    @Query('trash') trash?: string,
   ) {
-    return this.reports.listJobs({ page, pageSize, type, q, mine }, user);
+    return this.reports.listJobs({ page, pageSize, type, q, mine, trash }, user);
   }
 
   @Get(':jobId')
@@ -57,6 +58,20 @@ export class ReportsController {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
     return this.reports.serializeJob(job);
+  }
+
+  @Post(':jobId/restore')
+  async restore(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const job = await this.reports.restoreJob(jobId, user);
+    if (!job) {
+      throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
+    }
+    return this.reports.serializeJob(job);
+  }
+
+  @Delete(':jobId/permanent')
+  async permanentDelete(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    return this.reports.permanentlyDeleteJob(jobId, user);
   }
 
   @Get(':jobId/progress')
