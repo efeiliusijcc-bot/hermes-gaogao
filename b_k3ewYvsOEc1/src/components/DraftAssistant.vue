@@ -60,6 +60,10 @@ const currentEventId = computed(() => eventResult.value?.eventId || eventResult.
 const currentOutlineId = computed(() => selectedOutline.value?.outlineId || '')
 const canUse = computed(() => Boolean(props.currentUser))
 const displayOutline = computed(() => normalizeOutlineForDisplay(selectedOutline.value?.outline || {}))
+const hasOutline = computed(() => Boolean(selectedOutline.value?.outline && displayOutline.value.outlineItems.length))
+const currentVersionText = computed(() => selectedOutline.value ? `当前版本：${versionLabel(selectedOutline.value)}` : '尚未生成提纲')
+const currentVersionTime = computed(() => selectedOutline.value?.createdAt ? formatTime(selectedOutline.value.createdAt) : '')
+const eventAnalyzed = computed(() => Boolean(analysis.value))
 
 const cnNumbers = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二']
 
@@ -405,6 +409,24 @@ function versionLabel(item) {
   return `V${item?.versionNo || '-'} ${type}`
 }
 
+function versionTypeLabel(item) {
+  if (item?.editType === 'ai_refine') return 'AI修改版'
+  if (item?.editType === 'manual') return '手动修改版'
+  return 'AI生成版'
+}
+
+function versionSummary(item) {
+  return String(item?.userFeedback || (item?.editType === 'manual' ? '手动调整提纲结构' : '基于事件分析生成')).slice(0, 60)
+}
+
+function versionClass(item) {
+  return {
+    active: item.outlineId === currentOutlineId.value,
+    refine: item?.editType === 'ai_refine',
+    manual: item?.editType === 'manual',
+  }
+}
+
 function formatTime(value) {
   if (!value) return ''
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
@@ -485,85 +507,138 @@ onMounted(() => {
         </div>
       </aside>
 
-      <section class="draft-panel draft-center">
-        <div class="draft-panel-head">
-          <h2>事件分析</h2>
-          <span v-if="currentEventId" class="draft-id">事件 {{ currentEventId.slice(0, 8) }}</span>
+      <section class="draft-panel draft-center draft-outline-workbench">
+        <div class="draft-panel-head draft-workbench-head">
+          <div>
+            <h2>拟稿提纲（目录式）</h2>
+            <div class="draft-version-meta">
+              <span>{{ currentVersionText }}</span>
+              <span v-if="currentVersionTime">生成时间：{{ currentVersionTime }}</span>
+              <span v-if="currentEventId">事件 {{ currentEventId.slice(0, 8) }}</span>
+            </div>
+          </div>
+          <div class="draft-workbench-actions">
+            <button class="sci-btn" type="button" :disabled="!selectedOutline" @click="editMode = !editMode; syncOutlineEdit()">
+              {{ editMode ? '退出编辑' : '编辑提纲' }}
+            </button>
+            <button class="sci-btn sci-btn-primary" type="button" :disabled="isRefining || !currentOutlineId" @click="refineOutline">
+              {{ isRefining ? '修改中...' : 'AI修改提纲' }}
+            </button>
+          </div>
         </div>
         <div v-if="errorMessage" class="draft-error">{{ errorMessage }}</div>
         <div v-if="notice" class="draft-notice">{{ notice }}</div>
 
-        <div v-if="analysis" class="draft-analysis">
-          <article class="draft-block highlight">
-            <h3>一句话概括</h3>
-            <p>{{ analysis.oneSentenceSummary || '暂无' }}</p>
-          </article>
-          <article class="draft-block">
-            <h3>基本情况</h3>
-            <p>{{ analysis.basicSituation || '暂无' }}</p>
-          </article>
-          <article class="draft-block">
-            <h3>背景</h3>
-            <p>{{ analysis.background || '暂无' }}</p>
-          </article>
-          <div class="draft-block-list">
-            <article class="draft-block">
-              <h3>时间线</h3>
-              <ul><li v-for="(item, index) in analysis.timeline" :key="index">{{ typeof item === 'string' ? item : JSON.stringify(item) }}</li></ul>
-            </article>
-            <article class="draft-block">
-              <h3>主要事实</h3>
-              <ul><li v-for="(item, index) in analysis.mainFacts" :key="index">{{ typeof item === 'string' ? item : JSON.stringify(item) }}</li></ul>
-            </article>
-            <article class="draft-block">
-              <h3>涉我风险</h3>
-              <ul><li v-for="(item, index) in analysis.riskToUs" :key="index">{{ typeof item === 'string' ? item : JSON.stringify(item) }}</li></ul>
-            </article>
-            <article class="draft-block">
-              <h3>待核实问题</h3>
-              <ul><li v-for="(item, index) in analysis.uncertainties" :key="index">{{ typeof item === 'string' ? item : JSON.stringify(item) }}</li></ul>
-            </article>
+        <div v-if="hasOutline && !editMode" class="draft-outline-view">
+          <div class="draft-outline-meta">
+            <div class="draft-meta-row">
+              <span>建议标题</span>
+              <strong>{{ displayOutline.reportTitle || '暂无' }}</strong>
+            </div>
+            <div class="draft-meta-row">
+              <span>主题立意</span>
+              <strong>{{ displayOutline.reportTheme || '暂无' }}</strong>
+            </div>
+            <div class="draft-meta-row">
+              <span>核心判断</span>
+              <p>{{ displayOutline.coreArgument || '暂无' }}</p>
+            </div>
           </div>
-          <article class="draft-block">
-            <h3>重要性判断</h3>
-            <p>{{ analysis.importanceJudgement || '暂无' }}</p>
-          </article>
-          <article class="draft-block">
-            <h3>建议编报角度</h3>
-            <ul><li v-for="(item, index) in analysis.suggestedAngles" :key="index">{{ typeof item === 'string' ? item : JSON.stringify(item) }}</li></ul>
-          </article>
-          <article class="draft-block">
-            <h3>召回来源</h3>
-            <div class="draft-source-list">
-              <div v-for="source in sources" :key="source.sourceId" class="draft-source-card">
-                <div>
-                  <strong>{{ source.sourceTitle || source.sourceUrl || '未命名信源' }}</strong>
-                  <span>{{ source.publisher || '来源待核实' }} · 可信度 {{ Number(source.credibilityScore || 0).toFixed(2) }}</span>
+
+          <div class="draft-outline-section-title">
+            <span>目录结构</span>
+          </div>
+          <div class="draft-outline-directory">
+            <div v-for="(item, index) in displayOutline.outlineItems" :key="`${index}-${item.title}`" class="draft-outline-item">
+              <button class="draft-outline-title" type="button">
+                <span class="draft-outline-index">{{ outlineNumber(index) }}</span>
+                <span>{{ outlineNumber(index) }}、{{ item.title }}</span>
+                <span class="draft-outline-chevron">⌄</span>
+              </button>
+              <p>{{ item.summary }}</p>
+              <div v-if="item.children?.length" class="draft-outline-children">
+                <div v-for="(child, childIndex) in item.children" :key="`${childIndex}-${child.title}`" class="draft-outline-child">
+                  <div class="draft-outline-child-title">（{{ outlineNumber(childIndex) }}）{{ child.title }}</div>
+                  <p>{{ child.summary }}</p>
                 </div>
-                <a v-if="source.sourceUrl" :href="source.sourceUrl" target="_blank" rel="noreferrer">打开</a>
-                <p>{{ source.sourceSummary || source.relevanceReason }}</p>
               </div>
             </div>
-          </article>
+          </div>
+
+          <div class="draft-outline-footer">
+            <div>
+              <b>写作重点</b>
+              <ul><li v-for="(item, index) in displayOutline.writingFocus" :key="index">{{ itemToText(item) }}</li></ul>
+            </div>
+            <div>
+              <b>来源使用要求</b>
+              <ul><li v-for="(item, index) in displayOutline.sourceRequirements" :key="index">{{ itemToText(item) }}</li></ul>
+            </div>
+            <div>
+              <b>待核实事项</b>
+              <ul><li v-for="(item, index) in displayOutline.uncertaintiesToVerify" :key="index">{{ itemToText(item) }}</li></ul>
+            </div>
+          </div>
         </div>
-        <div v-else class="draft-empty large">输入事件并开始分析后，这里会显示结构化结果。</div>
+
+        <div v-else-if="editMode && selectedOutline" class="draft-outline-edit draft-center-edit">
+          <input v-model="outlineEdit.reportTitle" class="sci-input" placeholder="建议标题" />
+          <input v-model="outlineEdit.reportTheme" class="sci-input" placeholder="主题立意" />
+          <textarea v-model="outlineEdit.coreArgument" class="sci-input" placeholder="核心判断"></textarea>
+          <textarea
+            v-model="outlineEdit.outlineItemsText"
+            class="sci-input draft-outline-text"
+            placeholder="一、事件概况&#10;简要说明事件背景、主要措施和当前进展。&#10;（一）政策提出背景&#10;说明该事件发生的背景和原因。"
+          ></textarea>
+          <div class="draft-three-edit">
+            <textarea v-model="outlineEdit.writingFocus" class="sci-input" placeholder="写作重点：一行一条"></textarea>
+            <textarea v-model="outlineEdit.sourceRequirements" class="sci-input" placeholder="来源要求：一行一条"></textarea>
+            <textarea v-model="outlineEdit.uncertaintiesToVerify" class="sci-input" placeholder="待核实事项：一行一条"></textarea>
+          </div>
+          <textarea v-model="editNote" class="sci-input" placeholder="手动修改说明"></textarea>
+          <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="isSavingManual" @click="saveManualOutline">
+            {{ isSavingManual ? '保存中...' : '保存为新版本' }}
+          </button>
+        </div>
+
+        <div v-else-if="eventAnalyzed" class="draft-analysis-brief">
+          <article class="draft-block highlight">
+            <h3>分析已生成</h3>
+            <p>{{ analysis.oneSentenceSummary || analysis.basicSituation || '事件分析已完成，请在右侧生成目录式提纲。' }}</p>
+          </article>
+          <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="isGeneratingOutline" @click="createOutline">
+            {{ isGeneratingOutline ? '生成中...' : '生成目录式提纲' }}
+          </button>
+        </div>
+
+        <div v-else class="draft-empty large">输入事件并开始分析后，可生成目录式拟稿提纲。</div>
       </section>
 
       <aside class="draft-panel draft-right">
         <div class="draft-panel-head">
-          <h2>态度与提纲</h2>
+          <h2>提纲版本</h2>
         </div>
 
         <section class="draft-block compact">
-          <h3>各方态度</h3>
-          <div v-if="attitudes.length" class="draft-attitudes">
-            <div v-for="(item, index) in attitudes" :key="index" class="draft-attitude">
-              <strong>{{ item.actor }}</strong>
-              <span>{{ item.actorType || '类型待核实' }} · {{ item.polarity || '倾向待判定' }} · 置信度 {{ Number(item.confidence || 0).toFixed(2) }}</span>
-              <p>{{ item.attitudeSummary }}</p>
-            </div>
+          <div class="draft-side-head">
+            <h3>版本列表</h3>
+            <button class="sci-btn text-[10px]" type="button" :disabled="isGeneratingOutline || !currentEventId" @click="createOutline">
+              + 生成新提纲
+            </button>
           </div>
-          <div v-else class="draft-empty">暂无态度归纳</div>
+          <button
+            v-for="item in outlineVersions"
+            :key="item.outlineId"
+            class="draft-version"
+            :class="versionClass(item)"
+            type="button"
+            @click="loadOutline(item.outlineId)"
+          >
+            <strong>V{{ item.versionNo }} {{ versionTypeLabel(item) }}</strong>
+            <span>{{ formatTime(item.createdAt) }}</span>
+            <small>{{ versionSummary(item) }}</small>
+          </button>
+          <div v-if="!outlineVersions.length" class="draft-empty">暂无提纲版本</div>
         </section>
 
         <section class="draft-block compact">
@@ -574,89 +649,32 @@ onMounted(() => {
           </button>
         </section>
 
-        <section v-if="selectedOutline" class="draft-block compact">
-          <div class="draft-outline-head">
-            <h3>当前提纲 {{ versionLabel(selectedOutline) }}</h3>
-            <button class="sci-btn text-[10px]" type="button" @click="editMode = !editMode; syncOutlineEdit()">
-              {{ editMode ? '退出编辑' : '编辑提纲' }}
-            </button>
-          </div>
-
-          <div v-if="!editMode" class="draft-outline-view">
-            <div class="draft-outline-meta">
-              <h4>{{ displayOutline.reportTitle }}</h4>
-              <p><b>主题立意：</b>{{ displayOutline.reportTheme || '暂无' }}</p>
-              <p><b>核心判断：</b>{{ displayOutline.coreArgument || '暂无' }}</p>
-            </div>
-
-            <div class="draft-outline-directory">
-              <div v-for="(item, index) in displayOutline.outlineItems" :key="`${index}-${item.title}`" class="draft-outline-item">
-                <div class="draft-outline-title">{{ outlineNumber(index) }}、{{ item.title }}</div>
-                <p>{{ item.summary }}</p>
-                <div v-if="item.children?.length" class="draft-outline-children">
-                  <div v-for="(child, childIndex) in item.children" :key="`${childIndex}-${child.title}`" class="draft-outline-child">
-                    <div class="draft-outline-child-title">（{{ outlineNumber(childIndex) }}）{{ child.title }}</div>
-                    <p>{{ child.summary }}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="draft-outline-footer">
-              <div>
-                <b>写作重点</b>
-                <ul><li v-for="(item, index) in displayOutline.writingFocus" :key="index">{{ itemToText(item) }}</li></ul>
-              </div>
-              <div>
-                <b>来源要求</b>
-                <ul><li v-for="(item, index) in displayOutline.sourceRequirements" :key="index">{{ itemToText(item) }}</li></ul>
-              </div>
-              <div>
-                <b>待核实事项</b>
-                <ul><li v-for="(item, index) in displayOutline.uncertaintiesToVerify" :key="index">{{ itemToText(item) }}</li></ul>
-              </div>
-            </div>
-          </div>
-
-          <div v-else class="draft-outline-edit">
-            <input v-model="outlineEdit.reportTitle" class="sci-input" placeholder="建议标题" />
-            <input v-model="outlineEdit.reportTheme" class="sci-input" placeholder="主题立意" />
-            <textarea v-model="outlineEdit.coreArgument" class="sci-input" placeholder="核心判断"></textarea>
-            <textarea
-              v-model="outlineEdit.outlineItemsText"
-              class="sci-input draft-outline-text"
-              placeholder="目录文本，例如：&#10;一、事件概况&#10;简要说明事件背景、主要措施和当前进展。&#10;（一）政策提出背景&#10;说明监管背景。"
-            ></textarea>
-            <textarea v-model="outlineEdit.writingFocus" class="sci-input" placeholder="写作重点：一行一条"></textarea>
-            <textarea v-model="outlineEdit.sourceRequirements" class="sci-input" placeholder="来源要求：一行一条"></textarea>
-            <textarea v-model="outlineEdit.uncertaintiesToVerify" class="sci-input" placeholder="待核实事项：一行一条"></textarea>
-            <textarea v-model="editNote" class="sci-input" placeholder="手动修改说明"></textarea>
-            <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="isSavingManual" @click="saveManualOutline">
-              {{ isSavingManual ? '保存中...' : '保存为新版本' }}
-            </button>
-          </div>
-
-          <textarea v-model="refineFeedback" class="sci-input draft-links" placeholder="AI 修改反馈"></textarea>
-          <button class="sci-btn draft-primary" type="button" :disabled="isRefining" @click="refineOutline">
+        <section class="draft-block compact">
+          <h3>AI 修改提纲</h3>
+          <textarea v-model="refineFeedback" class="sci-input draft-links" placeholder="说明希望调整的目录顺序、一级标题、二级标题或写作重点"></textarea>
+          <button class="sci-btn draft-primary" type="button" :disabled="isRefining || !currentOutlineId" @click="refineOutline">
             {{ isRefining ? '修改中...' : 'AI 修改提纲' }}
           </button>
-          <button class="sci-btn draft-primary" type="button" disabled title="下一阶段支持导入深度编报">导入深度编报（下一阶段支持）</button>
         </section>
 
-        <section class="draft-block compact">
-          <h3>提纲版本</h3>
-          <button
-            v-for="item in outlineVersions"
-            :key="item.outlineId"
-            class="draft-version"
-            :class="{ active: item.outlineId === currentOutlineId }"
-            type="button"
-            @click="loadOutline(item.outlineId)"
-          >
-            <strong>{{ versionLabel(item) }}</strong>
-            <span>{{ formatTime(item.createdAt) }}</span>
+        <section class="draft-block compact draft-import-box">
+          <h3>导入深度编报</h3>
+          <div v-if="selectedOutline" class="draft-import-success">
+            <strong>已准备好提纲版本</strong>
+            <span>版本：{{ versionLabel(selectedOutline) }}</span>
+            <span>时间：{{ currentVersionTime || '暂无' }}</span>
+          </div>
+          <button class="sci-btn sci-btn-primary draft-primary" type="button" disabled title="下一阶段支持导入深度编报">
+            创建深度编报任务
           </button>
-          <div v-if="!outlineVersions.length" class="draft-empty">暂无提纲版本</div>
+          <button class="sci-btn draft-primary draft-disabled-btn" type="button" disabled>
+            导入深度编报（下一阶段支持）
+          </button>
+        </section>
+
+        <section class="draft-block compact draft-tip-box">
+          <h3>使用提示</h3>
+          <p>先生成并确认提纲，后续系统将按目录结构进行内容规划和撰写。当前阶段只管理拟稿提纲，不会直接启动深度编报。</p>
         </section>
       </aside>
     </section>
@@ -741,7 +759,7 @@ onMounted(() => {
 
 .draft-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 0.85fr) minmax(360px, 1.4fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(270px, 0.85fr) minmax(520px, 1.8fr) minmax(280px, 0.85fr);
   gap: 16px;
   align-items: start;
 }
@@ -770,6 +788,41 @@ onMounted(() => {
 .draft-id {
   color: #64748b;
   font-size: 12px;
+}
+
+.draft-outline-workbench {
+  min-width: 0;
+}
+
+.draft-workbench-head {
+  align-items: flex-start;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  padding-bottom: 14px;
+}
+
+.draft-version-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.draft-version-meta span:first-child {
+  border: 1px solid #bbf7d0;
+  background: #ecfdf5;
+  color: #047857;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-weight: 800;
+}
+
+.draft-workbench-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .draft-field {
@@ -849,11 +902,31 @@ onMounted(() => {
 
 .draft-history-item span,
 .draft-history-item small,
-.draft-version span {
+.draft-version span,
+.draft-version small {
   display: block;
   margin-top: 4px;
   color: #64748b;
   font-size: 11px;
+}
+
+.draft-version {
+  position: relative;
+  padding: 12px;
+}
+
+.draft-version.active {
+  border-color: rgba(37, 99, 235, 0.75);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(255, 255, 255, 0.94));
+  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.12);
+}
+
+.draft-version.refine strong {
+  color: #2563eb;
+}
+
+.draft-version.manual strong {
+  color: #7c3aed;
 }
 
 .draft-error,
@@ -986,24 +1059,66 @@ onMounted(() => {
 }
 
 .draft-outline-directory {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
 .draft-outline-item {
-  border-left: 3px solid rgba(14, 165, 233, 0.55);
-  padding-left: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 8px;
+  padding: 12px;
 }
 
 .draft-outline-title {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 34px 1fr 20px;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
   color: #0f172a;
   font-size: 14px;
   font-weight: 800;
+  cursor: default;
+}
+
+.draft-outline-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  background: #f8fafc;
+  border-radius: 999px;
+  color: #2563eb;
+  font-size: 12px;
+}
+
+.draft-outline-chevron {
+  color: #64748b;
+  text-align: right;
+}
+
+.draft-outline-item > p,
+.draft-outline-child p {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.75;
 }
 
 .draft-outline-child {
   margin-top: 8px;
-  padding-left: 10px;
-  border-left: 2px solid rgba(148, 163, 184, 0.28);
+  margin-left: 38px;
+  padding: 10px 12px;
+  border-left: 2px solid rgba(37, 99, 235, 0.22);
+  background: rgba(248, 250, 252, 0.78);
+  border-radius: 6px;
 }
 
 .draft-outline-child-title {
@@ -1014,8 +1129,93 @@ onMounted(() => {
 
 .draft-outline-footer {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.draft-meta-row {
+  display: grid;
+  grid-template-columns: 82px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.draft-meta-row:last-child {
+  border-bottom: 0;
+}
+
+.draft-meta-row span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.draft-meta-row strong,
+.draft-meta-row p {
+  margin: 0;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.draft-outline-section-title {
+  margin-top: 14px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.draft-analysis-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.draft-three-edit {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.draft-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.draft-import-success {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid #bbf7d0;
+  background: #ecfdf5;
+  border-radius: 8px;
+  padding: 12px;
+  color: #047857;
+  font-size: 12px;
+}
+
+.draft-import-success strong {
+  color: #065f46;
+  font-size: 13px;
+}
+
+.draft-disabled-btn {
+  opacity: 0.58;
+}
+
+.draft-tip-box {
+  background: #eff6ff;
+  border-color: rgba(37, 99, 235, 0.18);
+}
+
+.draft-tip-box p {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .draft-outline-edit textarea {
