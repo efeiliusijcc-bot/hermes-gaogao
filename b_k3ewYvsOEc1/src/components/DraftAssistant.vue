@@ -665,7 +665,11 @@ onMounted(() => {
 
 <style scoped>
 .draft-assistant-main {
-  min-height: calc(100vh - 72px);
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px;
 }
 
