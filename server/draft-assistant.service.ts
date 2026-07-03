@@ -26,6 +26,7 @@ import type {
   DraftAttitude,
   DraftEventSummary,
   DraftOutlineInput,
+  DraftOutlineItem,
   DraftOutlineJson,
   DraftOutlineManualInput,
   DraftOutlineRefineInput,
@@ -37,15 +38,35 @@ import { VectorSourceService } from './vector-source.service.js';
 const OUTLINE_KEYS: Array<keyof DraftOutlineJson> = [
   'reportTitle',
   'reportTheme',
-  'coreJudgement',
-  'mainContentPlan',
-  'attitudesPlan',
-  'riskPlan',
-  'trendPlan',
+  'coreArgument',
+  'outlineItems',
+  'writingFocus',
   'sourceRequirements',
-  'writingConstraints',
   'uncertaintiesToVerify',
 ];
+
+const OUTLINE_SHAPE: DraftOutlineJson = {
+  reportTitle: '',
+  reportTheme: '',
+  coreArgument: '',
+  outlineItems: [
+    {
+      level: 1,
+      title: '',
+      summary: '',
+      children: [
+        {
+          level: 2,
+          title: '',
+          summary: '',
+        },
+      ],
+    },
+  ],
+  writingFocus: [],
+  sourceRequirements: [],
+  uncertaintiesToVerify: [],
+};
 
 const DEFAULT_ANALYSIS: DraftAnalysisJson = {
   oneSentenceSummary: '',
@@ -311,13 +332,30 @@ export class DraftAssistantService implements OnModuleDestroy {
       {
         role: 'system',
         content:
-          '你是一名开源情报编报策划员。基于事件分析、来源和各方态度生成编报提纲。不要写成稿，只输出 JSON，必须包含 reportTitle、reportTheme、coreJudgement、mainContentPlan、attitudesPlan、riskPlan、trendPlan、sourceRequirements、writingConstraints、uncertaintiesToVerify。',
+          [
+            '你是一名开源情报编报策划员，只负责生成目录式、论文大纲式、编报大纲式的拟稿提纲。',
+            '不要写正文，不要输出大段分析，不要重复事件分析全文。',
+            '每个一级标题下只用 1-2 句话概括这一部分写什么；二级标题也只写简短 summary。',
+            '各方态度部分只说明正文需要梳理哪些主体态度，并提示正文阶段要标注表态时间、媒体和来源。',
+            '涉我风险部分只列风险分析方向，不要展开成长文。',
+            '输出必须是 JSON，且必须符合指定 outline_json 结构。',
+          ].join('\n'),
       },
       {
         role: 'user',
         content: JSON.stringify({
           task: input.mode === 'create' ? 'create_report_outline' : 'refine_report_outline',
+          writingLanguage: 'zh-CN',
+          outputRules: [
+            '只输出目录式提纲，不要写正文。',
+            '一级目录建议包含：事件概况、政策或事件背景、主要内容或措施、各方态度、涉我风险、后续趋势研判、编报重点建议。',
+            '一级目录使用 outlineItems；每个一级目录必须有 title、summary、children。',
+            'children 是二级目录数组，可以为空；每个二级目录必须有 title、summary。',
+            'summary 保持简短，说明这一部分正文应该写什么。',
+            'refine 时可以调整目录顺序、增删目录、修改 summary、调整 writingFocus 和 sourceRequirements，但仍然不能输出正文。',
+          ],
           requiredKeys: OUTLINE_KEYS,
+          requiredShape: OUTLINE_SHAPE,
           event: input.event,
           sources: input.sources.slice(0, 20),
           attitudes: input.attitudes,
@@ -491,20 +529,88 @@ export class DraftAssistantService implements OnModuleDestroy {
 
   private normalizeOutline(value: unknown): DraftOutlineJson {
     const raw = this.objectValue(value);
-    const missing = OUTLINE_KEYS.filter((key) => !Object.prototype.hasOwnProperty.call(raw, key));
+    const outlineItems = this.normalizeOutlineItems(raw.outlineItems);
+    const legacyItems = outlineItems.length ? [] : this.legacyOutlineItems(raw);
+    const items = outlineItems.length ? outlineItems : legacyItems;
+    const missing = OUTLINE_KEYS.filter((key) => {
+      if (key === 'outlineItems') return !items.length;
+      if (key === 'coreArgument') return !Object.prototype.hasOwnProperty.call(raw, 'coreArgument') && !Object.prototype.hasOwnProperty.call(raw, 'coreJudgement');
+      if (key === 'writingFocus') return !Object.prototype.hasOwnProperty.call(raw, 'writingFocus') && !Object.prototype.hasOwnProperty.call(raw, 'writingConstraints');
+      return !Object.prototype.hasOwnProperty.call(raw, key);
+    });
     if (missing.length) throw new BadRequestException({ error: `outline missing required keys: ${missing.join(', ')}` });
     return {
       reportTitle: this.requiredText(raw.reportTitle, 'reportTitle', 512),
       reportTheme: this.text(raw.reportTheme, 4000),
-      coreJudgement: this.text(raw.coreJudgement, 4000),
-      mainContentPlan: this.arrayValue(raw.mainContentPlan),
-      attitudesPlan: this.arrayValue(raw.attitudesPlan),
-      riskPlan: this.arrayValue(raw.riskPlan),
-      trendPlan: this.arrayValue(raw.trendPlan),
+      coreArgument: this.text(raw.coreArgument || raw.coreJudgement, 4000),
+      outlineItems: items,
+      writingFocus: this.arrayValue(raw.writingFocus || raw.writingConstraints),
       sourceRequirements: this.arrayValue(raw.sourceRequirements),
-      writingConstraints: this.arrayValue(raw.writingConstraints),
       uncertaintiesToVerify: this.arrayValue(raw.uncertaintiesToVerify),
     };
+  }
+
+  private normalizeOutlineItems(value: unknown): DraftOutlineItem[] {
+    return this.arrayValue(value)
+      .map((item) => this.normalizeOutlineItem(item, 1))
+      .filter((item): item is DraftOutlineItem => Boolean(item));
+  }
+
+  private normalizeOutlineItem(value: unknown, fallbackLevel: 1 | 2): DraftOutlineItem | null {
+    const raw = this.objectValue(value);
+    const title = this.text(raw.title, 256);
+    const summary = this.text(raw.summary, 2000);
+    if (!title || !summary) return null;
+    const level = Number(raw.level) === 2 || fallbackLevel === 2 ? 2 : 1;
+    const item: DraftOutlineItem = { level, title, summary };
+    if (level === 1) {
+      item.children = this.arrayValue(raw.children)
+        .map((child) => this.normalizeOutlineItem(child, 2))
+        .filter((child): child is DraftOutlineItem => Boolean(child))
+        .map((child) => ({ level: 2, title: child.title, summary: child.summary }));
+    }
+    return item;
+  }
+
+  private legacyOutlineItems(raw: Record<string, unknown>): DraftOutlineItem[] {
+    const sections: Array<{ key: string; title: string }> = [
+      { key: 'mainContentPlan', title: '事件概况与主要内容' },
+      { key: 'attitudesPlan', title: '各方态度' },
+      { key: 'riskPlan', title: '涉我风险' },
+      { key: 'trendPlan', title: '后续趋势研判' },
+    ];
+    return sections
+      .map((section): DraftOutlineItem | null => {
+        const { key, title } = section;
+        const values = this.arrayValue(raw[key]);
+        if (!values.length) return null;
+        return {
+          level: 1 as const,
+          title,
+          summary: this.outlineSummary(values),
+          children: values.slice(0, 6).map((item) => ({
+            level: 2 as const,
+            title: this.outlineChildTitle(item),
+            summary: this.outlineText(item),
+          })),
+        };
+      })
+      .filter((item): item is DraftOutlineItem => item !== null);
+  }
+
+  private outlineSummary(value: unknown[]): string {
+    return value.map((item) => this.outlineText(item)).filter(Boolean).join('；').slice(0, 1000);
+  }
+
+  private outlineChildTitle(value: unknown): string {
+    const text = this.outlineText(value);
+    const first = text.split(/[，。；;,.]/)[0]?.trim();
+    return (first || text || '分项内容').slice(0, 80);
+  }
+
+  private outlineText(value: unknown): string {
+    if (typeof value === 'string') return this.text(value, 2000);
+    return this.text(JSON.stringify(value), 2000);
   }
 
   private async updateEventAnalysis(eventId: string, analysis: DraftAnalysisJson) {

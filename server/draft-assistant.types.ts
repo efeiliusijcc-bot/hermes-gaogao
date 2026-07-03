@@ -67,17 +67,27 @@ export interface DraftAnalysisJson {
   suggestedAngles: unknown[];
 }
 
+export interface DraftOutlineItem {
+  level: 1 | 2;
+  title: string;
+  summary: string;
+  children?: DraftOutlineItem[];
+}
+
 export interface DraftOutlineJson {
   reportTitle: string;
   reportTheme: string;
-  coreJudgement: string;
-  mainContentPlan: unknown[];
-  attitudesPlan: unknown[];
-  riskPlan: unknown[];
-  trendPlan: unknown[];
+  coreArgument: string;
+  outlineItems: DraftOutlineItem[];
+  writingFocus: unknown[];
   sourceRequirements: unknown[];
-  writingConstraints: unknown[];
   uncertaintiesToVerify: unknown[];
+  coreJudgement?: string;
+  mainContentPlan?: unknown[];
+  attitudesPlan?: unknown[];
+  riskPlan?: unknown[];
+  trendPlan?: unknown[];
+  writingConstraints?: unknown[];
 }
 
 export interface DraftEventSummary {

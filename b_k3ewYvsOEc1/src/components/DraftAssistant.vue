@@ -46,13 +46,10 @@ const editMode = ref(false)
 const outlineEdit = reactive({
   reportTitle: '',
   reportTheme: '',
-  coreJudgement: '',
-  mainContentPlan: '',
-  attitudesPlan: '',
-  riskPlan: '',
-  trendPlan: '',
+  coreArgument: '',
+  outlineItemsText: '',
+  writingFocus: '',
   sourceRequirements: '',
-  writingConstraints: '',
   uncertaintiesToVerify: '',
 })
 
@@ -62,6 +59,9 @@ const attitudes = computed(() => eventResult.value?.attitudes || analysis.value?
 const currentEventId = computed(() => eventResult.value?.eventId || eventResult.value?.event?.eventId || '')
 const currentOutlineId = computed(() => selectedOutline.value?.outlineId || '')
 const canUse = computed(() => Boolean(props.currentUser))
+const displayOutline = computed(() => normalizeOutlineForDisplay(selectedOutline.value?.outline || {}))
+
+const cnNumbers = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二']
 
 function roleLabel(role) {
   if (role === 'admin') return '管理员'
@@ -234,16 +234,13 @@ async function loadOutline(outlineId) {
 }
 
 function syncOutlineEdit() {
-  const outline = selectedOutline.value?.outline || {}
+  const outline = normalizeOutlineForDisplay(selectedOutline.value?.outline || {})
   outlineEdit.reportTitle = outline.reportTitle || ''
   outlineEdit.reportTheme = outline.reportTheme || ''
-  outlineEdit.coreJudgement = outline.coreJudgement || ''
-  outlineEdit.mainContentPlan = arrayToLines(outline.mainContentPlan)
-  outlineEdit.attitudesPlan = arrayToLines(outline.attitudesPlan)
-  outlineEdit.riskPlan = arrayToLines(outline.riskPlan)
-  outlineEdit.trendPlan = arrayToLines(outline.trendPlan)
+  outlineEdit.coreArgument = outline.coreArgument || ''
+  outlineEdit.outlineItemsText = outlineItemsToText(outline.outlineItems)
+  outlineEdit.writingFocus = arrayToLines(outline.writingFocus)
   outlineEdit.sourceRequirements = arrayToLines(outline.sourceRequirements)
-  outlineEdit.writingConstraints = arrayToLines(outline.writingConstraints)
   outlineEdit.uncertaintiesToVerify = arrayToLines(outline.uncertaintiesToVerify)
 }
 
@@ -251,15 +248,144 @@ function editToOutline() {
   return {
     reportTitle: outlineEdit.reportTitle,
     reportTheme: outlineEdit.reportTheme,
-    coreJudgement: outlineEdit.coreJudgement,
-    mainContentPlan: linesToArray(outlineEdit.mainContentPlan),
-    attitudesPlan: linesToArray(outlineEdit.attitudesPlan),
-    riskPlan: linesToArray(outlineEdit.riskPlan),
-    trendPlan: linesToArray(outlineEdit.trendPlan),
+    coreArgument: outlineEdit.coreArgument,
+    outlineItems: parseOutlineItemsText(outlineEdit.outlineItemsText),
+    writingFocus: linesToArray(outlineEdit.writingFocus),
     sourceRequirements: linesToArray(outlineEdit.sourceRequirements),
-    writingConstraints: linesToArray(outlineEdit.writingConstraints),
     uncertaintiesToVerify: linesToArray(outlineEdit.uncertaintiesToVerify),
   }
+}
+
+function normalizeOutlineForDisplay(outline) {
+  const normalized = {
+    reportTitle: outline?.reportTitle || '',
+    reportTheme: outline?.reportTheme || '',
+    coreArgument: outline?.coreArgument || outline?.coreJudgement || '',
+    outlineItems: normalizeOutlineItems(outline?.outlineItems),
+    writingFocus: Array.isArray(outline?.writingFocus) ? outline.writingFocus : arrayOrEmpty(outline?.writingConstraints),
+    sourceRequirements: arrayOrEmpty(outline?.sourceRequirements),
+    uncertaintiesToVerify: arrayOrEmpty(outline?.uncertaintiesToVerify),
+  }
+  if (!normalized.outlineItems.length) {
+    normalized.outlineItems = legacyOutlineItems(outline)
+  }
+  return normalized
+}
+
+function normalizeOutlineItems(items) {
+  if (!Array.isArray(items)) return []
+  return items
+    .map((item) => {
+      const title = String(item?.title || '').trim()
+      const summary = String(item?.summary || '').trim()
+      if (!title || !summary) return null
+      return {
+        level: 1,
+        title,
+        summary,
+        children: Array.isArray(item?.children)
+          ? item.children
+              .map((child) => ({
+                level: 2,
+                title: String(child?.title || '').trim(),
+                summary: String(child?.summary || '').trim(),
+              }))
+              .filter((child) => child.title && child.summary)
+          : [],
+      }
+    })
+    .filter(Boolean)
+}
+
+function legacyOutlineItems(outline) {
+  const sections = [
+    ['mainContentPlan', '事件概况与主要内容'],
+    ['attitudesPlan', '各方态度'],
+    ['riskPlan', '涉我风险'],
+    ['trendPlan', '后续趋势研判'],
+  ]
+  return sections
+    .map(([key, title]) => {
+      const values = arrayOrEmpty(outline?.[key])
+      if (!values.length) return null
+      return {
+        level: 1,
+        title,
+        summary: values.map(itemToText).join('；'),
+        children: values.slice(0, 6).map((item) => ({
+          level: 2,
+          title: itemToText(item).split(/[，。；;,.]/)[0]?.slice(0, 40) || '分项内容',
+          summary: itemToText(item),
+        })),
+      }
+    })
+    .filter(Boolean)
+}
+
+function outlineItemsToText(items) {
+  return normalizeOutlineItems(items)
+    .map((item, index) => {
+      const lines = [`${cnNumbers[index] || index + 1}、${item.title}`, item.summary]
+      item.children.forEach((child, childIndex) => {
+        lines.push(`（${cnNumbers[childIndex] || childIndex + 1}）${child.title}`)
+        lines.push(child.summary)
+      })
+      return lines.join('\n')
+    })
+    .join('\n\n')
+}
+
+function parseOutlineItemsText(text) {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const items = []
+  let current = null
+  let currentChild = null
+
+  for (const line of lines) {
+    const top = line.match(/^([一二三四五六七八九十\d]+)[、.．]\s*(.+)$/)
+    const child = line.match(/^（([一二三四五六七八九十\d]+)）\s*(.+)$/)
+    if (top) {
+      current = { level: 1, title: top[2].trim(), summary: '', children: [] }
+      items.push(current)
+      currentChild = null
+      continue
+    }
+    if (child) {
+      if (!current) throw new Error('二级目录前缺少一级目录')
+      currentChild = { level: 2, title: child[2].trim(), summary: '' }
+      current.children.push(currentChild)
+      continue
+    }
+    if (currentChild) {
+      currentChild.summary = currentChild.summary ? `${currentChild.summary}\n${line}` : line
+    } else if (current) {
+      current.summary = current.summary ? `${current.summary}\n${line}` : line
+    } else {
+      throw new Error('目录文本必须从“一、标题”开始')
+    }
+  }
+
+  const invalidTop = items.find((item) => !item.title || !item.summary)
+  const invalidChild = items.flatMap((item) => item.children).find((item) => !item.title || !item.summary)
+  if (!items.length || invalidTop || invalidChild) {
+    throw new Error('请检查目录格式：每个一级/二级标题下都需要填写简短说明')
+  }
+  return items
+}
+
+function outlineNumber(index) {
+  return cnNumbers[index] || String(index + 1)
+}
+
+function arrayOrEmpty(value) {
+  return Array.isArray(value) ? value : []
+}
+
+function itemToText(item) {
+  return typeof item === 'string' ? item : JSON.stringify(item)
 }
 
 function arrayToLines(value) {
@@ -457,26 +583,53 @@ onMounted(() => {
           </div>
 
           <div v-if="!editMode" class="draft-outline-view">
-            <h4>{{ selectedOutline.outline.reportTitle }}</h4>
-            <p><b>主题：</b>{{ selectedOutline.outline.reportTheme }}</p>
-            <p><b>核心判断：</b>{{ selectedOutline.outline.coreJudgement }}</p>
-            <div v-for="key in ['mainContentPlan','attitudesPlan','riskPlan','trendPlan','sourceRequirements','writingConstraints','uncertaintiesToVerify']" :key="key">
-              <b>{{ key }}</b>
-              <ul><li v-for="(item, index) in selectedOutline.outline[key]" :key="index">{{ typeof item === 'string' ? item : JSON.stringify(item) }}</li></ul>
+            <div class="draft-outline-meta">
+              <h4>{{ displayOutline.reportTitle }}</h4>
+              <p><b>主题立意：</b>{{ displayOutline.reportTheme || '暂无' }}</p>
+              <p><b>核心判断：</b>{{ displayOutline.coreArgument || '暂无' }}</p>
+            </div>
+
+            <div class="draft-outline-directory">
+              <div v-for="(item, index) in displayOutline.outlineItems" :key="`${index}-${item.title}`" class="draft-outline-item">
+                <div class="draft-outline-title">{{ outlineNumber(index) }}、{{ item.title }}</div>
+                <p>{{ item.summary }}</p>
+                <div v-if="item.children?.length" class="draft-outline-children">
+                  <div v-for="(child, childIndex) in item.children" :key="`${childIndex}-${child.title}`" class="draft-outline-child">
+                    <div class="draft-outline-child-title">（{{ outlineNumber(childIndex) }}）{{ child.title }}</div>
+                    <p>{{ child.summary }}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="draft-outline-footer">
+              <div>
+                <b>写作重点</b>
+                <ul><li v-for="(item, index) in displayOutline.writingFocus" :key="index">{{ itemToText(item) }}</li></ul>
+              </div>
+              <div>
+                <b>来源要求</b>
+                <ul><li v-for="(item, index) in displayOutline.sourceRequirements" :key="index">{{ itemToText(item) }}</li></ul>
+              </div>
+              <div>
+                <b>待核实事项</b>
+                <ul><li v-for="(item, index) in displayOutline.uncertaintiesToVerify" :key="index">{{ itemToText(item) }}</li></ul>
+              </div>
             </div>
           </div>
 
           <div v-else class="draft-outline-edit">
-            <input v-model="outlineEdit.reportTitle" class="sci-input" placeholder="标题" />
-            <input v-model="outlineEdit.reportTheme" class="sci-input" placeholder="主题" />
-            <textarea v-model="outlineEdit.coreJudgement" class="sci-input" placeholder="核心判断"></textarea>
-            <textarea v-model="outlineEdit.mainContentPlan" class="sci-input" placeholder="主体内容计划：一行一条"></textarea>
-            <textarea v-model="outlineEdit.attitudesPlan" class="sci-input" placeholder="各方态度计划：一行一条"></textarea>
-            <textarea v-model="outlineEdit.riskPlan" class="sci-input" placeholder="风险计划：一行一条"></textarea>
-            <textarea v-model="outlineEdit.trendPlan" class="sci-input" placeholder="趋势计划：一行一条"></textarea>
-            <textarea v-model="outlineEdit.sourceRequirements" class="sci-input" placeholder="信源要求：一行一条"></textarea>
-            <textarea v-model="outlineEdit.writingConstraints" class="sci-input" placeholder="写作约束：一行一条"></textarea>
-            <textarea v-model="outlineEdit.uncertaintiesToVerify" class="sci-input" placeholder="待核实问题：一行一条"></textarea>
+            <input v-model="outlineEdit.reportTitle" class="sci-input" placeholder="建议标题" />
+            <input v-model="outlineEdit.reportTheme" class="sci-input" placeholder="主题立意" />
+            <textarea v-model="outlineEdit.coreArgument" class="sci-input" placeholder="核心判断"></textarea>
+            <textarea
+              v-model="outlineEdit.outlineItemsText"
+              class="sci-input draft-outline-text"
+              placeholder="目录文本，例如：&#10;一、事件概况&#10;简要说明事件背景、主要措施和当前进展。&#10;（一）政策提出背景&#10;说明监管背景。"
+            ></textarea>
+            <textarea v-model="outlineEdit.writingFocus" class="sci-input" placeholder="写作重点：一行一条"></textarea>
+            <textarea v-model="outlineEdit.sourceRequirements" class="sci-input" placeholder="来源要求：一行一条"></textarea>
+            <textarea v-model="outlineEdit.uncertaintiesToVerify" class="sci-input" placeholder="待核实事项：一行一条"></textarea>
             <textarea v-model="editNote" class="sci-input" placeholder="手动修改说明"></textarea>
             <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="isSavingManual" @click="saveManualOutline">
               {{ isSavingManual ? '保存中...' : '保存为新版本' }}
@@ -819,9 +972,57 @@ onMounted(() => {
   font-size: 15px;
 }
 
+.draft-outline-meta,
+.draft-outline-directory,
+.draft-outline-footer {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.78);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.draft-outline-directory {
+  gap: 12px;
+}
+
+.draft-outline-item {
+  border-left: 3px solid rgba(14, 165, 233, 0.55);
+  padding-left: 10px;
+}
+
+.draft-outline-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.draft-outline-child {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(148, 163, 184, 0.28);
+}
+
+.draft-outline-child-title {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.draft-outline-footer {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
 .draft-outline-edit textarea {
   min-height: 68px;
   resize: vertical;
+}
+
+.draft-outline-edit .draft-outline-text {
+  min-height: 240px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.65;
 }
 
 .draft-empty {
