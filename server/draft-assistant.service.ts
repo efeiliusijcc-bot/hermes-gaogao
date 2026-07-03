@@ -99,17 +99,22 @@ export class DraftAssistantService implements OnModuleDestroy {
     await this.insertVectorSources(eventId, user.id, vectorResult.sources);
     await this.insertLinkSources(eventId, user.id, links);
 
-    const sources = await this.listSources(eventId);
-    const analysis = await this.generateAnalysis({ title, materials, category, region, sources });
-    const normalizedAnalysis = this.normalizeAnalysis(analysis);
-    await this.updateEventAnalysis(eventId, normalizedAnalysis);
-    await this.replaceAttitudes(eventId, user.id, normalizedAnalysis.attitudes);
+    try {
+      const sources = await this.listSources(eventId);
+      const analysis = await this.generateAnalysis({ title, materials, category, region, sources });
+      const normalizedAnalysis = this.normalizeAnalysis(analysis);
+      await this.updateEventAnalysis(eventId, normalizedAnalysis);
+      await this.replaceAttitudes(eventId, user.id, normalizedAnalysis.attitudes);
 
-    return {
-      eventId,
-      analysis: normalizedAnalysis,
-      sources: await this.listSources(eventId),
-    };
+      return {
+        eventId,
+        analysis: normalizedAnalysis,
+        sources: await this.listSources(eventId),
+      };
+    } catch (error) {
+      await this.deleteEventQuietly(eventId);
+      throw error;
+    }
   }
 
   async listEvents(user: AuthUser, pageInput?: unknown, pageSizeInput?: unknown): Promise<{ items: DraftEventSummary[]; page: number; pageSize: number; total: number }> {
@@ -326,7 +331,7 @@ export class DraftAssistantService implements OnModuleDestroy {
       throw new ServiceUnavailableException({ error: 'LLM API key is not configured' });
     }
     if (!this.llm) this.llm = new OpenAI({ apiKey, baseURL });
-    const completion = await this.llm.chat.completions.create({
+    const completion = await this.callChatCompletion({
       model,
       temperature: 0.2,
       response_format: { type: 'json_object' },
@@ -348,7 +353,7 @@ export class DraftAssistantService implements OnModuleDestroy {
   private async repairJson(text: string): Promise<string> {
     if (!this.llm) throw new InternalServerErrorException({ error: 'LLM client is not initialized' });
     const model = REPORT_AGENT_MODEL || DIRECT_QA_MODEL;
-    const completion = await this.llm.chat.completions.create({
+    const completion = await this.callChatCompletion({
       model,
       temperature: 0,
       response_format: { type: 'json_object' },
@@ -358,6 +363,40 @@ export class DraftAssistantService implements OnModuleDestroy {
       ],
     });
     return completion.choices[0]?.message?.content || '';
+  }
+
+  private async callChatCompletion(options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming) {
+    if (!this.llm) throw new ServiceUnavailableException({ error: 'LLM client is not initialized' });
+    try {
+      return await this.llm.chat.completions.create(options);
+    } catch (error) {
+      throw new ServiceUnavailableException({ error: this.llmErrorMessage(error) });
+    }
+  }
+
+  private llmErrorMessage(error: unknown): string {
+    const status = this.errorField(error, 'status');
+    const code = this.errorField(error, 'code');
+    const message = this.errorField(error, 'message') || this.errorField(this.errorField(error, 'error'), 'message');
+    const text = [status, code, message].filter(Boolean).join(' ');
+    if (/insufficient balance|余额不足/i.test(text)) {
+      return '模型服务余额不足，拟稿助手暂时无法生成分析。请为 Hermes 上游模型账号充值，或配置可用的 REPORT_AGENT_API_KEY。';
+    }
+    if (/invalid api key|invalid_key|401|api key 无效/i.test(text)) {
+      return '模型服务 API Key 无效，拟稿助手暂时无法生成分析。请配置可用的 REPORT_AGENT_API_KEY。';
+    }
+    if (/timeout|timed out/i.test(text)) {
+      return '模型服务请求超时，请稍后重试。';
+    }
+    return `模型服务调用失败：${message || '未知错误'}`;
+  }
+
+  private errorField(source: unknown, field: string): string {
+    if (!source || typeof source !== 'object' || !(field in source)) return '';
+    const value = (source as Record<string, unknown>)[field];
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number') return String(value);
+    return '';
   }
 
   private parseJsonText(text: string): unknown {
@@ -562,6 +601,15 @@ export class DraftAssistantService implements OnModuleDestroy {
       ],
     );
     return this.toOutlineResponse(result.rows[0]);
+  }
+
+  private async deleteEventQuietly(eventId: string) {
+    try {
+      const pool = await this.getPool();
+      await pool.query('DELETE FROM events WHERE event_id = $1', [eventId]);
+    } catch {
+      // Best effort cleanup. The original model error is more useful to callers.
+    }
   }
 
   private async listSources(eventId: string): Promise<DraftSourceResponse[]> {
