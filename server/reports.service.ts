@@ -232,6 +232,9 @@ export class ReportsService {
   async cancelJob(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
     await this.jobsReady;
     const job = this.assertCanAccessJob(jobId, user);
+    if (!this.canManageJob(job, user)) {
+      throw new ForbiddenException({ error: 'Insufficient report job permissions' });
+    }
     if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') return job;
 
     job.status = 'cancelled';
@@ -327,6 +330,16 @@ export class ReportsService {
   }
 
   canAccessJob(job: JobRecord, user: AuthUser): boolean {
+    if (this.canReadAllReports(user)) return true;
+    if (!job.ownerUserId) return false;
+    return job.ownerUserId === user.id;
+  }
+
+  private canReadAllReports(user: AuthUser): boolean {
+    return user.role === 'admin' || user.role === 'operator';
+  }
+
+  private canManageJob(job: JobRecord, user: AuthUser): boolean {
     if (this.isAdmin(user)) return true;
     if (!job.ownerUserId) return false;
     return job.ownerUserId === user.id;
@@ -346,7 +359,7 @@ export class ReportsService {
   }
 
   private canListJob(job: JobRecord, user: AuthUser, mineOnly = false): boolean {
-    if (this.isAdmin(user) && !mineOnly) return true;
+    if (this.canReadAllReports(user) && !mineOnly) return true;
     if (!job.ownerUserId) return false;
     return job.ownerUserId === user.id;
   }
