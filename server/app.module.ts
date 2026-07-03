@@ -4,6 +4,8 @@ import { AuthGuard } from './auth.guard.js';
 import { AuthService } from './auth.service.js';
 import { ChatController } from './chat.controller.js';
 import { ChatService } from './chat.service.js';
+import { DraftAssistantController } from './draft-assistant.controller.js';
+import { DraftAssistantService } from './draft-assistant.service.js';
 import { HealthController } from './health.controller.js';
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
 import { HermesService } from './hermes.service.js';
@@ -21,7 +23,17 @@ import { VectorSourcesController } from './vector-sources.controller.js';
 import { VectorSourceService } from './vector-source.service.js';
 
 @Module({
-  controllers: [HealthController, AuthController, UsersController, ReportsController, ReportPlansController, ResearchKeysController, VectorSourcesController, ChatController],
+  controllers: [
+    HealthController,
+    AuthController,
+    UsersController,
+    ReportsController,
+    ReportPlansController,
+    ResearchKeysController,
+    VectorSourcesController,
+    ChatController,
+    DraftAssistantController,
+  ],
   providers: [
     AuthService,
     AuthGuard,
@@ -35,6 +47,7 @@ import { VectorSourceService } from './vector-source.service.js';
     ResearchKeysService,
     VectorSourceService,
     ChatService,
+    DraftAssistantService,
   ],
 })
 export class AppModule {}

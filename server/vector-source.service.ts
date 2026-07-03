@@ -54,7 +54,7 @@ export interface VectorSearchResult {
   updatedAt: string | null;
 }
 
-interface VectorSearchInput {
+export interface VectorSearchInput {
   topic: string;
   knownContext: Record<string, unknown>;
   maxRows: number;

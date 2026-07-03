@@ -33,7 +33,7 @@ scp -i "$SSH_KEY" \
 
 scp -i "$SSH_KEY" server/*.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/server/"
 scp -i "$SSH_KEY" src/types/report.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/src/types/"
-scp -i "$SSH_KEY" scripts/init-auth-users.sql scripts/init-chat-sessions.sql "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/scripts/"
+scp -i "$SSH_KEY" scripts/init-auth-users.sql scripts/init-chat-sessions.sql scripts/init-draft-assistant.sql "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/scripts/"
 
 echo "=== 2. Build and deploy backend remotely ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << REMOTE_SCRIPT
@@ -54,6 +54,7 @@ docker exec todo_postgres psql -U postgres -d postgres -tc "SELECT 1 FROM pg_dat
   || docker exec todo_postgres createdb -U postgres "\$AUTH_DATABASE_NAME"
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-auth-users.sql
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-chat-sessions.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-draft-assistant.sql
 
 echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true

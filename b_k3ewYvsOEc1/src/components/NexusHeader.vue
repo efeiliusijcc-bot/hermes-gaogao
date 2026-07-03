@@ -21,7 +21,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management'])
+const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-draft-assistant'])
 
 const currentTime = ref('')
 const canvasRef = ref(null)
@@ -176,6 +176,11 @@ function logout() {
 function openUserManagement() {
   closeSettingsMenu()
   emit('open-user-management')
+}
+
+function openDraftAssistant() {
+  closeSettingsMenu()
+  emit('open-draft-assistant')
 }
 
 function roleLabel(role) {
@@ -411,6 +416,14 @@ watch(() => props.authNotice, (notice) => {
         <span class="header-user-name">{{ displayUserName }}</span>
         <span class="header-user-role">{{ roleLabel(user.role) }}</span>
       </div>
+
+      <button
+        class="sci-btn header-login-btn"
+        type="button"
+        @click="openDraftAssistant"
+      >
+        拟稿助手
+      </button>
 
       <button
         v-if="isAdmin"

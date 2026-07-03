@@ -152,6 +152,55 @@ export function switchVectorSourceProfile(profile) {
   })
 }
 
+export function analyzeDraftEvent(payload) {
+  return request('/draft-assistant/analyze', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getDraftEvents(params = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value))
+  })
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request(`/draft-assistant/events${suffix}`)
+}
+
+export function getDraftEvent(eventId) {
+  return request(`/draft-assistant/events/${encodeURIComponent(eventId)}`)
+}
+
+export function generateDraftOutline(payload) {
+  return request('/draft-assistant/outline', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function refineDraftOutline(payload) {
+  return request('/draft-assistant/outline/refine', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function manualUpdateDraftOutline(payload) {
+  return request('/draft-assistant/outline/manual-update', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getDraftOutline(outlineId) {
+  return request(`/draft-assistant/outlines/${encodeURIComponent(outlineId)}`)
+}
+
+export function getDraftEventOutlines(eventId) {
+  return request(`/draft-assistant/events/${encodeURIComponent(eventId)}/outlines`)
+}
+
 export function createReportJob(body) {
   return request('/report-jobs', {
     method: 'POST',
