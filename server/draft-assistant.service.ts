@@ -9,7 +9,17 @@ import {
 import OpenAI from 'openai';
 import type { AuthUser } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
-import { DIRECT_QA_API_KEY, DIRECT_QA_BASE_URL, DIRECT_QA_MODEL, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL } from './config.js';
+import {
+  DIRECT_QA_API_KEY,
+  DIRECT_QA_BASE_URL,
+  DIRECT_QA_MODEL,
+  HERMES_API_KEY,
+  HERMES_BASE_URL,
+  HERMES_MODEL,
+  REPORT_AGENT_API_KEY,
+  REPORT_AGENT_BASE_URL,
+  REPORT_AGENT_MODEL,
+} from './config.js';
 import type {
   DraftAnalysisJson,
   DraftAnalyzeInput,
@@ -305,9 +315,13 @@ export class DraftAssistantService implements OnModuleDestroy {
   }
 
   private async callJsonLlm(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<unknown> {
-    const apiKey = REPORT_AGENT_API_KEY || DIRECT_QA_API_KEY;
-    const baseURL = REPORT_AGENT_BASE_URL || DIRECT_QA_BASE_URL;
-    const model = REPORT_AGENT_MODEL || DIRECT_QA_MODEL;
+    const apiKey = REPORT_AGENT_API_KEY || DIRECT_QA_API_KEY || HERMES_API_KEY;
+    const baseURL = REPORT_AGENT_API_KEY || DIRECT_QA_API_KEY
+      ? (REPORT_AGENT_BASE_URL || DIRECT_QA_BASE_URL)
+      : HERMES_BASE_URL;
+    const model = REPORT_AGENT_API_KEY || DIRECT_QA_API_KEY
+      ? (REPORT_AGENT_MODEL || DIRECT_QA_MODEL)
+      : HERMES_MODEL;
     if (!apiKey) {
       throw new ServiceUnavailableException({ error: 'LLM API key is not configured' });
     }
