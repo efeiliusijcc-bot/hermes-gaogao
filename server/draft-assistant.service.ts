@@ -102,7 +102,10 @@ export class DraftAssistantService implements OnModuleDestroy {
     try {
       const sources = await this.listSources(eventId);
       const analysis = await this.generateAnalysis({ title, materials, category, region, sources });
-      const normalizedAnalysis = this.normalizeAnalysis(analysis);
+      const normalizedAnalysis = this.ensureMinimumAnalysis(
+        this.normalizeAnalysis(analysis),
+        { title, materials, category, region, sources },
+      );
       await this.updateEventAnalysis(eventId, normalizedAnalysis);
       await this.replaceAttitudes(eventId, user.id, normalizedAnalysis.attitudes);
 
@@ -259,6 +262,12 @@ export class DraftAssistantService implements OnModuleDestroy {
         role: 'user',
         content: JSON.stringify({
           task: 'event_analysis',
+          outputRules: [
+            '不要原样返回空模板。',
+            '必须填充 oneSentenceSummary、basicSituation、mainFacts、uncertainties。',
+            '证据不足时不要编造事实，应明确写“待核实”。',
+            '即使只有标题，也要输出基于标题的待核实分析框架。',
+          ],
           requiredShape: DEFAULT_ANALYSIS,
           attitudeShape: {
             actor: '',
@@ -425,6 +434,44 @@ export class DraftAssistantService implements OnModuleDestroy {
       importanceJudgement: this.text(raw.importanceJudgement, 4000),
       uncertainties: this.arrayValue(raw.uncertainties),
       suggestedAngles: this.arrayValue(raw.suggestedAngles),
+    };
+  }
+
+  private ensureMinimumAnalysis(
+    analysis: DraftAnalysisJson,
+    input: { title: string; materials: string; category: string; region: string; sources: DraftSourceResponse[] },
+  ): DraftAnalysisJson {
+    const hasSubstance = Boolean(
+      analysis.oneSentenceSummary
+      || analysis.basicSituation
+      || analysis.mainFacts.length
+      || analysis.timeline.length
+      || analysis.uncertainties.length,
+    );
+    if (hasSubstance) return analysis;
+
+    const contextBits = [
+      input.category ? `类别：${input.category}` : '',
+      input.region ? `地区：${input.region}` : '',
+      input.materials ? `用户补充材料：${input.materials.slice(0, 500)}` : '',
+      input.sources.length ? `已召回 ${input.sources.length} 条数据库信源` : '暂未召回到可直接支撑的数据库信源',
+    ].filter(Boolean);
+
+    return {
+      ...analysis,
+      oneSentenceSummary: `围绕“${input.title}”的事件需要进一步核实信源后再形成正式判断。`,
+      basicSituation: [`用户关注事件：${input.title}`, ...contextBits].join('\n'),
+      mainFacts: [
+        `事件标题显示的核心议题为“${input.title}”，当前仍需补充权威信源确认事实细节。`,
+      ],
+      uncertainties: [
+        '事件发生时间、政策原文或权威出处仍需核实。',
+        '相关主体表态、执行范围和影响对象仍需进一步确认。',
+      ],
+      suggestedAngles: [
+        '优先核实政策原文、监管机构公告和主流媒体报道。',
+        '关注对平台治理、未成年人保护和言论/隐私权争议的影响。',
+      ],
     };
   }
 
