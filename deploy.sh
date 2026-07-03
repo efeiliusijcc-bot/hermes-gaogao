@@ -84,6 +84,12 @@ docker run -d \
   -e HERMES_QA_MODEL=${HERMES_QA_MODEL:-openclaw/qa-agent} \
   -e HERMES_QA_MODE=${HERMES_QA_MODE:-direct_pg} \
   -e HERMES_QA_TIMEOUT_MS=${HERMES_QA_TIMEOUT_MS:-900000} \
+  -e DIRECT_QA_BASE_URL=${DIRECT_QA_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1} \
+  -e DIRECT_QA_API_KEY=${DIRECT_QA_API_KEY:-${OPENAI_API_KEY:-}} \
+  -e DIRECT_QA_MODEL=${DIRECT_QA_MODEL:-deepseek-v4-flash} \
+  -e REPORT_AGENT_BASE_URL=${REPORT_AGENT_BASE_URL:-${DIRECT_QA_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}} \
+  -e REPORT_AGENT_API_KEY=${REPORT_AGENT_API_KEY:-${DIRECT_QA_API_KEY:-${OPENAI_API_KEY:-}}} \
+  -e REPORT_AGENT_MODEL=${REPORT_AGENT_MODEL:-${DIRECT_QA_MODEL:-deepseek-v4-flash}} \
   -e HERMES_REMOTE_HOST= \
   -e REPORT_OUTPUT_DIR=/opt/data/workspace/report-agent/reports \
   -e HERMES_REMOTE_REPORT_DIR=/opt/hermes/workspace/report-agent/reports \
