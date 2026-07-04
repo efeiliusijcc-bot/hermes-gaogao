@@ -6480,8 +6480,8 @@ body {
 }
 
 .main-content.home-dual-mode {
-  width: min(100%, 900px) !important;
-  max-width: 900px !important;
+  width: min(100%, 1320px) !important;
+  max-width: 1320px !important;
 }
 
 .main-content.home-dual-mode.qa-main-content {
@@ -6515,7 +6515,7 @@ body {
 }
 
 .home-mode-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   gap: 14px !important;
   margin-bottom: 14px !important;
 }
