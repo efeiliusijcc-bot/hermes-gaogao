@@ -182,10 +182,6 @@ function openDraftAssistant() {
 }
 
 function openDailyAwareness() {
-  if (!authUser.value) {
-    setAuthNotice('请先登录')
-    return
-  }
   backgroundActiveWorkspace()
   showUserManagement.value = false
   showDraftAssistant.value = false

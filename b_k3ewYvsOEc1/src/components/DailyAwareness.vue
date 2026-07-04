@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   generateDailyBrief,
   getDailyBrief,
@@ -53,7 +53,13 @@ const activeBrief = ref(null)
 const events = ref([])
 const historyItems = ref([])
 
-const canGenerate = computed(() => props.currentUser && props.currentUser.role !== 'viewer')
+const isLoggedIn = computed(() => Boolean(props.currentUser))
+const canGenerate = computed(() => isLoggedIn.value && props.currentUser.role !== 'viewer')
+const permissionHint = computed(() => {
+  if (!isLoggedIn.value) return '请先登录后查看或生成每日简报。'
+  if (props.currentUser?.role === 'viewer') return 'viewer 账号仅可查看简报，不能生成每日简报。'
+  return ''
+})
 const categoryStats = computed(() => {
   const fromBrief = activeBrief.value?.categories
   if (Array.isArray(fromBrief) && fromBrief.length) return fromBrief
@@ -89,6 +95,12 @@ function toggleCategory(category) {
 }
 
 async function loadHistory() {
+  if (!isLoggedIn.value) {
+    historyItems.value = []
+    activeBrief.value = null
+    events.value = []
+    return
+  }
   historyLoading.value = true
   try {
     const result = await getDailyBriefs({ page: 1, pageSize: 20 })
@@ -172,6 +184,12 @@ function formatTime(value) {
 onMounted(() => {
   void loadHistory()
 })
+
+watch(() => props.currentUser?.id, () => {
+  errorMessage.value = ''
+  noticeMessage.value = ''
+  void loadHistory()
+})
 </script>
 
 <template>
@@ -224,7 +242,7 @@ onMounted(() => {
           <button class="daily-primary-btn" type="button" :disabled="!canGenerate || loading" @click="generateBrief">
             {{ loading ? '生成中...' : '生成每日简报' }}
           </button>
-          <p v-if="!canGenerate" class="daily-helper">viewer 账号仅可查看简报，不能生成每日简报。</p>
+          <p v-if="permissionHint" class="daily-helper">{{ permissionHint }}</p>
         </section>
 
         <section class="daily-panel daily-history">
@@ -344,7 +362,7 @@ onMounted(() => {
           </article>
 
           <div v-if="!loading && !visibleEvents.length" class="daily-empty large">
-            暂无事件。请选择日期并生成每日简报。
+            {{ isLoggedIn ? '暂无事件。请选择日期并生成每日简报。' : '请先登录后查看每日动态感知内容。' }}
           </div>
         </section>
       </section>
