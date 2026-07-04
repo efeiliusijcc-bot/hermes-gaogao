@@ -35,6 +35,11 @@ export interface PersonReportPayload {
 export interface WriteHbPayload {
   topic: string;
   report_type: WriteHbReportType;
+  title?: string;
+  eventId?: string;
+  outlineId?: string;
+  planId?: string;
+  draftAssistantMode?: boolean;
   outline?: string;
   focus_areas?: string[];
   known_context?: string;

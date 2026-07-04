@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import { marked } from 'marked';
 import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
@@ -6,6 +6,7 @@ import { HERMES_RUN_MODE, REPORT_AGENT_PROVIDER } from './config.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
+import { createAuthPool, type PgPool } from './auth-database.js';
 import type { CreateJobRequest } from '../src/types/report.js';
 import type { AuthUser } from './auth-user.interface.js';
 import type {
@@ -134,12 +135,24 @@ interface ReportSourceSummary {
   structuredSourceCount: number;
 }
 
+interface DraftAssistantPlanBundle {
+  planId: string;
+  outlineId: string;
+  eventId: string;
+  ownerId: string;
+  reportPlan: Record<string, unknown>;
+  event: Record<string, unknown>;
+  sources: Record<string, unknown>[];
+  attitudes: Record<string, unknown>[];
+}
+
 @Injectable()
-export class ReportsService {
+export class ReportsService implements OnModuleDestroy {
   private readonly jobs = new Map<string, JobRecord>();
   private readonly streams = new Map<string, Subject<ServerEvent>>();
   private readonly jobsReady: Promise<void>;
   private dailySequence = new Map<string, number>();
+  private pool: PgPool | null = null;
 
   constructor(
     private readonly hermes: HermesService,
@@ -149,9 +162,22 @@ export class ReportsService {
     this.jobsReady = this.loadPersistedJobs();
   }
 
-  createJob(req: CreateJobRequest, user: AuthUser): { jobId: string; status: string } {
+  async onModuleDestroy() {
+    if (this.pool) await this.pool.end();
+  }
+
+  async createJob(req: CreateJobRequest, user: AuthUser): Promise<{ jobId: string; status: string }> {
     if (!this.canCreateReport(user)) {
       throw new ForbiddenException({ error: 'Viewer cannot create report jobs' });
+    }
+    const payload = req.payload as unknown as Record<string, unknown>;
+    const planId = this.optionalId(payload.planId);
+    const planBundle = planId ? await this.loadDraftAssistantPlanBundle(planId, user) : null;
+    const eventId = this.optionalId(payload.eventId) || planBundle?.eventId;
+    const outlineId = this.optionalId(payload.outlineId) || planBundle?.outlineId;
+    if (planBundle) {
+      if (eventId && eventId !== planBundle.eventId) throw new BadRequestException({ error: 'eventId does not match planId' });
+      if (outlineId && outlineId !== planBundle.outlineId) throw new BadRequestException({ error: 'outlineId does not match planId' });
     }
     const jobId = uuid();
     const now = new Date().toISOString();
@@ -159,6 +185,9 @@ export class ReportsService {
       jobId,
       skill: req.skill,
       payload: req.payload,
+      eventId,
+      outlineId,
+      planId,
       ownerUserId: user.id,
       ownerUsername: user.username,
       ownerRole: user.role,
@@ -341,6 +370,9 @@ export class ReportsService {
       jobId: job.jobId,
       skill: job.skill,
       payload: job.payload,
+      eventId: job.eventId,
+      outlineId: job.outlineId,
+      planId: job.planId,
       ownerUserId: job.ownerUserId ?? null,
       ownerUsername: job.ownerUsername ?? null,
       isDeleted: this.isDeletedJob(job),
@@ -372,6 +404,137 @@ export class ReportsService {
     if (this.canReadAllReports(user)) return true;
     if (!job.ownerUserId) return false;
     return job.ownerUserId === user.id;
+  }
+
+  private async loadDraftAssistantPlanBundle(planId: string, user: AuthUser): Promise<DraftAssistantPlanBundle> {
+    if (!this.canCreateReport(user)) {
+      throw new ForbiddenException({ error: 'Viewer cannot create report jobs' });
+    }
+    const pool = await this.getPool();
+    const planResult = await pool.query(
+      `SELECT plan_id, outline_id, event_id, owner_id, plan_json
+         FROM report_plans
+        WHERE plan_id = $1
+        LIMIT 1`,
+      [planId],
+    );
+    const planRow = planResult.rows[0];
+    if (!planRow) throw new NotFoundException({ error: 'Report plan not found' });
+    if (user.role !== 'admin' && String(planRow.owner_id) !== user.id) {
+      throw new NotFoundException({ error: 'Report plan not found' });
+    }
+
+    const eventResult = await pool.query(
+      `SELECT event_id, owner_id, title, summary, basic_facts, timeline, actors, category, region,
+              importance_score, risk_score, raw_input, analysis_json, created_at, updated_at
+         FROM events
+        WHERE event_id = $1
+        LIMIT 1`,
+      [String(planRow.event_id)],
+    );
+    const eventRow = eventResult.rows[0];
+    if (!eventRow) throw new NotFoundException({ error: 'Draft event not found' });
+
+    const sourcesResult = await pool.query(
+      `SELECT source_id, source_title, source_url, publisher, author, published_at, content_text,
+              source_summary, relevance_reason, supported_facts, supported_attitudes, credibility_score, created_at
+         FROM event_sources
+        WHERE event_id = $1
+        ORDER BY created_at ASC`,
+      [String(planRow.event_id)],
+    );
+    const attitudesResult = await pool.query(
+      `SELECT attitude_id, actor, actor_type, statement_time, media, source_url,
+              attitude_summary, attitude_polarity, confidence, created_at
+         FROM event_attitudes
+        WHERE event_id = $1
+        ORDER BY created_at ASC`,
+      [String(planRow.event_id)],
+    );
+
+    return {
+      planId: String(planRow.plan_id),
+      outlineId: String(planRow.outline_id),
+      eventId: String(planRow.event_id),
+      ownerId: String(planRow.owner_id),
+      reportPlan: this.plainObject(planRow.plan_json),
+      event: this.eventRowToDraftContext(eventRow),
+      sources: sourcesResult.rows.map((row) => this.sourceRowToDraftContext(row)),
+      attitudes: attitudesResult.rows.map((row) => this.attitudeRowToDraftContext(row)),
+    };
+  }
+
+  private eventRowToDraftContext(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+      eventId: String(row.event_id || ''),
+      ownerId: String(row.owner_id || ''),
+      title: String(row.title || ''),
+      summary: String(row.summary || ''),
+      basicFacts: Array.isArray(row.basic_facts) ? row.basic_facts : [],
+      timeline: Array.isArray(row.timeline) ? row.timeline : [],
+      actors: Array.isArray(row.actors) ? row.actors : [],
+      category: String(row.category || ''),
+      region: String(row.region || ''),
+      importanceScore: Number(row.importance_score || 0),
+      riskScore: Number(row.risk_score || 0),
+      rawInput: this.plainObject(row.raw_input),
+      analysis: this.plainObject(row.analysis_json),
+      createdAt: this.isoString(row.created_at),
+      updatedAt: this.isoString(row.updated_at),
+    };
+  }
+
+  private sourceRowToDraftContext(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+      sourceId: String(row.source_id || ''),
+      sourceTitle: String(row.source_title || ''),
+      sourceUrl: row.source_url ? String(row.source_url) : null,
+      publisher: String(row.publisher || ''),
+      author: String(row.author || ''),
+      publishedAt: this.isoString(row.published_at) || null,
+      contentText: String(row.content_text || ''),
+      sourceSummary: String(row.source_summary || ''),
+      relevanceReason: String(row.relevance_reason || ''),
+      supportedFacts: Array.isArray(row.supported_facts) ? row.supported_facts : [],
+      supportedAttitudes: Array.isArray(row.supported_attitudes) ? row.supported_attitudes : [],
+      credibilityScore: Number(row.credibility_score || 0),
+      createdAt: this.isoString(row.created_at),
+    };
+  }
+
+  private attitudeRowToDraftContext(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+      attitudeId: String(row.attitude_id || ''),
+      actor: String(row.actor || ''),
+      actorType: row.actor_type ? String(row.actor_type) : null,
+      statementTime: this.isoString(row.statement_time) || null,
+      media: row.media ? String(row.media) : null,
+      sourceUrl: row.source_url ? String(row.source_url) : null,
+      attitudeSummary: String(row.attitude_summary || ''),
+      polarity: String(row.attitude_polarity || ''),
+      confidence: Number(row.confidence || 0),
+      createdAt: this.isoString(row.created_at),
+    };
+  }
+
+  private optionalId(value: unknown): string {
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : '';
+  }
+
+  private plainObject(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  }
+
+  private isoString(value: unknown): string {
+    if (!value) return '';
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
+  }
+
+  private async getPool(): Promise<PgPool> {
+    if (this.pool) return this.pool;
+    this.pool = createAuthPool();
+    return this.pool;
   }
 
   private canReadAllReports(user: AuthUser): boolean {
@@ -1013,6 +1176,130 @@ export class ReportsService {
     return payload;
   }
 
+  private async enrichPayloadWithDraftAssistantContext(
+    job: JobRecord,
+    payload: Record<string, unknown>,
+    user: AuthUser,
+  ): Promise<Record<string, unknown>> {
+    const planId = this.optionalId(job.planId) || this.optionalId(payload.planId);
+    if (!planId) return payload;
+    const bundle = await this.loadDraftAssistantPlanBundle(planId, user);
+    await this.writeDraftAssistantArtifacts(job, bundle, payload);
+    const context = this.contextObjectFromPayload(payload);
+    const instructions = [
+      '本次深度编报必须严格依据 Draft Assistant 生成的 report_plan。',
+      '用户已经确认该提纲版本，正文规划不得脱离该提纲。',
+      '主要内容部分必须根据 main_content sectionGoal 展开。',
+      '各方态度部分必须使用 attitudeSources，并写明表态主体、发表时间、媒体和来源。',
+      '涉我风险部分必须使用 riskPoints，并说明事实依据和不确定性。',
+      '缺少来源的信息必须标注待核实。',
+      '不得仅根据标题推断事实。',
+      '不得重新自由发挥生成与提纲无关的大段内容。',
+    ];
+    const enriched = {
+      ...payload,
+      eventId: bundle.eventId,
+      outlineId: bundle.outlineId,
+      planId: bundle.planId,
+      draftAssistantMode: true,
+      known_context: JSON.stringify({
+        ...context,
+        draftAssistantContext: {
+          eventId: bundle.eventId,
+          outlineId: bundle.outlineId,
+          planId: bundle.planId,
+          event: bundle.event,
+          sources: bundle.sources,
+          attitudes: bundle.attitudes,
+          reportPlan: bundle.reportPlan,
+        },
+        draftAssistantInstructions: instructions,
+      }, null, 2),
+    };
+    job.eventId = bundle.eventId;
+    job.outlineId = bundle.outlineId;
+    job.planId = bundle.planId;
+    job.artifacts = {
+      ...job.artifacts,
+      draftAssistantPlanId: bundle.planId,
+      draftAssistantOutlineId: bundle.outlineId,
+      draftAssistantEventId: bundle.eventId,
+    };
+    await this.writeJobState(job);
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'draft_assistant_context',
+      message: 'Draft Assistant report_plan and source context prepared for deep report generation.',
+    });
+    return enriched;
+  }
+
+  private async writeDraftAssistantArtifacts(
+    job: JobRecord,
+    bundle: DraftAssistantPlanBundle,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const databaseDir = this.remoteFs.joinPath(jobDir, 'database');
+    await this.remoteFs.mkdir(databaseDir);
+    const contextPath = this.remoteFs.joinPath(jobDir, 'context.json');
+    const existingContext = await this.readJsonFile(contextPath);
+    const baseContext = existingContext && !Array.isArray(existingContext)
+      ? existingContext
+      : this.contextObjectFromPayload(payload);
+    const draftAssistantContext = {
+      eventId: bundle.eventId,
+      outlineId: bundle.outlineId,
+      planId: bundle.planId,
+      event: bundle.event,
+      sources: bundle.sources,
+      attitudes: bundle.attitudes,
+      reportPlan: bundle.reportPlan,
+    };
+
+    await Promise.all([
+      this.remoteFs.writeFile(
+        contextPath,
+        `${JSON.stringify({ ...baseContext, draftAssistantContext }, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'draft_event.json'),
+        `${JSON.stringify(bundle.event, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'draft_sources.json'),
+        `${JSON.stringify(bundle.sources, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'draft_attitudes.json'),
+        `${JSON.stringify(bundle.attitudes, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'report_plan.json'),
+        `${JSON.stringify(bundle.reportPlan, null, 2)}\n`,
+      ),
+    ]);
+
+    job.artifacts = {
+      ...job.artifacts,
+      hermesJobDir: jobDir,
+      draftAssistantContextPath: contextPath,
+      draftAssistantReportPlanPath: this.remoteFs.joinPath(databaseDir, 'report_plan.json'),
+    };
+    await this.writeJobState(job);
+  }
+
+  private contextObjectFromPayload(payload: Record<string, unknown>): Record<string, unknown> {
+    const knownContext = typeof payload.known_context === 'string' ? payload.known_context : '';
+    const parsed = this.parseJsonObject(knownContext);
+    if (parsed) return parsed;
+    return {
+      topic: String(payload.topic || payload.title || ''),
+      reportType: String(payload.report_type || ''),
+      freeTextContext: knownContext,
+    };
+  }
+
   private async writeBackendDatabaseRecallArtifacts(
     job: JobRecord,
     context: Record<string, unknown>,
@@ -1153,9 +1440,16 @@ export class ReportsService {
     try {
       const requestUser = this.buildRequestUser(job);
       const enrichedPayload = await this.enrichPayloadWithVectorSources(job);
+      const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, enrichedPayload, {
+        id: job.ownerUserId || '',
+        username: job.ownerUsername || '',
+        displayName: job.ownerUsername || '',
+        email: '',
+        role: job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer',
+      });
       const runInput: RunInput = {
         skill: job.skill,
-        payload: enrichedPayload,
+        payload: draftPayload,
         requestUser,
         onEvent: (event) => this.pushEvent(job, event),
         jobId: job.jobId,
@@ -1838,6 +2132,9 @@ export class ReportsService {
                 jobId: parsed.jobId,
                 skill: parsed.skill ?? 'risk-assessment-reports',
                 payload: parsed.payload ?? {},
+                eventId: parsed.eventId,
+                outlineId: parsed.outlineId,
+                planId: parsed.planId,
                 ownerUserId: parsed.ownerUserId ?? null,
                 ownerUsername: parsed.ownerUsername ?? null,
                 ownerRole: parsed.ownerRole,

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -26,10 +27,12 @@ import type {
   DraftAttitude,
   DraftEventSummary,
   DraftOutlineInput,
+  DraftOutlineImportInput,
   DraftOutlineItem,
   DraftOutlineJson,
   DraftOutlineManualInput,
   DraftOutlineRefineInput,
+  DraftReportPlanJson,
   DraftSourceResponse,
 } from './draft-assistant.types.js';
 import type { VectorSourceItem } from './vector-source.service.js';
@@ -81,6 +84,15 @@ const DEFAULT_ANALYSIS: DraftAnalysisJson = {
   uncertainties: [],
   suggestedAngles: [],
 };
+
+const REPORT_PLAN_GLOBAL_CONSTRAINTS = [
+  '不得仅根据标题推断事实。',
+  '主要内容必须讲清事件背景、经过、当前进展和影响。',
+  '各方态度必须标注表态主体、发表时间、媒体或发布渠道。',
+  '缺少来源的信息必须标注待核实。',
+  '涉我风险判断必须有事实依据。',
+  '正文必须围绕用户确认的提纲版本展开，不得脱离提纲自由发挥。',
+];
 
 @Injectable()
 export class DraftAssistantService implements OnModuleDestroy {
@@ -260,6 +272,180 @@ export class DraftAssistantService implements OnModuleDestroy {
       [eventId],
     );
     return result.rows.map((row) => this.toOutlineResponse(row));
+  }
+
+  async importOutlineToReportPlan(input: DraftOutlineImportInput, user: AuthUser) {
+    if (user.role === 'viewer') {
+      throw new ForbiddenException({ error: 'Viewer cannot import draft outlines to deep reports' });
+    }
+    const outlineId = this.requiredText(input.outlineId, 'outlineId', 80);
+    const outlineRecord = await this.loadOutlineForUser(outlineId, user);
+    const event = await this.loadEventForUser(outlineRecord.eventId, user);
+    const [sources, attitudes] = await Promise.all([
+      this.listSources(outlineRecord.eventId),
+      this.listAttitudes(outlineRecord.eventId),
+    ]);
+    const plan = this.buildReportPlan(outlineRecord, event, sources, attitudes);
+    const pool = await this.getPool();
+    const result = await pool.query(
+      `INSERT INTO report_plans (outline_id, event_id, owner_id, plan_json)
+       VALUES ($1, $2, $3, $4::jsonb)
+       RETURNING plan_id, outline_id, event_id, plan_json, created_at`,
+      [
+        outlineRecord.outlineId,
+        outlineRecord.eventId,
+        outlineRecord.ownerId,
+        JSON.stringify(plan),
+      ],
+    );
+    const row = result.rows[0];
+    return {
+      planId: String(row.plan_id || ''),
+      outlineId: String(row.outline_id || ''),
+      eventId: String(row.event_id || ''),
+      plan: row.plan_json as DraftReportPlanJson,
+      createdAt: this.dateString(row.created_at),
+    };
+  }
+
+  private buildReportPlan(
+    outlineRecord: ReturnType<typeof this.toOutlineResponse>,
+    event: ReturnType<typeof this.toEventDetail>,
+    sources: DraftSourceResponse[],
+    attitudes: DraftAttitude[],
+  ): DraftReportPlanJson {
+    const outline = outlineRecord.outline;
+    const usedIndexes = new Set<number>();
+    const findItem = (patterns: RegExp[]) => {
+      const index = outline.outlineItems.findIndex((item, itemIndex) => {
+        if (usedIndexes.has(itemIndex)) return false;
+        const text = `${item.title}\n${item.summary}`;
+        return patterns.some((pattern) => pattern.test(text));
+      });
+      if (index < 0) return null;
+      usedIndexes.add(index);
+      return outline.outlineItems[index];
+    };
+
+    const mainItem = findItem([/主要|内容|措施|概况|情况|背景|经过|进展|事件/]) || outline.outlineItems[0] || null;
+    if (mainItem) usedIndexes.add(outline.outlineItems.indexOf(mainItem));
+    const attitudesItem = findItem([/态度|立场|回应|反应|各方/]);
+    const riskItem = findItem([/涉我|风险|影响|挑战|合规|出海|安全|舆情/]);
+    const trendItem = findItem([/趋势|研判|后续|展望|走向|演变/]);
+    const additionalSections = outline.outlineItems
+      .filter((_, index) => !usedIndexes.has(index))
+      .map((item, index) => ({
+        sectionId: `additional_${index + 1}`,
+        sectionTitle: item.title,
+        sectionGoal: item.summary || '围绕用户确认的提纲补充展开。',
+        outlineTitle: item.title,
+        outlineSummary: item.summary,
+        requiredFacts: this.outlineFacts(item),
+        requiredSources: this.planSources(sources),
+        writingInstructions: this.outlineInstructions(item),
+      }));
+
+    return {
+      reportTitle: outline.reportTitle,
+      reportTheme: outline.reportTheme,
+      coreArgument: outline.coreArgument,
+      outlineVersion: {
+        outlineId: outlineRecord.outlineId,
+        versionNo: outlineRecord.versionNo,
+        editType: outlineRecord.editType,
+      },
+      eventBrief: {
+        eventId: event.eventId,
+        title: event.title,
+        summary: event.summary,
+        category: event.category,
+        region: event.region,
+      },
+      sections: [
+        {
+          sectionId: 'main_content',
+          sectionTitle: '主要内容',
+          sectionGoal: '把事件发生背景、经过、当前进展和影响讲清楚。',
+          outlineTitle: mainItem?.title || '',
+          outlineSummary: mainItem?.summary || '',
+          requiredFacts: mainItem ? this.outlineFacts(mainItem) : event.basicFacts,
+          requiredSources: this.planSources(sources),
+          writingInstructions: mainItem ? this.outlineInstructions(mainItem) : [],
+        },
+        {
+          sectionId: 'attitudes',
+          sectionTitle: '各方态度',
+          sectionGoal: '梳理相关方立场，并标注表态主体、发表时间、媒体和来源。',
+          outlineTitle: attitudesItem?.title || '',
+          outlineSummary: attitudesItem?.summary || '',
+          attitudeSources: attitudes.map((item) => ({
+            actor: item.actor,
+            actorType: item.actorType,
+            statementTime: item.statementTime,
+            media: item.media,
+            sourceUrl: item.sourceUrl,
+            attitudeSummary: item.attitudeSummary,
+            polarity: item.polarity,
+            confidence: item.confidence,
+          })),
+          writingInstructions: attitudesItem ? this.outlineInstructions(attitudesItem) : [],
+        },
+        {
+          sectionId: 'risk_to_us',
+          sectionTitle: '涉我风险',
+          sectionGoal: '分析该事件对我方政治、经济、安全、舆论、平台出海或数字治理等方面的潜在影响。',
+          outlineTitle: riskItem?.title || '',
+          outlineSummary: riskItem?.summary || '',
+          riskPoints: riskItem ? this.outlineFacts(riskItem) : event.analysis.riskToUs,
+          writingInstructions: riskItem ? this.outlineInstructions(riskItem) : [],
+        },
+        {
+          sectionId: 'trend',
+          sectionTitle: '趋势研判',
+          sectionGoal: '判断事件后续演变方向及可能外溢影响。',
+          outlineTitle: trendItem?.title || '',
+          outlineSummary: trendItem?.summary || '',
+          requiredFacts: trendItem ? this.outlineFacts(trendItem) : [],
+          writingInstructions: trendItem ? this.outlineInstructions(trendItem) : [],
+        },
+        ...additionalSections,
+      ],
+      writingFocus: outline.writingFocus,
+      sourceRequirements: outline.sourceRequirements,
+      uncertaintiesToVerify: outline.uncertaintiesToVerify,
+      globalWritingConstraints: REPORT_PLAN_GLOBAL_CONSTRAINTS,
+    };
+  }
+
+  private outlineFacts(item: DraftOutlineItem): string[] {
+    return [item.summary, ...this.arrayValue(item.children).map((child) => this.objectValue(child).summary || this.objectValue(child).title)]
+      .map((value) => this.text(value, 1000))
+      .filter(Boolean);
+  }
+
+  private outlineInstructions(item: DraftOutlineItem): string[] {
+    return [
+      item.summary ? `围绕“${item.title}”展开：${item.summary}` : '',
+      ...this.arrayValue(item.children).map((child) => {
+        const raw = this.objectValue(child);
+        const title = this.text(raw.title, 256);
+        const summary = this.text(raw.summary, 1000);
+        return title || summary ? `二级方向“${title || '分项内容'}”：${summary}` : '';
+      }),
+    ].filter(Boolean);
+  }
+
+  private planSources(sources: DraftSourceResponse[]) {
+    return sources.slice(0, 30).map((source) => ({
+      sourceId: source.sourceId,
+      title: source.sourceTitle,
+      url: source.sourceUrl,
+      publisher: source.publisher,
+      publishedAt: source.publishedAt,
+      summary: source.sourceSummary,
+      relevanceReason: source.relevanceReason,
+      credibilityScore: source.credibilityScore,
+    }));
   }
 
   private async generateAnalysis(input: { title: string; materials: string; category: string; region: string; sources: DraftSourceResponse[] }): Promise<unknown> {

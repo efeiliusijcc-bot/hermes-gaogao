@@ -7,6 +7,8 @@ import {
   getDraftEvents,
   getDraftEventOutlines,
   getDraftOutline,
+  createReportJob,
+  importDraftOutline,
   manualUpdateDraftOutline,
   refineDraftOutline,
 } from '../lib/api.js'
@@ -18,7 +20,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['back', 'request-login'])
+const emit = defineEmits(['back', 'request-login', 'report-job-created'])
 
 const form = reactive({
   title: '',
@@ -47,6 +49,10 @@ const previewMode = ref(false)
 const confirmationMode = ref(false)
 const importStatus = ref('待确认当前提纲版本')
 const editSnapshot = ref('')
+const importedPlan = ref(null)
+const isImportingOutline = ref(false)
+const isCreatingReportJob = ref(false)
+const createdReportJob = ref(null)
 
 const outlineEdit = reactive({
   reportTitle: '',
@@ -77,7 +83,11 @@ const displayOutline = computed(() => normalizeOutlineForDisplay(selectedOutline
 const hasAnalysis = computed(() => Boolean(analysis.value))
 const hasOutline = computed(() => Boolean(selectedOutline.value?.outline && displayOutline.value.outlineItems.length))
 const isVersionConfirmed = computed(() => confirmationMode.value && hasOutline.value && !editMode.value)
-const isImportReady = computed(() => false)
+const canImportDraftOutline = computed(() => props.currentUser?.role === 'admin' || props.currentUser?.role === 'operator')
+const isImportReady = computed(() => isVersionConfirmed.value && canImportDraftOutline.value && !importedPlan.value)
+const isReportJobReady = computed(() => Boolean(importedPlan.value?.planId) && canImportDraftOutline.value && !editMode.value)
+const importedPlanIdShort = computed(() => importedPlan.value?.planId ? shortId(importedPlan.value.planId) : '')
+const importedVersionLabel = computed(() => importedPlan.value?.outlineId === currentOutlineId.value ? selectedVersionLabel.value : (importedPlan.value?.versionLabel || '已导入版本'))
 const currentVersionTime = computed(() => selectedOutline.value?.createdAt ? formatTime(selectedOutline.value.createdAt) : '')
 const selectedVersionLabel = computed(() => selectedOutline.value ? versionLabel(selectedOutline.value) : '尚未选择版本')
 const currentEventTitle = computed(() => eventResult.value?.event?.title || form.title || '未命名事件')
@@ -86,7 +96,7 @@ const previewDisplayOutline = computed(() => normalizeOutlineForDisplay(editDraf
 const hasEditChanges = computed(() => editMode.value && editSnapshot.value !== serializeEditState())
 
 const currentStepKey = computed(() => {
-  if (isImportReady.value && importStatus.value === '可导入深度编报') return 'import'
+  if (importedPlan.value || isImportReady.value) return 'import'
   if ((editMode.value || confirmationMode.value || isRefining.value) && hasOutline.value) return 'confirm'
   if (hasOutline.value) return 'outline'
   if (hasAnalysis.value) return 'analysis'
@@ -170,7 +180,7 @@ async function runAnalyze() {
   outlineVersions.value = []
   editMode.value = false
   confirmationMode.value = false
-  importStatus.value = '待确认当前提纲版本'
+  resetImportState('待确认当前提纲版本')
   try {
     eventResult.value = await analyzeDraftEvent({
       title: form.title,
@@ -193,7 +203,7 @@ async function openEvent(eventId) {
   if (!eventId) return
   editMode.value = false
   confirmationMode.value = false
-  importStatus.value = '待确认当前提纲版本'
+  resetImportState('待确认当前提纲版本')
   try {
     eventResult.value = await getDraftEvent(eventId)
     form.title = eventResult.value?.event?.title || form.title
@@ -216,7 +226,7 @@ async function createOutline() {
   isGeneratingOutline.value = true
   editMode.value = false
   confirmationMode.value = false
-  importStatus.value = '待确认当前提纲版本'
+  resetImportState('待确认当前提纲版本')
   try {
     selectedOutline.value = await generateDraftOutline({
       eventId: currentEventId.value,
@@ -245,7 +255,7 @@ async function refineOutline() {
   isRefining.value = true
   editMode.value = false
   confirmationMode.value = true
-  importStatus.value = 'AI 修改后请重新确认版本'
+  resetImportState('AI 修改后请重新确认版本')
   try {
     selectedOutline.value = await refineDraftOutline({
       outlineId: currentOutlineId.value,
@@ -282,7 +292,7 @@ async function saveManualOutline() {
     await refreshOutlineVersions()
     syncOutlineEdit()
     editSnapshot.value = serializeEditState()
-    importStatus.value = '手动修改后请重新确认版本'
+    resetImportState('手动修改后请重新确认版本')
     notice.value = `已保存 V${selectedOutline.value.versionNo} 手动修改版`
   } catch (error) {
     showError(error)
@@ -305,7 +315,7 @@ async function loadOutline(outlineId) {
     editMode.value = false
     previewMode.value = false
     confirmationMode.value = false
-    importStatus.value = '待确认当前提纲版本'
+    resetImportState('待确认当前提纲版本')
   } catch (error) {
     showError(error)
   }
@@ -319,7 +329,7 @@ function enterEditMode() {
   editMode.value = true
   previewMode.value = false
   confirmationMode.value = true
-  importStatus.value = '编辑完成后保存为新版本'
+  resetImportState('编辑完成后保存为新版本')
 }
 
 function cancelEditMode() {
@@ -333,8 +343,95 @@ function confirmCurrentVersion() {
   if (!hasOutline.value) return
   editMode.value = false
   confirmationMode.value = true
-  importStatus.value = '当前版本已确认，导入入口待接入'
+  resetImportState(canImportDraftOutline.value ? '当前版本已确认，可生成深度编报规划' : '观察员无权导入深度编报')
   notice.value = `已确认 ${selectedVersionLabel.value}`
+}
+
+async function importCurrentOutline() {
+  clearMessages()
+  if (!currentOutlineId.value) {
+    errorMessage.value = '请先选择提纲版本'
+    return
+  }
+  if (!canImportDraftOutline.value) {
+    errorMessage.value = '观察员无权导入深度编报'
+    return
+  }
+  if (!isVersionConfirmed.value) {
+    errorMessage.value = '请先确认当前提纲版本'
+    return
+  }
+  isImportingOutline.value = true
+  try {
+    const result = await importDraftOutline({ outlineId: currentOutlineId.value })
+    importedPlan.value = {
+      planId: result.planId,
+      outlineId: result.outlineId,
+      eventId: result.eventId,
+      plan: result.plan || {},
+      createdAt: result.createdAt || new Date().toISOString(),
+      versionLabel: selectedVersionLabel.value,
+    }
+    importStatus.value = '已生成深度编报规划'
+    notice.value = `已生成深度编报规划：${shortId(result.planId)}`
+  } catch (error) {
+    showError(error)
+  } finally {
+    isImportingOutline.value = false
+  }
+}
+
+async function createDeepReportJob() {
+  clearMessages()
+  if (!isReportJobReady.value) return
+  isCreatingReportJob.value = true
+  try {
+    const plan = importedPlan.value.plan || {}
+    const reportTitle = plan.reportTitle || displayOutline.value.reportTitle || currentEventTitle.value
+    const knownContext = {
+      kind: 'draft_assistant_import',
+      topic: reportTitle,
+      reportType: 'K报',
+      draftAssistantMode: true,
+      eventId: importedPlan.value.eventId,
+      outlineId: importedPlan.value.outlineId,
+      planId: importedPlan.value.planId,
+      draftAssistantInstructions: [
+        '严格依据用户已确认的 Draft Assistant report_plan 生成深度编报。',
+        '不得脱离确认提纲自由发挥。',
+        '缺少来源的信息必须标注待核实。',
+      ],
+    }
+    const created = await createReportJob({
+      skill: 'write-hb',
+      payload: {
+        title: reportTitle,
+        topic: reportTitle,
+        report_type: 'K报',
+        eventId: importedPlan.value.eventId,
+        outlineId: importedPlan.value.outlineId,
+        planId: importedPlan.value.planId,
+        draftAssistantMode: true,
+        known_context: JSON.stringify(knownContext, null, 2),
+        focus_areas: ['主要内容', '各方态度', '涉我风险', '趋势研判'],
+        language: 'zh-CN',
+      },
+    })
+    createdReportJob.value = { ...created, payload: { topic: reportTitle, report_type: 'K报' } }
+    importStatus.value = `深度编报任务已创建：${shortId(created.jobId)}`
+    notice.value = '已创建深度编报任务，正在进入任务进度页'
+    emit('report-job-created', createdReportJob.value)
+  } catch (error) {
+    showError(error)
+  } finally {
+    isCreatingReportJob.value = false
+  }
+}
+
+function resetImportState(status = '待确认当前提纲版本') {
+  importedPlan.value = null
+  createdReportJob.value = null
+  importStatus.value = status
 }
 
 function previewEditedOutline() {
@@ -679,6 +776,11 @@ function stepClass(step, index) {
 function formatTime(value) {
   if (!value) return ''
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+function shortId(value) {
+  const text = String(value || '')
+  return text.length > 12 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text
 }
 
 onMounted(() => {
@@ -1225,14 +1327,42 @@ onMounted(() => {
 
           <section class="draft-side-section draft-import-box">
             <h2>导入深度编报</h2>
-            <div class="draft-import-status" :class="{ ready: isVersionConfirmed }">
-              <strong>{{ selectedVersionLabel }}</strong>
-              <span>{{ editMode ? '请先保存或取消编辑后再导入' : importStatus }}</span>
+            <div class="draft-import-status" :class="{ ready: isVersionConfirmed || importedPlan }">
+              <strong>{{ importedPlan ? importedVersionLabel : selectedVersionLabel }}</strong>
+              <span v-if="editMode">请先保存或取消编辑后再导入</span>
+              <span v-else-if="!canImportDraftOutline">观察员无权导入深度编报</span>
+              <span v-else-if="!isVersionConfirmed && !importedPlan">请先确认当前提纲版本</span>
+              <span v-else>{{ importStatus }}</span>
             </div>
-            <button class="sci-btn sci-btn-primary draft-primary" type="button" disabled title="本次重构不修改深度编报主流程">
-              {{ editMode ? '编辑中暂不可用' : isVersionConfirmed ? '导入入口待接入' : '确认版本后可导入' }}
+            <div v-if="importedPlan" class="draft-import-plan-card">
+              <span>Plan ID</span>
+              <strong>{{ importedPlanIdShort }}</strong>
+              <small>{{ formatTime(importedPlan.createdAt) }}</small>
+              <b>{{ importedPlan.plan?.reportTitle || displayOutline.reportTitle || '深度编报规划' }}</b>
+              <p>{{ importedPlan.plan?.reportTheme || displayOutline.reportTheme || '已生成可供 report-jobs 使用的规划。' }}</p>
+            </div>
+            <button
+              v-if="!importedPlan"
+              class="sci-btn sci-btn-primary draft-primary"
+              type="button"
+              :disabled="!isImportReady || isImportingOutline || editMode"
+              @click="importCurrentOutline"
+            >
+              {{ isImportingOutline ? '导入中...' : '导入深度编报' }}
             </button>
-            <p>{{ editMode ? '请先保存或取消编辑后再导入，未保存内容不会进入深度编报。' : '确认当前版本后可导入深度编报。本次仅完成拟稿工作台前端重构，不启动 report-jobs 主流程。' }}</p>
+            <button
+              v-else
+              class="sci-btn sci-btn-primary draft-primary"
+              type="button"
+              :disabled="!isReportJobReady || isCreatingReportJob"
+              @click="createDeepReportJob"
+            >
+              {{ isCreatingReportJob ? '创建中...' : '创建深度编报任务' }}
+            </button>
+            <p v-if="editMode">请先保存或取消编辑后再导入，未保存内容不会进入深度编报。</p>
+            <p v-else-if="!canImportDraftOutline">观察员无权导入深度编报。</p>
+            <p v-else-if="importedPlan">创建任务后将进入现有编报任务进度页，任务会携带 eventId、outlineId、planId。</p>
+            <p v-else>确认当前版本后可生成深度编报规划，不会覆盖原提纲版本。</p>
           </section>
         </aside>
       </section>
@@ -2420,6 +2550,40 @@ onMounted(() => {
 .draft-import-status strong {
   color: #0f172a;
   font-size: 13px;
+}
+
+.draft-import-plan-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #bbf7d0;
+  border-radius: 14px;
+  padding: 12px;
+  background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
+}
+
+.draft-import-plan-card span,
+.draft-import-plan-card small {
+  font-size: 11px;
+  color: #15803d;
+  font-weight: 700;
+}
+
+.draft-import-plan-card strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #14532d;
+}
+
+.draft-import-plan-card b {
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.draft-import-plan-card p {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .draft-error,

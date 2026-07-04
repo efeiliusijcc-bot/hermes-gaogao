@@ -3,7 +3,7 @@ import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
 import { CurrentUser } from './current-user.decorator.js';
 import { DraftAssistantService } from './draft-assistant.service.js';
-import type { DraftAnalyzeInput, DraftOutlineInput, DraftOutlineManualInput, DraftOutlineRefineInput } from './draft-assistant.types.js';
+import type { DraftAnalyzeInput, DraftOutlineImportInput, DraftOutlineInput, DraftOutlineManualInput, DraftOutlineRefineInput } from './draft-assistant.types.js';
 import { Roles, RolesGuard } from './roles.guard.js';
 
 @Controller('/api/draft-assistant')
@@ -40,6 +40,11 @@ export class DraftAssistantController {
   @Post('outline/manual-update')
   manualUpdateOutline(@Body() body: DraftOutlineManualInput, @CurrentUser() user: AuthUser) {
     return this.draftAssistant.manualUpdateOutline(body || {}, user);
+  }
+
+  @Post('outline/import')
+  importOutline(@Body() body: DraftOutlineImportInput, @CurrentUser() user: AuthUser) {
+    return this.draftAssistant.importOutlineToReportPlan(body || {}, user);
   }
 
   @Get('outlines/:outlineId')

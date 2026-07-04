@@ -193,6 +193,13 @@ export function manualUpdateDraftOutline(payload) {
   })
 }
 
+export function importDraftOutline(payload) {
+  return request('/draft-assistant/outline/import', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getDraftOutline(outlineId) {
   return request(`/draft-assistant/outlines/${encodeURIComponent(outlineId)}`)
 }

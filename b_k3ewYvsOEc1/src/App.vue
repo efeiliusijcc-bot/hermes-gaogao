@@ -177,6 +177,11 @@ function requestDraftLogin() {
   setAuthNotice('请先登录')
 }
 
+function openDraftReportJob(item) {
+  if (!item?.jobId) return
+  openReportJob(item)
+}
+
 function qaHistoryStorageKey(userId = '') {
   return `${QA_HISTORY_KEY}:${userId || 'guest'}`
 }
@@ -357,6 +362,7 @@ function jobActionLabel(status) {
       :current-user="authUser"
       @back="returnHome"
       @request-login="requestDraftLogin"
+      @report-job-created="openDraftReportJob"
     />
 
     <main v-else-if="showUserManagement" class="user-management-main">
@@ -586,6 +592,5 @@ function jobActionLabel(status) {
     </main>
   </div>
 </template>
-
 
 

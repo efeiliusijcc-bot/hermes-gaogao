@@ -26,6 +26,10 @@ export interface DraftOutlineManualInput {
   editNote?: string;
 }
 
+export interface DraftOutlineImportInput {
+  outlineId?: string;
+}
+
 export interface DraftSourceResponse {
   sourceId: string;
   sourceTitle: string;
@@ -100,6 +104,42 @@ export interface DraftEventSummary {
   riskScore: number;
   createdAt: string;
   ownerUsername?: string;
+}
+
+export interface DraftReportPlanSection {
+  sectionId: string;
+  sectionTitle: string;
+  sectionGoal: string;
+  outlineTitle?: string;
+  outlineSummary?: string;
+  requiredFacts?: unknown[];
+  requiredSources?: unknown[];
+  attitudeSources?: unknown[];
+  riskPoints?: unknown[];
+  writingInstructions?: unknown[];
+}
+
+export interface DraftReportPlanJson {
+  reportTitle: string;
+  reportTheme: string;
+  coreArgument: string;
+  outlineVersion: {
+    outlineId: string;
+    versionNo: number;
+    editType: string;
+  };
+  eventBrief: {
+    eventId: string;
+    title: string;
+    summary: string;
+    category: string;
+    region: string;
+  };
+  sections: DraftReportPlanSection[];
+  writingFocus: unknown[];
+  sourceRequirements: unknown[];
+  uncertaintiesToVerify: unknown[];
+  globalWritingConstraints: string[];
 }
 
 export interface DraftCurrentUser {
