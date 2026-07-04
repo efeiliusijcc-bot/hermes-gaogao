@@ -88,6 +88,19 @@ const currentStepKey = computed(() => {
 })
 
 const currentStepIndex = computed(() => stepDefinitions.findIndex((step) => step.key === currentStepKey.value))
+const expandedStrategyCards = reactive({
+  writingFocus: false,
+  sourceRequirements: false,
+  uncertaintiesToVerify: false,
+})
+
+const sourceTypeTags = [
+  { label: '官方文件', tone: 'official' },
+  { label: '主流媒体', tone: 'media' },
+  { label: '行业组织', tone: 'industry' },
+  { label: '研究报告', tone: 'report' },
+  { label: '企业声明', tone: 'company' },
+]
 
 const analysisCards = computed(() => {
   const item = analysis.value || {}
@@ -357,9 +370,11 @@ function normalizeOutlineForDisplay(outline) {
     reportTheme: outline?.reportTheme || '',
     coreArgument: outline?.coreArgument || outline?.coreJudgement || '',
     outlineItems: normalizeOutlineItems(outline?.outlineItems),
-    writingFocus: Array.isArray(outline?.writingFocus) ? outline.writingFocus : arrayOrEmpty(outline?.writingConstraints),
-    sourceRequirements: arrayOrEmpty(outline?.sourceRequirements),
-    uncertaintiesToVerify: arrayOrEmpty(outline?.uncertaintiesToVerify),
+    writingFocus: listFromValue(outline?.writingFocus).length
+      ? listFromValue(outline?.writingFocus)
+      : listFromValue(outline?.writingConstraints),
+    sourceRequirements: listFromValue(outline?.sourceRequirements),
+    uncertaintiesToVerify: listFromValue(outline?.uncertaintiesToVerify),
   }
   if (!normalized.outlineItems.length) {
     normalized.outlineItems = legacyOutlineItems(outline)
@@ -452,12 +467,41 @@ function arrayOrEmpty(value) {
   return Array.isArray(value) ? value : []
 }
 
+function listFromValue(value) {
+  if (Array.isArray(value)) return value.map(itemToText).map((item) => item.trim()).filter(Boolean)
+  if (typeof value === 'string') return linesToArray(value)
+  return []
+}
+
 function itemToText(item) {
   if (typeof item === 'string') return item
   if (item && typeof item === 'object') {
     return item.summary || item.title || item.name || item.content || JSON.stringify(item)
   }
   return String(item ?? '')
+}
+
+function strategyText(item) {
+  const text = itemToText(item).trim()
+  return text.length > 72 ? `${text.slice(0, 72)}...` : text
+}
+
+function strategyVisibleItems(items, key, max = 5) {
+  const list = arrayOrEmpty(items).map(strategyText).filter(Boolean)
+  return expandedStrategyCards[key] ? list : list.slice(0, max)
+}
+
+function strategyHasMore(items, key, max = 5) {
+  return !expandedStrategyCards[key] && arrayOrEmpty(items).length > max
+}
+
+function toggleStrategyCard(key) {
+  expandedStrategyCards[key] = !expandedStrategyCards[key]
+}
+
+function isMandatorySourceRequirement(item) {
+  const text = itemToText(item)
+  return /必须|时间|媒体|来源|标注/.test(text)
 }
 
 function compactList(value) {
@@ -702,19 +746,50 @@ onMounted(() => {
               <div v-if="!outlineEdit.outlineItems.length" class="draft-empty">暂无目录，请新增一级目录。</div>
             </div>
 
-            <div class="draft-edit-tail">
-              <label class="draft-field">
-                <span>写作重点</span>
-                <textarea v-model="outlineEdit.writingFocus" class="sci-input draft-links" placeholder="一行一条"></textarea>
-              </label>
-              <label class="draft-field">
-                <span>来源要求</span>
-                <textarea v-model="outlineEdit.sourceRequirements" class="sci-input draft-links" placeholder="一行一条"></textarea>
-              </label>
-              <label class="draft-field">
-                <span>待核实事项</span>
-                <textarea v-model="outlineEdit.uncertaintiesToVerify" class="sci-input draft-links" placeholder="一行一条"></textarea>
-              </label>
+            <div class="draft-strategy-section draft-strategy-editor">
+              <div class="draft-strategy-head">
+                <div>
+                  <h3>写作策略与核查</h3>
+                  <p>用于明确本篇编报的写作重点、来源使用要求和后续核实事项。</p>
+                </div>
+              </div>
+              <div class="draft-strategy-grid">
+                <section class="draft-strategy-card focus">
+                  <div class="draft-strategy-card-head">
+                    <span class="draft-strategy-icon">P</span>
+                    <div>
+                      <h4>写作重点</h4>
+                      <p>突出本篇编报的核心写作方向。</p>
+                    </div>
+                  </div>
+                  <textarea v-model="outlineEdit.writingFocus" class="sci-input draft-strategy-textarea" placeholder="一行一条写作重点"></textarea>
+                  <small>一行一条，保存后将作为新版本提纲的一部分。</small>
+                </section>
+
+                <section class="draft-strategy-card source">
+                  <div class="draft-strategy-card-head">
+                    <span class="draft-strategy-icon">L</span>
+                    <div>
+                      <h4>来源要求</h4>
+                      <p>标明正文需要补充和交叉验证的来源。</p>
+                    </div>
+                  </div>
+                  <textarea v-model="outlineEdit.sourceRequirements" class="sci-input draft-strategy-textarea" placeholder="一行一条来源要求"></textarea>
+                  <small>一行一条，保存后将作为新版本提纲的一部分。</small>
+                </section>
+
+                <section class="draft-strategy-card verify">
+                  <div class="draft-strategy-card-head">
+                    <span class="draft-strategy-icon">!</span>
+                    <div>
+                      <h4>待核实事项</h4>
+                      <p>提示正式编报前仍需确认的关键事实。</p>
+                    </div>
+                  </div>
+                  <textarea v-model="outlineEdit.uncertaintiesToVerify" class="sci-input draft-strategy-textarea" placeholder="一行一条待核实事项"></textarea>
+                  <small>一行一条，保存后将作为新版本提纲的一部分。</small>
+                </section>
+              </div>
             </div>
             <label class="draft-field">
               <span>修改说明</span>
@@ -763,28 +838,101 @@ onMounted(() => {
               </article>
             </div>
 
-            <div class="draft-outline-footer">
-              <section>
-                <h3>写作重点</h3>
-                <ul>
-                  <li v-for="(item, index) in displayOutline.writingFocus" :key="index">{{ itemToText(item) }}</li>
-                </ul>
-                <p v-if="!displayOutline.writingFocus.length">暂无</p>
-              </section>
-              <section>
-                <h3>来源要求</h3>
-                <ul>
-                  <li v-for="(item, index) in displayOutline.sourceRequirements" :key="index">{{ itemToText(item) }}</li>
-                </ul>
-                <p v-if="!displayOutline.sourceRequirements.length">暂无</p>
-              </section>
-              <section>
-                <h3>待核实事项</h3>
-                <ul>
-                  <li v-for="(item, index) in displayOutline.uncertaintiesToVerify" :key="index">{{ itemToText(item) }}</li>
-                </ul>
-                <p v-if="!displayOutline.uncertaintiesToVerify.length">暂无</p>
-              </section>
+            <div class="draft-strategy-section">
+              <div class="draft-strategy-head">
+                <div>
+                  <h3>写作策略与核查</h3>
+                  <p>用于明确本篇编报的写作重点、来源使用要求和后续核实事项。</p>
+                </div>
+              </div>
+              <div class="draft-strategy-grid">
+                <section class="draft-strategy-card focus">
+                  <div class="draft-strategy-card-head">
+                    <span class="draft-strategy-icon">P</span>
+                    <div>
+                      <h4>写作重点</h4>
+                      <p>突出本篇编报应该展开的核心方向。</p>
+                    </div>
+                  </div>
+                  <ul v-if="displayOutline.writingFocus.length" class="draft-strategy-list focus-list">
+                    <li v-for="(item, index) in strategyVisibleItems(displayOutline.writingFocus, 'writingFocus')" :key="`focus-${index}`">
+                      <span></span>
+                      <b>{{ strategyText(item) }}</b>
+                    </li>
+                  </ul>
+                  <p v-else class="draft-strategy-empty">暂无写作重点，可在编辑提纲时补充。</p>
+                  <button
+                    v-if="strategyHasMore(displayOutline.writingFocus, 'writingFocus') || expandedStrategyCards.writingFocus"
+                    class="draft-strategy-more"
+                    type="button"
+                    @click="toggleStrategyCard('writingFocus')"
+                  >
+                    {{ expandedStrategyCards.writingFocus ? '收起' : '展开更多' }}
+                  </button>
+                </section>
+
+                <section class="draft-strategy-card source">
+                  <div class="draft-strategy-card-head">
+                    <span class="draft-strategy-icon">L</span>
+                    <div>
+                      <h4>来源要求</h4>
+                      <p>形成后续正文的来源核查清单。</p>
+                    </div>
+                  </div>
+                  <div class="draft-source-tags">
+                    <span v-for="tag in sourceTypeTags" :key="tag.label" :class="tag.tone">{{ tag.label }}</span>
+                  </div>
+                  <ol v-if="displayOutline.sourceRequirements.length" class="draft-source-list">
+                    <li
+                      v-for="(item, index) in strategyVisibleItems(displayOutline.sourceRequirements, 'sourceRequirements')"
+                      :key="`source-${index}`"
+                      :class="{ mandatory: isMandatorySourceRequirement(item) }"
+                    >
+                      <span>{{ index + 1 }}</span>
+                      <b>{{ strategyText(item) }}</b>
+                    </li>
+                  </ol>
+                  <p v-else class="draft-strategy-empty">暂无来源要求，后续正文仍建议优先使用官方文件、权威媒体和可追溯来源。</p>
+                  <button
+                    v-if="strategyHasMore(displayOutline.sourceRequirements, 'sourceRequirements') || expandedStrategyCards.sourceRequirements"
+                    class="draft-strategy-more"
+                    type="button"
+                    @click="toggleStrategyCard('sourceRequirements')"
+                  >
+                    {{ expandedStrategyCards.sourceRequirements ? '收起' : '展开更多' }}
+                  </button>
+                </section>
+
+                <section class="draft-strategy-card verify">
+                  <div class="draft-strategy-card-head">
+                    <span class="draft-strategy-icon">!</span>
+                    <div>
+                      <h4>待核实事项</h4>
+                      <p>避免将未确认事实直接写入正文。</p>
+                    </div>
+                  </div>
+                  <ol v-if="displayOutline.uncertaintiesToVerify.length" class="draft-verify-list">
+                    <li
+                      v-for="(item, index) in strategyVisibleItems(displayOutline.uncertaintiesToVerify, 'uncertaintiesToVerify')"
+                      :key="`verify-${index}`"
+                    >
+                      <span>{{ index + 1 }}</span>
+                      <b>{{ strategyText(item) }}</b>
+                    </li>
+                  </ol>
+                  <p v-else class="draft-strategy-empty">
+                    暂无明显待核实事项，但正式编报前仍建议复核关键时间、主体表态和来源链接。
+                  </p>
+                  <button
+                    v-if="strategyHasMore(displayOutline.uncertaintiesToVerify, 'uncertaintiesToVerify') || expandedStrategyCards.uncertaintiesToVerify"
+                    class="draft-strategy-more"
+                    type="button"
+                    @click="toggleStrategyCard('uncertaintiesToVerify')"
+                  >
+                    {{ expandedStrategyCards.uncertaintiesToVerify ? '收起' : '展开更多' }}
+                  </button>
+                </section>
+              </div>
             </div>
           </div>
 
@@ -1370,39 +1518,285 @@ onMounted(() => {
   line-height: 1.5;
 }
 
-.draft-outline-footer {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+.draft-strategy-section {
   margin-top: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: #fff;
+  border-radius: 8px;
+  padding: 18px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.04);
 }
 
-.draft-outline-footer section {
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: #f8fafc;
+.draft-strategy-editor {
+  margin: 18px 0;
+}
+
+.draft-strategy-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.draft-strategy-head h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.draft-strategy-head p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.draft-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.draft-strategy-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 236px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 8px;
   padding: 14px;
 }
 
-.draft-outline-footer h3 {
-  margin: 0 0 8px;
+.draft-strategy-card.focus {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
+.draft-strategy-card.source {
+  border-color: #bbf7d0;
+  background: #fbfefc;
+}
+
+.draft-strategy-card.verify {
+  border-color: #fed7aa;
+  background: #fffaf3;
+}
+
+.draft-strategy-card-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.draft-strategy-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.draft-strategy-card.focus .draft-strategy-icon {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.draft-strategy-card.source .draft-strategy-icon {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.draft-strategy-card.verify .draft-strategy-icon {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.draft-strategy-card h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.4;
+}
+
+.draft-strategy-card-head p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.draft-strategy-list,
+.draft-source-list,
+.draft-verify-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.draft-strategy-list li,
+.draft-source-list li,
+.draft-verify-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  border-radius: 8px;
+  padding: 8px 9px;
   color: #334155;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.draft-strategy-list li {
+  background: #eff6ff;
+}
+
+.draft-strategy-list li span {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.draft-strategy-list li b,
+.draft-source-list li b,
+.draft-verify-list li b {
+  min-width: 0;
+  color: inherit;
+  font-weight: 800;
+  word-break: break-word;
+}
+
+.draft-source-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.draft-source-tags span {
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.draft-source-tags .official {
+  border-color: #bbf7d0;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.draft-source-tags .media {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.draft-source-tags .industry {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.draft-source-tags .report {
+  border-color: #e9d5ff;
+  background: #faf5ff;
+  color: #7e22ce;
+}
+
+.draft-source-tags .company {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.draft-source-list li {
+  background: #f0fdf4;
+}
+
+.draft-source-list li.mandatory {
+  border: 1px solid #86efac;
+  background: #ecfdf5;
+}
+
+.draft-source-list li span,
+.draft-verify-list li span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 11px;
   font-weight: 900;
 }
 
-.draft-outline-footer ul {
-  margin: 0;
-  padding-left: 18px;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.75;
+.draft-source-list li span {
+  background: #16a34a;
 }
 
-.draft-outline-footer p {
+.draft-verify-list li {
+  background: #fff7ed;
+}
+
+.draft-verify-list li span {
+  background: #f59e0b;
+}
+
+.draft-strategy-empty {
   margin: 0;
-  color: #94a3b8;
-  font-size: 13px;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  border-radius: 8px;
+  padding: 10px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.draft-strategy-more {
+  width: fit-content;
+  margin-top: auto;
+  padding: 8px 0 0;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.draft-strategy-textarea {
+  min-height: 132px;
+  resize: vertical;
+}
+
+.draft-strategy-card small {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .draft-editor-card {
@@ -1571,7 +1965,7 @@ onMounted(() => {
   .draft-workspace-grid,
   .draft-two,
   .draft-edit-tail,
-  .draft-outline-footer,
+  .draft-strategy-grid,
   .draft-analysis-row {
     grid-template-columns: 1fr;
   }
