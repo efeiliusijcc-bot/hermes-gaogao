@@ -43,17 +43,19 @@ const eventList = ref([])
 const outlineVersions = ref([])
 const selectedOutline = ref(null)
 const editMode = ref(false)
+const previewMode = ref(false)
 const confirmationMode = ref(false)
 const importStatus = ref('待确认当前提纲版本')
+const editSnapshot = ref('')
 
 const outlineEdit = reactive({
   reportTitle: '',
   reportTheme: '',
   coreArgument: '',
   outlineItems: [],
-  writingFocus: '',
-  sourceRequirements: '',
-  uncertaintiesToVerify: '',
+  writingFocus: [],
+  sourceRequirements: [],
+  uncertaintiesToVerify: [],
 })
 
 const stepDefinitions = [
@@ -78,6 +80,10 @@ const isVersionConfirmed = computed(() => confirmationMode.value && hasOutline.v
 const isImportReady = computed(() => false)
 const currentVersionTime = computed(() => selectedOutline.value?.createdAt ? formatTime(selectedOutline.value.createdAt) : '')
 const selectedVersionLabel = computed(() => selectedOutline.value ? versionLabel(selectedOutline.value) : '尚未选择版本')
+const currentEventTitle = computed(() => eventResult.value?.event?.title || form.title || '未命名事件')
+const editingVersionLabel = computed(() => selectedOutline.value ? versionLabel(selectedOutline.value) : '当前版本')
+const previewDisplayOutline = computed(() => normalizeOutlineForDisplay(editDraftToOutline()))
+const hasEditChanges = computed(() => editMode.value && editSnapshot.value !== serializeEditState())
 
 const currentStepKey = computed(() => {
   if (isImportReady.value && importStatus.value === '可导入深度编报') return 'import'
@@ -268,12 +274,14 @@ async function saveManualOutline() {
     selectedOutline.value = await manualUpdateDraftOutline({
       outlineId: currentOutlineId.value,
       outline: editToOutline(),
-      editNote: editNote.value,
+      editNote: editNote.value.trim().slice(0, 200),
     })
     editMode.value = false
+    previewMode.value = false
     editNote.value = ''
     await refreshOutlineVersions()
     syncOutlineEdit()
+    editSnapshot.value = serializeEditState()
     importStatus.value = '手动修改后请重新确认版本'
     notice.value = `已保存 V${selectedOutline.value.versionNo} 手动修改版`
   } catch (error) {
@@ -290,10 +298,12 @@ async function refreshOutlineVersions() {
 
 async function loadOutline(outlineId) {
   clearMessages()
+  if (editMode.value && hasEditChanges.value && !window.confirm('当前修改尚未保存，切换版本会放弃修改，确定继续吗？')) return
   try {
     selectedOutline.value = await getDraftOutline(outlineId)
     syncOutlineEdit()
     editMode.value = false
+    previewMode.value = false
     confirmationMode.value = false
     importStatus.value = '待确认当前提纲版本'
   } catch (error) {
@@ -304,13 +314,18 @@ async function loadOutline(outlineId) {
 function enterEditMode() {
   if (!selectedOutline.value) return
   syncOutlineEdit()
+  editNote.value = ''
+  editSnapshot.value = serializeEditState()
   editMode.value = true
+  previewMode.value = false
   confirmationMode.value = true
   importStatus.value = '编辑完成后保存为新版本'
 }
 
 function cancelEditMode() {
+  if (hasEditChanges.value && !window.confirm('当前修改尚未保存，确定放弃吗？')) return
   editMode.value = false
+  previewMode.value = false
   syncOutlineEdit()
 }
 
@@ -322,15 +337,50 @@ function confirmCurrentVersion() {
   notice.value = `已确认 ${selectedVersionLabel.value}`
 }
 
+function previewEditedOutline() {
+  clearMessages()
+  try {
+    editToOutline()
+    previewMode.value = true
+  } catch (error) {
+    showError(error)
+  }
+}
+
+function continueEditing() {
+  previewMode.value = false
+}
+
 function syncOutlineEdit() {
   const outline = normalizeOutlineForDisplay(selectedOutline.value?.outline || {})
   outlineEdit.reportTitle = outline.reportTitle || ''
   outlineEdit.reportTheme = outline.reportTheme || ''
   outlineEdit.coreArgument = outline.coreArgument || ''
   outlineEdit.outlineItems = cloneOutlineItems(outline.outlineItems)
-  outlineEdit.writingFocus = arrayToLines(outline.writingFocus)
-  outlineEdit.sourceRequirements = arrayToLines(outline.sourceRequirements)
-  outlineEdit.uncertaintiesToVerify = arrayToLines(outline.uncertaintiesToVerify)
+  outlineEdit.writingFocus = listFromValue(outline.writingFocus)
+  outlineEdit.sourceRequirements = listFromValue(outline.sourceRequirements)
+  outlineEdit.uncertaintiesToVerify = listFromValue(outline.uncertaintiesToVerify)
+}
+
+function editDraftToOutline() {
+  return {
+    reportTitle: outlineEdit.reportTitle,
+    reportTheme: outlineEdit.reportTheme,
+    coreArgument: outlineEdit.coreArgument,
+    outlineItems: cloneOutlineItems(outlineEdit.outlineItems).map((item) => ({
+      level: 1,
+      title: item.title,
+      summary: item.summary,
+      children: cloneOutlineItems(item.children).map((child) => ({
+        level: 2,
+        title: child.title,
+        summary: child.summary,
+      })),
+    })),
+    writingFocus: cleanStringList(outlineEdit.writingFocus),
+    sourceRequirements: cleanStringList(outlineEdit.sourceRequirements),
+    uncertaintiesToVerify: cleanStringList(outlineEdit.uncertaintiesToVerify),
+  }
 }
 
 function editToOutline() {
@@ -347,6 +397,9 @@ function editToOutline() {
     }))
     .filter((item) => item.title || item.summary || item.children.length)
 
+  if (!outlineEdit.reportTitle.trim() || !outlineEdit.reportTheme.trim() || !outlineEdit.coreArgument.trim()) {
+    throw new Error('请补全建议标题、主题立意和核心判断')
+  }
   const invalidTop = outlineItems.find((item) => !item.title || !item.summary)
   const invalidChild = outlineItems.flatMap((item) => item.children).find((item) => !item.title || !item.summary)
   if (!outlineItems.length || invalidTop || invalidChild) {
@@ -354,13 +407,13 @@ function editToOutline() {
   }
 
   return {
-    reportTitle: outlineEdit.reportTitle,
-    reportTheme: outlineEdit.reportTheme,
-    coreArgument: outlineEdit.coreArgument,
+    reportTitle: outlineEdit.reportTitle.trim(),
+    reportTheme: outlineEdit.reportTheme.trim(),
+    coreArgument: outlineEdit.coreArgument.trim(),
     outlineItems,
-    writingFocus: linesToArray(outlineEdit.writingFocus),
-    sourceRequirements: linesToArray(outlineEdit.sourceRequirements),
-    uncertaintiesToVerify: linesToArray(outlineEdit.uncertaintiesToVerify),
+    writingFocus: cleanStringList(outlineEdit.writingFocus),
+    sourceRequirements: cleanStringList(outlineEdit.sourceRequirements),
+    uncertaintiesToVerify: cleanStringList(outlineEdit.uncertaintiesToVerify),
   }
 }
 
@@ -438,25 +491,85 @@ function cloneOutlineItems(items = []) {
     level: item.level || 1,
     title: item.title || '',
     summary: item.summary || '',
+    expanded: item.expanded !== false,
     children: Array.isArray(item.children) ? cloneOutlineItems(item.children) : [],
   }))
 }
 
 function addOutlineItem() {
-  outlineEdit.outlineItems.push({ level: 1, title: '', summary: '', children: [] })
+  outlineEdit.outlineItems.push({ level: 1, title: '', summary: '', expanded: true, children: [] })
 }
 
 function removeOutlineItem(index) {
+  if (!window.confirm('确定删除这个一级目录吗？')) return
   outlineEdit.outlineItems.splice(index, 1)
 }
 
 function addChildItem(item) {
   if (!Array.isArray(item.children)) item.children = []
+  item.expanded = true
   item.children.push({ level: 2, title: '', summary: '' })
 }
 
 function removeChildItem(item, childIndex) {
+  if (!window.confirm('确定删除这个二级目录吗？')) return
   item.children.splice(childIndex, 1)
+}
+
+function moveOutlineItem(index, direction) {
+  const nextIndex = index + direction
+  if (nextIndex < 0 || nextIndex >= outlineEdit.outlineItems.length) return
+  const [item] = outlineEdit.outlineItems.splice(index, 1)
+  outlineEdit.outlineItems.splice(nextIndex, 0, item)
+}
+
+function moveChildItem(item, childIndex, direction) {
+  if (!Array.isArray(item.children)) return
+  const nextIndex = childIndex + direction
+  if (nextIndex < 0 || nextIndex >= item.children.length) return
+  const [child] = item.children.splice(childIndex, 1)
+  item.children.splice(nextIndex, 0, child)
+}
+
+function toggleOutlineItem(item) {
+  item.expanded = item.expanded === false
+}
+
+function setAllOutlineItemsExpanded(expanded) {
+  outlineEdit.outlineItems.forEach((item) => {
+    item.expanded = expanded
+  })
+}
+
+function addStrategyItem(key) {
+  if (!Array.isArray(outlineEdit[key])) outlineEdit[key] = []
+  outlineEdit[key].push('')
+}
+
+function removeStrategyItem(key, index) {
+  if (!Array.isArray(outlineEdit[key])) return
+  outlineEdit[key].splice(index, 1)
+}
+
+function moveStrategyItem(key, index, direction) {
+  if (!Array.isArray(outlineEdit[key])) return
+  const nextIndex = index + direction
+  if (nextIndex < 0 || nextIndex >= outlineEdit[key].length) return
+  const [item] = outlineEdit[key].splice(index, 1)
+  outlineEdit[key].splice(nextIndex, 0, item)
+}
+
+function cleanStringList(value) {
+  return arrayOrEmpty(value)
+    .map((item) => itemToText(item).trim())
+    .filter(Boolean)
+}
+
+function serializeEditState() {
+  return JSON.stringify({
+    outline: editDraftToOutline(),
+    editNote: editNote.value.trim().slice(0, 200),
+  })
 }
 
 function outlineNumber(index) {
@@ -687,114 +800,236 @@ onMounted(() => {
           </div>
 
           <div v-else-if="editMode && selectedOutline" class="draft-state-card draft-editor-card">
-            <div class="draft-main-head">
+            <div class="draft-editor-commandbar">
               <div>
-                <span class="draft-state-kicker">Step 4</span>
-                <h2>结构化编辑提纲</h2>
-                <p>编辑后会保存为新版本，不覆盖当前版本。</p>
+                <div class="draft-editor-kickers">
+                  <span class="draft-state-kicker">Step 4</span>
+                  <span class="draft-edit-mode-chip">编辑模式</span>
+                  <span class="draft-edit-version-chip">当前版本：{{ editingVersionLabel }}</span>
+                </div>
+                <h2>{{ previewMode ? '预览编辑后的提纲' : '编辑确认模式' }}</h2>
+                <p>事件标题：{{ currentEventTitle }}</p>
               </div>
               <div class="draft-head-actions">
-                <button class="sci-btn" type="button" @click="cancelEditMode">取消</button>
+                <button v-if="previewMode" class="sci-btn" type="button" @click="continueEditing">继续编辑</button>
+                <button v-else class="sci-btn" type="button" @click="cancelEditMode">取消编辑</button>
+                <button v-if="!previewMode" class="sci-btn" type="button" @click="previewEditedOutline">预览提纲</button>
                 <button class="sci-btn sci-btn-primary" type="button" :disabled="isSavingManual" @click="saveManualOutline">
                   {{ isSavingManual ? '保存中...' : '保存为新版本' }}
                 </button>
               </div>
             </div>
 
-            <div class="draft-edit-fields">
-              <label class="draft-field">
-                <span>建议标题</span>
-                <input v-model="outlineEdit.reportTitle" class="sci-input" placeholder="报告建议标题" />
-              </label>
-              <label class="draft-field">
-                <span>主题立意</span>
-                <input v-model="outlineEdit.reportTheme" class="sci-input" placeholder="报告主题立意" />
-              </label>
-              <label class="draft-field">
-                <span>核心判断</span>
-                <textarea v-model="outlineEdit.coreArgument" class="sci-input draft-compact-textarea" placeholder="一句话说明核心判断"></textarea>
-              </label>
-            </div>
-
-            <div class="draft-edit-outline">
-              <div class="draft-section-head">
-                <h3>目录结构</h3>
-                <button class="sci-btn draft-small-btn" type="button" @click="addOutlineItem">新增一级目录</button>
+            <template v-if="previewMode">
+              <div class="draft-preview-banner">
+                <strong>临时预览</strong>
+                <span>当前内容尚未保存。确认无误后点击“保存为新版本”，或继续编辑。</span>
               </div>
-              <article v-for="(item, index) in outlineEdit.outlineItems" :key="index" class="draft-edit-item">
-                <div class="draft-edit-item-head">
-                  <strong>{{ outlineNumber(index) }}、一级目录</strong>
-                  <button class="sci-btn draft-small-btn" type="button" @click="removeOutlineItem(index)">删除</button>
-                </div>
-                <input v-model="item.title" class="sci-input" placeholder="一级标题" />
-                <textarea v-model="item.summary" class="sci-input draft-compact-textarea" placeholder="一级目录摘要"></textarea>
-                <div class="draft-edit-children">
-                  <div class="draft-edit-child-head">
-                    <span>二级目录</span>
-                    <button class="sci-btn draft-small-btn" type="button" @click="addChildItem(item)">新增二级目录</button>
-                  </div>
-                  <div v-for="(child, childIndex) in item.children" :key="childIndex" class="draft-edit-child">
-                    <div class="draft-edit-child-title">
-                      <b>（{{ outlineNumber(childIndex) }}）</b>
-                      <button class="sci-btn draft-small-btn" type="button" @click="removeChildItem(item, childIndex)">删除</button>
-                    </div>
-                    <input v-model="child.title" class="sci-input" placeholder="二级标题" />
-                    <textarea v-model="child.summary" class="sci-input draft-compact-textarea" placeholder="二级目录摘要"></textarea>
-                  </div>
-                </div>
-              </article>
-              <div v-if="!outlineEdit.outlineItems.length" class="draft-empty">暂无目录，请新增一级目录。</div>
-            </div>
 
-            <div class="draft-strategy-section draft-strategy-editor">
-              <div class="draft-strategy-head">
-                <div>
-                  <h3>写作策略与核查</h3>
-                  <p>用于明确本篇编报的写作重点、来源使用要求和后续核实事项。</p>
+              <div class="draft-outline-meta">
+                <div class="draft-meta-row">
+                  <span>建议标题</span>
+                  <strong>{{ previewDisplayOutline.reportTitle || '暂无' }}</strong>
+                </div>
+                <div class="draft-meta-row">
+                  <span>主题立意</span>
+                  <strong>{{ previewDisplayOutline.reportTheme || '暂无' }}</strong>
+                </div>
+                <div class="draft-meta-row">
+                  <span>核心判断</span>
+                  <p>{{ previewDisplayOutline.coreArgument || '暂无' }}</p>
                 </div>
               </div>
-              <div class="draft-strategy-grid">
-                <section class="draft-strategy-card focus">
-                  <div class="draft-strategy-card-head">
-                    <span class="draft-strategy-icon">P</span>
-                    <div>
-                      <h4>写作重点</h4>
-                      <p>突出本篇编报的核心写作方向。</p>
-                    </div>
-                  </div>
-                  <textarea v-model="outlineEdit.writingFocus" class="sci-input draft-strategy-textarea" placeholder="一行一条写作重点"></textarea>
-                  <small>一行一条，保存后将作为新版本提纲的一部分。</small>
-                </section>
 
-                <section class="draft-strategy-card source">
-                  <div class="draft-strategy-card-head">
-                    <span class="draft-strategy-icon">L</span>
-                    <div>
-                      <h4>来源要求</h4>
-                      <p>标明正文需要补充和交叉验证的来源。</p>
-                    </div>
+              <div class="draft-directory">
+                <article v-for="(item, index) in previewDisplayOutline.outlineItems" :key="`preview-${index}-${item.title}`" class="draft-directory-item">
+                  <h3>{{ outlineNumber(index) }}、{{ item.title }}</h3>
+                  <p>{{ item.summary }}</p>
+                  <div v-if="item.children?.length" class="draft-directory-children">
+                    <section v-for="(child, childIndex) in item.children" :key="`preview-child-${childIndex}-${child.title}`" class="draft-directory-child">
+                      <h4>（{{ outlineNumber(childIndex) }}）{{ child.title }}</h4>
+                      <p>{{ child.summary }}</p>
+                    </section>
                   </div>
-                  <textarea v-model="outlineEdit.sourceRequirements" class="sci-input draft-strategy-textarea" placeholder="一行一条来源要求"></textarea>
-                  <small>一行一条，保存后将作为新版本提纲的一部分。</small>
-                </section>
+                </article>
+              </div>
+            </template>
 
-                <section class="draft-strategy-card verify">
-                  <div class="draft-strategy-card-head">
-                    <span class="draft-strategy-icon">!</span>
+            <template v-else>
+              <div class="draft-edit-fields">
+                <section class="draft-edit-info-card title">
+                  <div class="draft-edit-info-head">
+                    <span class="draft-edit-info-icon">T</span>
                     <div>
-                      <h4>待核实事项</h4>
-                      <p>提示正式编报前仍需确认的关键事实。</p>
+                      <h3>建议标题 <b>*</b></h3>
+                      <small>{{ outlineEdit.reportTitle.length }}/80</small>
                     </div>
                   </div>
-                  <textarea v-model="outlineEdit.uncertaintiesToVerify" class="sci-input draft-strategy-textarea" placeholder="一行一条待核实事项"></textarea>
-                  <small>一行一条，保存后将作为新版本提纲的一部分。</small>
+                  <input v-model="outlineEdit.reportTitle" class="sci-input" maxlength="80" placeholder="报告建议标题" />
+                </section>
+                <section class="draft-edit-info-card theme">
+                  <div class="draft-edit-info-head">
+                    <span class="draft-edit-info-icon">A</span>
+                    <div>
+                      <h3>主题立意 <b>*</b></h3>
+                      <small>{{ outlineEdit.reportTheme.length }}/120</small>
+                    </div>
+                  </div>
+                  <input v-model="outlineEdit.reportTheme" class="sci-input" maxlength="120" placeholder="报告主题立意" />
+                </section>
+                <section class="draft-edit-info-card argument">
+                  <div class="draft-edit-info-head">
+                    <span class="draft-edit-info-icon">J</span>
+                    <div>
+                      <h3>核心判断 <b>*</b></h3>
+                      <small>{{ outlineEdit.coreArgument.length }}/180</small>
+                    </div>
+                  </div>
+                  <textarea v-model="outlineEdit.coreArgument" class="sci-input draft-compact-textarea" maxlength="180" placeholder="一句话说明核心判断"></textarea>
                 </section>
               </div>
-            </div>
-            <label class="draft-field">
-              <span>修改说明</span>
-              <textarea v-model="editNote" class="sci-input draft-compact-textarea" placeholder="说明本次手动调整原因"></textarea>
-            </label>
+
+              <div class="draft-edit-outline">
+                <div class="draft-section-head draft-edit-section-head">
+                  <div>
+                    <h3>目录结构编辑</h3>
+                    <p>拖拽把手为排序提示，可用上移 / 下移调整顺序。</p>
+                  </div>
+                  <div class="draft-section-actions">
+                    <button class="sci-btn draft-small-btn" type="button" @click="addOutlineItem">添加一级标题</button>
+                    <button class="sci-btn draft-small-btn" type="button" @click="setAllOutlineItemsExpanded(true)">全部展开</button>
+                    <button class="sci-btn draft-small-btn" type="button" @click="setAllOutlineItemsExpanded(false)">全部收起</button>
+                  </div>
+                </div>
+                <article v-for="(item, index) in outlineEdit.outlineItems" :key="index" class="draft-outline-edit-card">
+                  <div class="draft-outline-edit-head">
+                    <button class="draft-outline-handle" type="button" title="排序把手">::</button>
+                    <strong>{{ outlineNumber(index) }}、一级目录</strong>
+                    <button class="draft-collapse-btn" type="button" @click="toggleOutlineItem(item)">
+                      {{ item.expanded === false ? '展开' : '收起' }}
+                    </button>
+                    <div class="draft-outline-actions">
+                      <button class="sci-btn draft-small-btn" type="button" :disabled="index === 0" @click="moveOutlineItem(index, -1)">上移</button>
+                      <button class="sci-btn draft-small-btn" type="button" :disabled="index === outlineEdit.outlineItems.length - 1" @click="moveOutlineItem(index, 1)">下移</button>
+                      <button class="sci-btn draft-small-btn" type="button" @click="addChildItem(item)">添加二级标题</button>
+                      <button class="sci-btn draft-small-btn draft-danger-btn" type="button" @click="removeOutlineItem(index)">删除</button>
+                    </div>
+                  </div>
+                  <div v-if="item.expanded !== false" class="draft-outline-edit-body">
+                    <label class="draft-field">
+                      <span>一级标题 <b>*</b></span>
+                      <input v-model="item.title" class="sci-input" placeholder="一级标题" />
+                    </label>
+                    <label class="draft-field">
+                      <span>这一部分写什么 <b>*</b></span>
+                      <textarea v-model="item.summary" class="sci-input draft-compact-textarea" placeholder="简短说明这一部分的写作内容，不写正文"></textarea>
+                    </label>
+                    <div class="draft-edit-children">
+                      <div class="draft-edit-child-head">
+                        <span>二级目录</span>
+                        <small>{{ item.children.length }} 项</small>
+                      </div>
+                      <div v-for="(child, childIndex) in item.children" :key="childIndex" class="draft-edit-child">
+                        <div class="draft-edit-child-title">
+                          <b>（{{ outlineNumber(childIndex) }}）</b>
+                          <div class="draft-child-actions">
+                            <button class="sci-btn draft-small-btn" type="button" :disabled="childIndex === 0" @click="moveChildItem(item, childIndex, -1)">上移</button>
+                            <button class="sci-btn draft-small-btn" type="button" :disabled="childIndex === item.children.length - 1" @click="moveChildItem(item, childIndex, 1)">下移</button>
+                            <button class="sci-btn draft-small-btn draft-danger-btn" type="button" @click="removeChildItem(item, childIndex)">删除</button>
+                          </div>
+                        </div>
+                        <input v-model="child.title" class="sci-input" placeholder="二级标题" />
+                        <textarea v-model="child.summary" class="sci-input draft-compact-textarea" placeholder="简短说明这一部分写什么"></textarea>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+                <div v-if="!outlineEdit.outlineItems.length" class="draft-empty">暂无目录，请新增一级目录。</div>
+              </div>
+
+              <div class="draft-strategy-section draft-strategy-editor">
+                <div class="draft-strategy-head">
+                  <div>
+                    <h3>写作策略与核查</h3>
+                    <p>列表式编辑，一行一条，保存后将作为新版本提纲的一部分。</p>
+                  </div>
+                </div>
+                <div class="draft-strategy-grid">
+                  <section class="draft-strategy-card focus">
+                    <div class="draft-strategy-card-head">
+                      <span class="draft-strategy-icon">P</span>
+                      <div>
+                        <h4>写作重点</h4>
+                        <p>逐条编辑本篇编报的核心写作方向。</p>
+                      </div>
+                    </div>
+                    <div class="draft-strategy-edit-list">
+                      <div v-for="(item, index) in outlineEdit.writingFocus" :key="`edit-focus-${index}`" class="draft-strategy-edit-row">
+                        <input v-model="outlineEdit.writingFocus[index]" class="sci-input" placeholder="写作重点" />
+                        <button class="sci-btn draft-small-btn" type="button" :disabled="index === 0" @click="moveStrategyItem('writingFocus', index, -1)">上移</button>
+                        <button class="sci-btn draft-small-btn" type="button" :disabled="index === outlineEdit.writingFocus.length - 1" @click="moveStrategyItem('writingFocus', index, 1)">下移</button>
+                        <button class="sci-btn draft-small-btn draft-danger-btn" type="button" @click="removeStrategyItem('writingFocus', index)">删除</button>
+                      </div>
+                      <button class="sci-btn draft-small-btn" type="button" @click="addStrategyItem('writingFocus')">添加一条</button>
+                    </div>
+                  </section>
+
+                  <section class="draft-strategy-card source">
+                    <div class="draft-strategy-card-head">
+                      <span class="draft-strategy-icon">L</span>
+                      <div>
+                        <h4>来源要求</h4>
+                        <p>逐条编辑正文需要支撑的来源清单。</p>
+                      </div>
+                    </div>
+                    <div class="draft-source-tags">
+                      <span v-for="tag in sourceTypeTags" :key="tag.label" :class="tag.tone">{{ tag.label }}</span>
+                    </div>
+                    <div class="draft-strategy-edit-list">
+                      <div v-for="(item, index) in outlineEdit.sourceRequirements" :key="`edit-source-${index}`" class="draft-strategy-edit-row">
+                        <input v-model="outlineEdit.sourceRequirements[index]" class="sci-input" placeholder="来源要求" />
+                        <button class="sci-btn draft-small-btn" type="button" :disabled="index === 0" @click="moveStrategyItem('sourceRequirements', index, -1)">上移</button>
+                        <button class="sci-btn draft-small-btn" type="button" :disabled="index === outlineEdit.sourceRequirements.length - 1" @click="moveStrategyItem('sourceRequirements', index, 1)">下移</button>
+                        <button class="sci-btn draft-small-btn draft-danger-btn" type="button" @click="removeStrategyItem('sourceRequirements', index)">删除</button>
+                      </div>
+                      <button class="sci-btn draft-small-btn" type="button" @click="addStrategyItem('sourceRequirements')">添加一条</button>
+                    </div>
+                  </section>
+
+                  <section class="draft-strategy-card verify">
+                    <div class="draft-strategy-card-head">
+                      <span class="draft-strategy-icon">!</span>
+                      <div>
+                        <h4>待核实事项</h4>
+                        <p>逐条编辑正式编报前需要确认的事实。</p>
+                      </div>
+                    </div>
+                    <div class="draft-strategy-edit-list">
+                      <div v-for="(item, index) in outlineEdit.uncertaintiesToVerify" :key="`edit-verify-${index}`" class="draft-strategy-edit-row">
+                        <input v-model="outlineEdit.uncertaintiesToVerify[index]" class="sci-input" placeholder="待核实事项" />
+                        <button class="sci-btn draft-small-btn" type="button" :disabled="index === 0" @click="moveStrategyItem('uncertaintiesToVerify', index, -1)">上移</button>
+                        <button class="sci-btn draft-small-btn" type="button" :disabled="index === outlineEdit.uncertaintiesToVerify.length - 1" @click="moveStrategyItem('uncertaintiesToVerify', index, 1)">下移</button>
+                        <button class="sci-btn draft-small-btn draft-danger-btn" type="button" @click="removeStrategyItem('uncertaintiesToVerify', index)">删除</button>
+                      </div>
+                      <button class="sci-btn draft-small-btn" type="button" @click="addStrategyItem('uncertaintiesToVerify')">添加一条</button>
+                    </div>
+                  </section>
+                </div>
+              </div>
+
+              <section class="draft-edit-note-card">
+                <label class="draft-field">
+                  <span>修改说明</span>
+                  <textarea
+                    v-model="editNote"
+                    class="sci-input draft-compact-textarea"
+                    maxlength="200"
+                    placeholder="说明本次手动调整原因，例如：优化目录结构，补充涉我风险方向，调整来源要求。"
+                  ></textarea>
+                </label>
+                <small>{{ editNote.length }}/200</small>
+              </section>
+            </template>
           </div>
 
           <div v-else-if="hasOutline" class="draft-state-card draft-outline-card">
@@ -981,20 +1216,23 @@ onMounted(() => {
             <button class="sci-btn draft-primary" type="button" :disabled="isRefining || !currentOutlineId" @click="refineOutline">
               {{ isRefining ? '修改中...' : 'AI 修改提纲' }}
             </button>
-            <button class="sci-btn draft-primary" type="button" :disabled="!selectedOutline" @click="enterEditMode">编辑提纲</button>
-            <button class="sci-btn draft-primary" type="button" :disabled="!hasOutline" @click="confirmCurrentVersion">确认当前版本</button>
+            <div v-if="editMode" class="draft-editing-side-note">
+              当前正在编辑 {{ editingVersionLabel }}，保存后将生成新的手动修改版本，不会覆盖原版本。
+            </div>
+            <button class="sci-btn draft-primary" type="button" :disabled="!selectedOutline || editMode" @click="enterEditMode">编辑提纲</button>
+            <button class="sci-btn draft-primary" type="button" :disabled="!hasOutline || editMode" @click="confirmCurrentVersion">确认当前版本</button>
           </section>
 
           <section class="draft-side-section draft-import-box">
             <h2>导入深度编报</h2>
             <div class="draft-import-status" :class="{ ready: isVersionConfirmed }">
               <strong>{{ selectedVersionLabel }}</strong>
-              <span>{{ importStatus }}</span>
+              <span>{{ editMode ? '请先保存或取消编辑后再导入' : importStatus }}</span>
             </div>
             <button class="sci-btn sci-btn-primary draft-primary" type="button" disabled title="本次重构不修改深度编报主流程">
-              {{ isVersionConfirmed ? '导入入口待接入' : '确认版本后可导入' }}
+              {{ editMode ? '编辑中暂不可用' : isVersionConfirmed ? '导入入口待接入' : '确认版本后可导入' }}
             </button>
-            <p>确认当前版本后可导入深度编报。本次仅完成拟稿工作台前端重构，不启动 report-jobs 主流程。</p>
+            <p>{{ editMode ? '请先保存或取消编辑后再导入，未保存内容不会进入深度编报。' : '确认当前版本后可导入深度编报。本次仅完成拟稿工作台前端重构，不启动 report-jobs 主流程。' }}</p>
           </section>
         </aside>
       </section>
@@ -1248,6 +1486,11 @@ onMounted(() => {
   box-shadow: 0 10px 20px rgba(37, 99, 235, 0.1);
 }
 
+.draft-assistant-main .sci-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .draft-assistant-main .sci-btn-primary {
   background: #2563eb;
   border-color: #2563eb;
@@ -1398,6 +1641,90 @@ onMounted(() => {
 
 .draft-main-head h2 {
   font-size: 22px;
+}
+
+.draft-editor-commandbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: -28px -28px 22px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 8px 8px 0 0;
+  padding: 18px 22px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+}
+
+.draft-editor-commandbar h2 {
+  margin: 8px 0 0;
+  font-size: 22px;
+}
+
+.draft-editor-commandbar p {
+  margin: 6px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.draft-editor-kickers,
+.draft-section-actions,
+.draft-outline-actions,
+.draft-child-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.draft-edit-mode-chip,
+.draft-edit-version-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.draft-edit-mode-chip {
+  border: 1px solid #bbf7d0;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.draft-edit-version-chip {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.draft-preview-banner,
+.draft-editing-side-note {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1e40af;
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.draft-preview-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.draft-preview-banner strong {
+  flex: 0 0 auto;
+  color: #1d4ed8;
+  font-size: 13px;
 }
 
 .draft-analysis-summary {
@@ -1803,7 +2130,83 @@ onMounted(() => {
   padding-bottom: 34px;
 }
 
-.draft-edit-fields,
+.draft-edit-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.draft-edit-info-card {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: #fff;
+  border-radius: 8px;
+  padding: 14px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+}
+
+.draft-edit-info-card.title {
+  border-color: #bfdbfe;
+}
+
+.draft-edit-info-card.theme {
+  border-color: #bbf7d0;
+}
+
+.draft-edit-info-card.argument {
+  border-color: #ddd6fe;
+}
+
+.draft-edit-info-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.draft-edit-info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 900;
+}
+
+.draft-edit-info-card.theme .draft-edit-info-icon {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.draft-edit-info-card.argument .draft-edit-info-icon {
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+
+.draft-edit-info-head h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.draft-edit-info-head h3 b,
+.draft-field span b {
+  color: #dc2626;
+}
+
+.draft-edit-info-head small {
+  display: block;
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .draft-edit-outline {
   display: grid;
   gap: 12px;
@@ -1813,11 +2216,85 @@ onMounted(() => {
   margin: 12px 0 16px;
 }
 
+.draft-edit-section-head {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  padding-bottom: 10px;
+}
+
+.draft-edit-section-head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.draft-outline-edit-card,
 .draft-edit-item {
   border: 1px solid rgba(148, 163, 184, 0.24);
   background: #f8fafc;
   border-radius: 8px;
   padding: 14px;
+}
+
+.draft-outline-edit-card {
+  background: #fff;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.04);
+}
+
+.draft-outline-edit-head {
+  display: grid;
+  grid-template-columns: 28px auto auto minmax(260px, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.draft-outline-edit-head strong {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.draft-outline-handle,
+.draft-collapse-btn {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #f8fafc;
+  color: #64748b;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.draft-outline-handle {
+  width: 26px;
+  height: 26px;
+  letter-spacing: -2px;
+}
+
+.draft-collapse-btn {
+  width: fit-content;
+  padding: 6px 9px;
+}
+
+.draft-outline-actions {
+  justify-content: flex-end;
+}
+
+.draft-outline-edit-body {
+  margin-top: 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  padding-top: 14px;
+}
+
+.draft-danger-btn {
+  border-color: rgba(239, 68, 68, 0.24) !important;
+  color: #b91c1c !important;
+}
+
+.draft-danger-btn:hover:not(:disabled) {
+  background: #fef2f2 !important;
+  border-color: rgba(239, 68, 68, 0.48) !important;
+  color: #dc2626 !important;
 }
 
 .draft-edit-item-head {
@@ -1859,6 +2336,43 @@ onMounted(() => {
 .draft-edit-child-title b {
   color: #334155;
   font-size: 13px;
+}
+
+.draft-strategy-edit-list {
+  display: grid;
+  gap: 8px;
+}
+
+.draft-strategy-edit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.draft-edit-note-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: #fff;
+  border-radius: 8px;
+  padding: 14px;
+  margin-top: 18px;
+}
+
+.draft-edit-note-card .draft-field {
+  margin-bottom: 0;
+}
+
+.draft-edit-note-card small {
+  justify-self: end;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.draft-editing-side-note {
+  margin: 12px 0 4px;
 }
 
 .draft-side-section {
@@ -1956,7 +2470,9 @@ onMounted(() => {
 
   .draft-toolbar,
   .draft-login-gate,
-  .draft-main-head {
+  .draft-main-head,
+  .draft-editor-commandbar,
+  .draft-preview-banner {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1965,7 +2481,10 @@ onMounted(() => {
   .draft-workspace-grid,
   .draft-two,
   .draft-edit-tail,
+  .draft-edit-fields,
   .draft-strategy-grid,
+  .draft-outline-edit-head,
+  .draft-strategy-edit-row,
   .draft-analysis-row {
     grid-template-columns: 1fr;
   }
@@ -1979,6 +2498,18 @@ onMounted(() => {
   .draft-state-card {
     min-height: 0;
     padding: 18px;
+  }
+
+  .draft-editor-commandbar {
+    margin: -18px -18px 18px;
+    padding: 16px;
+  }
+
+  .draft-head-actions,
+  .draft-outline-actions,
+  .draft-child-actions,
+  .draft-section-actions {
+    justify-content: flex-start;
   }
 
   .draft-directory-children {
