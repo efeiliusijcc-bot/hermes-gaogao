@@ -396,6 +396,12 @@ async function createDeepReportJob() {
       eventId: importedPlan.value.eventId,
       outlineId: importedPlan.value.outlineId,
       planId: importedPlan.value.planId,
+      databaseSourceOptions: {
+        enabled: true,
+        lookbackDays: 30,
+        maxMetadataRows: 50,
+        maxContentRows: 8,
+      },
       draftAssistantInstructions: [
         '严格依据用户已确认的 Draft Assistant report_plan 生成深度编报。',
         '不得脱离确认提纲自由发挥。',

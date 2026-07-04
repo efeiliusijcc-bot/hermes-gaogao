@@ -1119,7 +1119,7 @@ export class ReportsService implements OnModuleDestroy {
     if (job.skill !== 'write-hb') return payload;
 
     const knownContext = typeof payload.known_context === 'string' ? payload.known_context : '';
-    const parsed = this.parseJsonObject(knownContext) || {};
+    const parsed = this.withDraftAssistantDatabaseSourceDefaults(this.parseJsonObject(knownContext) || {});
     const databaseOptions = parsed.databaseSourceOptions && typeof parsed.databaseSourceOptions === 'object' && !Array.isArray(parsed.databaseSourceOptions)
       ? parsed.databaseSourceOptions as Record<string, unknown>
       : {};
@@ -1413,6 +1413,24 @@ export class ReportsService implements OnModuleDestroy {
     const selectedSearchQueries = context.selectedSearchQueries;
     if (Array.isArray(selectedSearchQueries)) selectedSearchQueries.slice(0, 10).forEach(add);
     return Array.from(terms).filter(Boolean).slice(0, 80);
+  }
+
+  private withDraftAssistantDatabaseSourceDefaults(context: Record<string, unknown>): Record<string, unknown> {
+    if (context.databaseSourceOptions !== undefined) return context;
+    const isDraftAssistantImport =
+      context.kind === 'draft_assistant_import' ||
+      context.draftAssistantMode === true ||
+      Boolean(this.optionalId(context.planId));
+    if (!isDraftAssistantImport) return context;
+    return {
+      ...context,
+      databaseSourceOptions: {
+        enabled: true,
+        lookbackDays: 30,
+        maxMetadataRows: 50,
+        maxContentRows: 8,
+      },
+    };
   }
 
   private parseJsonObject(text: string): Record<string, unknown> | null {
