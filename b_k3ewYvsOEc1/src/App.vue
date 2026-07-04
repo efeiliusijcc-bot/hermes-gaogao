@@ -77,6 +77,7 @@ const {
   prevPlanStep,
   refreshHealth,
   refreshRecentReports,
+  clearReportHistoryState,
   loadMoreRecentReports,
   loadJobList,
   updateListSearch,
@@ -303,7 +304,15 @@ watch(authUser, (user) => {
   if (showUserManagement.value && user?.role !== 'admin') {
     showUserManagement.value = false
   }
-  if (!user) showDraftAssistant.value = false
+  if (user) {
+    void Promise.allSettled([
+      loadJobList(false),
+      refreshRecentReports(),
+    ])
+  } else {
+    showDraftAssistant.value = false
+    clearReportHistoryState()
+  }
   selectedQaSessionId.value = ''
   qaSessions.value = loadStoredQaSessions()
 })
@@ -592,5 +601,4 @@ function jobActionLabel(status) {
     </main>
   </div>
 </template>
-
 

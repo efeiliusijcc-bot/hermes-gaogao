@@ -453,6 +453,21 @@ export function useReportJobs() {
     return loadMoreRecentReports({ reset: true })
   }
 
+  function clearReportHistoryState() {
+    jobListRequestId += 1
+    recentJobsRequestId += 1
+    jobList.value = []
+    recentJobs.value = []
+    listPage.value = 1
+    listTotal.value = 0
+    listTotalPages.value = 1
+    listStatusCounts.value = { succeeded: 0, running: 0 }
+    recentPage.value = 0
+    recentHasMore.value = true
+    recentLoadError.value = ''
+    recentLoadingMore.value = false
+  }
+
   function closeJobEvents() {
     if (jobEventSource) {
       jobEventSource.close()
@@ -1956,6 +1971,7 @@ export function useReportJobs() {
     prevPlanStep,
     refreshHealth,
     refreshRecentReports,
+    clearReportHistoryState,
     loadMoreRecentReports,
     loadJobList,
     updateListSearch,
