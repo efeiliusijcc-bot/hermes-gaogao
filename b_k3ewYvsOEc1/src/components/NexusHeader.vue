@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { fetchResearchKeys, fetchVectorSourceStatus, switchVectorSourceProfile, updateResearchKeys } from '../lib/api.js'
 
 const props = defineProps({
@@ -51,6 +51,13 @@ const vectorStatus = ref(null)
 const vectorRefreshing = ref(false)
 const vectorSwitching = ref(false)
 const showLoginDialog = ref(false)
+const showPassword = ref(false)
+const loginError = ref('')
+const loginTouched = reactive({
+  username: false,
+  password: false,
+})
+const usernameInputRef = ref(null)
 const loginForm = reactive({
   username: '',
   password: '',
@@ -58,6 +65,13 @@ const loginForm = reactive({
 
 const isAdmin = computed(() => props.user?.role === 'admin')
 const displayUserName = computed(() => props.user?.displayName || props.user?.username || '')
+const loginExpiredNotice = computed(() => {
+  const notice = String(props.authNotice || '')
+  return /失效|重新登录|过期/i.test(notice) ? '登录状态已失效，请重新登录。' : ''
+})
+const usernameRequired = computed(() => loginTouched.username && !loginForm.username.trim())
+const passwordRequired = computed(() => loginTouched.password && !loginForm.password.trim())
+const loginStatusMessage = computed(() => loginError.value || loginExpiredNotice.value)
 
 const keyFields = [
   { key: 'tavilyApiKey', label: 'Tavily', placeholder: 'tvly-...，每行一个，可配置多个' },
@@ -151,21 +165,42 @@ function openKeySettings() {
 
 function openLoginDialog() {
   closeSettingsMenu()
-  loginForm.username = ''
+  loginError.value = ''
+  loginTouched.username = false
+  loginTouched.password = false
   loginForm.password = ''
+  showPassword.value = false
   showLoginDialog.value = true
+  nextTick(() => usernameInputRef.value?.focus())
 }
 
 function closeLoginDialog() {
-  if (!props.authLoading) showLoginDialog.value = false
+  if (!props.authLoading) {
+    showLoginDialog.value = false
+    loginError.value = ''
+    loginTouched.username = false
+    loginTouched.password = false
+    showPassword.value = false
+  }
 }
 
 function submitLogin() {
   if (props.authLoading) return
+  loginTouched.username = true
+  loginTouched.password = true
+  loginError.value = ''
+  if (!loginForm.username.trim() || !loginForm.password.trim()) {
+    loginError.value = '请填写用户名和密码。'
+    return
+  }
   emit('login', {
-    username: loginForm.username,
+    username: loginForm.username.trim(),
     password: loginForm.password,
   })
+}
+
+function togglePasswordVisibility() {
+  showPassword.value = !showPassword.value
 }
 
 function logout() {
@@ -371,7 +406,14 @@ watch(() => props.user, (user) => {
 })
 
 watch(() => props.authNotice, (notice) => {
-  if (!props.user && notice) showLoginDialog.value = true
+  if (!props.user && /失效|重新登录|过期/i.test(String(notice || ''))) showLoginDialog.value = true
+})
+
+watch(() => props.authError, (error) => {
+  if (!error || props.user) return
+  loginError.value = '用户名或密码错误，请重新输入。'
+  loginForm.password = ''
+  loginTouched.password = false
 })
 </script>
 
@@ -477,31 +519,56 @@ watch(() => props.authNotice, (notice) => {
   <Teleport to="body">
     <div
       v-if="showLoginDialog"
-      class="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm"
+      class="login-modal-backdrop"
       @click.self="closeLoginDialog"
     >
-      <section class="login-dialog">
+      <section class="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-dialog-title">
         <div class="login-dialog-head">
           <div>
-            <h2>账号登录</h2>
-            <p>使用系统账号进入编报工作台</p>
+            <h2 id="login-dialog-title">账号登录</h2>
+            <p>登录后进入 AI 深度编报系统</p>
           </div>
-          <button class="sci-btn px-3 py-2 text-[10px]" type="button" :disabled="authLoading" @click="closeLoginDialog">关闭</button>
+          <button class="login-close-btn" type="button" :disabled="authLoading" aria-label="关闭登录窗口" @click="closeLoginDialog">×</button>
         </div>
         <form class="login-dialog-body" @submit.prevent="submitLogin">
-          <label>
+          <label class="login-field" :class="{ invalid: usernameRequired }">
             <span>用户名</span>
-            <input v-model="loginForm.username" class="sci-input" autocomplete="username" placeholder="请输入用户名" />
+            <input
+              ref="usernameInputRef"
+              v-model="loginForm.username"
+              autocomplete="username"
+              placeholder="请输入用户名"
+              @blur="loginTouched.username = true"
+            />
+            <small v-if="usernameRequired">请输入用户名</small>
           </label>
-          <label>
+          <label class="login-field" :class="{ invalid: passwordRequired }">
             <span>密码</span>
-            <input v-model="loginForm.password" class="sci-input" type="password" autocomplete="current-password" placeholder="请输入密码" />
+            <div class="login-password-control">
+              <input
+                v-model="loginForm.password"
+                :type="showPassword ? 'text' : 'password'"
+                autocomplete="current-password"
+                placeholder="请输入密码"
+                @blur="loginTouched.password = true"
+              />
+              <button type="button" :aria-label="showPassword ? '隐藏密码' : '显示密码'" @click="togglePasswordVisibility">
+                {{ showPassword ? '隐藏' : '显示' }}
+              </button>
+            </div>
+            <small v-if="passwordRequired">请输入密码</small>
           </label>
-          <div v-if="authError" class="login-dialog-error">{{ authError }}</div>
-          <div v-else-if="authNotice" class="login-dialog-notice">{{ authNotice }}</div>
+          <div
+            v-if="loginStatusMessage"
+            class="login-dialog-message"
+            :class="loginExpiredNotice && !loginError ? 'warning' : 'error'"
+          >
+            {{ loginStatusMessage }}
+          </div>
+          <p class="login-helper-text">请使用管理员分配的账号登录</p>
           <div class="login-dialog-actions">
-            <button class="sci-btn login-submit" type="button" :disabled="authLoading" @click="closeLoginDialog">取消</button>
-            <button class="sci-btn sci-btn-primary login-submit" type="submit" :disabled="authLoading">
+            <button class="login-secondary-btn" type="button" :disabled="authLoading" @click="closeLoginDialog">取消</button>
+            <button class="login-primary-btn" type="submit" :disabled="authLoading">
               {{ authLoading ? '登录中...' : '登录' }}
             </button>
           </div>
