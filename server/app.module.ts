@@ -4,6 +4,8 @@ import { AuthGuard } from './auth.guard.js';
 import { AuthService } from './auth.service.js';
 import { ChatController } from './chat.controller.js';
 import { ChatService } from './chat.service.js';
+import { DailyAwarenessController } from './daily-awareness.controller.js';
+import { DailyAwarenessService } from './daily-awareness.service.js';
 import { DraftAssistantController } from './draft-assistant.controller.js';
 import { DraftAssistantService } from './draft-assistant.service.js';
 import { HealthController } from './health.controller.js';
@@ -32,6 +34,7 @@ import { VectorSourceService } from './vector-source.service.js';
     ResearchKeysController,
     VectorSourcesController,
     ChatController,
+    DailyAwarenessController,
     DraftAssistantController,
   ],
   providers: [
@@ -47,6 +50,7 @@ import { VectorSourceService } from './vector-source.service.js';
     ResearchKeysService,
     VectorSourceService,
     ChatService,
+    DailyAwarenessService,
     DraftAssistantService,
   ],
 })

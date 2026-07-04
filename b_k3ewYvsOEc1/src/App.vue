@@ -2,6 +2,7 @@
 import NexusHeader from './components/NexusHeader.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import DataCanvas from './components/DataCanvas.vue'
+import DailyAwareness from './components/DailyAwareness.vue'
 import DraftAssistant from './components/DraftAssistant.vue'
 import UserManagement from './components/UserManagement.vue'
 import { useAuth } from './composables/useAuth.js'
@@ -100,6 +101,8 @@ const homeMode = ref('report')
 const selectedQaSessionId = ref('')
 const showUserManagement = ref(false)
 const showDraftAssistant = ref(false)
+const showDailyAwareness = ref(false)
+const draftInitialEventId = ref('')
 const {
   currentUser: authUser,
   isLoading: authLoading,
@@ -147,6 +150,8 @@ function handleLogout() {
   logoutUser()
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
+  draftInitialEventId.value = ''
   returnHome()
 }
 
@@ -161,6 +166,7 @@ function openUserManagement() {
   }
   backgroundActiveWorkspace()
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   showUserManagement.value = true
 }
 
@@ -170,6 +176,25 @@ function openDraftAssistant() {
     return
   }
   backgroundActiveWorkspace()
+  showUserManagement.value = false
+  showDailyAwareness.value = false
+  showDraftAssistant.value = true
+}
+
+function openDailyAwareness() {
+  if (!authUser.value) {
+    setAuthNotice('请先登录')
+    return
+  }
+  backgroundActiveWorkspace()
+  showUserManagement.value = false
+  showDraftAssistant.value = false
+  showDailyAwareness.value = true
+}
+
+function openDraftFromDaily(payload) {
+  draftInitialEventId.value = payload?.eventId || ''
+  showDailyAwareness.value = false
   showUserManagement.value = false
   showDraftAssistant.value = true
 }
@@ -217,6 +242,7 @@ function countQaSessionTurns(session) {
 function setHomeMode(mode) {
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   if (mode === 'qa') backgroundActiveWorkspace()
   homeMode.value = mode === 'qa' ? 'qa' : 'report'
   if (homeMode.value === 'report') selectedQaSessionId.value = ''
@@ -242,6 +268,7 @@ function openQaSession(session) {
   if (!session?.id) return
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   backgroundActiveWorkspace()
   homeMode.value = 'qa'
   selectedQaSessionId.value = session.id
@@ -250,6 +277,7 @@ function openQaSession(session) {
 function openReportJob(item) {
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   monitorJobFromList(item)
@@ -258,6 +286,7 @@ function openReportJob(item) {
 function startQaFromSidebar() {
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   backgroundActiveWorkspace()
   homeMode.value = 'qa'
   selectedQaSessionId.value = ''
@@ -270,6 +299,7 @@ function clearSelectedQaSession() {
 function startReportFromSidebar() {
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
 }
@@ -277,6 +307,7 @@ function startReportFromSidebar() {
 function openReportHistoryList() {
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   loadJobList(true)
@@ -285,6 +316,7 @@ function openReportHistoryList() {
 function resetForNewReportFromCanvas() {
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   resetForNewReport()
@@ -293,6 +325,8 @@ function resetForNewReportFromCanvas() {
 function returnHome() {
   showUserManagement.value = false
   showDraftAssistant.value = false
+  showDailyAwareness.value = false
+  draftInitialEventId.value = ''
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   resetForNewReport()
@@ -311,6 +345,8 @@ watch(authUser, (user) => {
     ])
   } else {
     showDraftAssistant.value = false
+    showDailyAwareness.value = false
+    draftInitialEventId.value = ''
     clearReportHistoryState()
   }
   selectedQaSessionId.value = ''
@@ -369,9 +405,17 @@ function jobActionLabel(status) {
     <DraftAssistant
       v-if="showDraftAssistant"
       :current-user="authUser"
+      :initial-event-id="draftInitialEventId"
       @back="returnHome"
       @request-login="requestDraftLogin"
       @report-job-created="openDraftReportJob"
+    />
+
+    <DailyAwareness
+      v-else-if="showDailyAwareness"
+      :current-user="authUser"
+      @back="returnHome"
+      @open-draft-event="openDraftFromDaily"
     />
 
     <main v-else-if="showUserManagement" class="user-management-main">
@@ -459,6 +503,7 @@ function jobActionLabel(status) {
         @retry-history-report="retryOpenCurrentHistoryReport"
         @show-active-workspace="showGenerator"
         @toggle-log-drawer="toggleLogDrawer"
+        @open-daily-awareness="openDailyAwareness"
       />
     </div>
 
@@ -601,4 +646,3 @@ function jobActionLabel(status) {
     </main>
   </div>
 </template>
-

@@ -135,6 +135,7 @@ const emit = defineEmits([
   'toggle-plan-search-query',
   'next-plan-step',
   'prev-plan-step',
+  'open-daily-awareness',
 ])
 const reportRef = ref(null)
 const drawerLogListRef = ref(null)
@@ -540,11 +541,19 @@ const featureCards = [
   },
   {
     key: 'qa',
-    title: '热点事件动态感知',
+    title: 'QA问答',
     icon: '⌕',
-    desc: '快速感知热点事件进展，整合信源并形成动态判断。',
-    tags: ['事件监测', '信源整合', '动态感知'],
-    action: '开始感知',
+    desc: '基于知识库和数据库资料进行检索问答、背景查询和资料核验。',
+    tags: ['知识问答', '信源检索', '可追溯回答'],
+    action: '开始问答',
+  },
+  {
+    key: 'daily',
+    title: '每日动态感知',
+    icon: '◫',
+    desc: '从现有信源库中筛选每日重点事件，自动分类并形成每日简报。',
+    tags: ['每日简报', '事件聚合', '风险评分'],
+    action: '进入动态感知',
   },
 ]
 
@@ -811,6 +820,10 @@ function toggleFocusDirection(direction) {
 }
 
 function selectHomeMode(mode) {
+  if (mode === 'daily') {
+    emit('open-daily-awareness')
+    return
+  }
   homeMode.value = mode
   qaImportNotice.value = ''
   qaValidationError.value = ''
@@ -3622,7 +3635,7 @@ function exportPdf() {
           返回生成编报
         </button>
         <template v-if="phase === 'idle' && homeMode === 'qa'">
-          <button class="sci-btn text-[10px] px-3 py-2" type="button" title="查看热点事件动态感知使用指南" @click="openQaGuide">
+          <button class="sci-btn text-[10px] px-3 py-2" type="button" title="查看 QA问答使用指南" @click="openQaGuide">
             使用指南
           </button>
           <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="clearQaWorkspace">
@@ -3645,7 +3658,7 @@ function exportPdf() {
             type="button"
             @click="selectHomeMode('qa')"
           >
-            热点事件动态感知
+            QA问答
           </button>
           <button v-if="showNewReportButton" @click="emit('new-report')" class="sci-btn text-[10px] px-3 py-2">
             清屏并开启下一个编报
@@ -3739,8 +3752,8 @@ function exportPdf() {
       <section class="qa-guide-modal" role="dialog" aria-modal="true" aria-labelledby="qa-guide-title">
         <header class="qa-guide-header">
           <div>
-            <div class="qa-guide-kicker">HOT EVENT SENSE GUIDE</div>
-            <h2 id="qa-guide-title">热点事件动态感知使用指南</h2>
+            <div class="qa-guide-kicker">QA GUIDE</div>
+            <h2 id="qa-guide-title">QA问答使用指南</h2>
             <p>把问题问清楚，系统会优先从数据库信源中召回材料，整合为可追溯的中文回答。</p>
           </div>
           <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="closeQaGuide">关闭</button>
@@ -4081,7 +4094,7 @@ function exportPdf() {
                 :aria-selected="homeMode === 'qa'"
                 @click="selectHomeMode('qa')"
               >
-                热点事件动态感知
+                QA问答
               </button>
             </div>
           </div>
@@ -4146,8 +4159,8 @@ function exportPdf() {
                 <section ref="qaThreadRef" class="qa-thread" @scroll="handleQaThreadScroll">
               <div v-if="qaStatus === 'idle' && !qaTurns.length" class="qa-empty-card">
                 <div class="qa-empty-icon">⌕</div>
-                <h3>热点事件动态感知</h3>
-                <p>基于热点事件检索与信源整合，快速获取专业、可追溯的动态判断。</p>
+                <h3>QA问答</h3>
+                <p>基于知识库和数据库资料进行检索问答、背景查询和资料核验。</p>
 
                 <section class="qa-recommendations">
                   <div class="qa-recommend-heading">

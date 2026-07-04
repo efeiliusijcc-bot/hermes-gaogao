@@ -61,6 +61,25 @@ export interface VectorSearchInput {
   lookbackDays: number;
 }
 
+export interface ListMaterialsByDateInput {
+  date: string;
+  lookbackHours?: number;
+  limit?: number;
+  keyword?: string;
+  categories?: string[];
+  region?: string;
+}
+
+export interface VectorMaterialByDate {
+  id: string;
+  title: string;
+  content: string;
+  url: string;
+  publisher: string;
+  publishedAt: string;
+  metadata: Record<string, unknown>;
+}
+
 const require = createRequire(import.meta.url);
 const QWEN3_EMBEDDING_MODEL = 'Qwen3-Embedding-0.6B-Q8';
 interface VectorProfileConfig {
@@ -298,6 +317,95 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async listMaterialsByDate(input: ListMaterialsByDateInput): Promise<VectorMaterialByDate[]> {
+    const available = await this.ensureReady();
+    if (!available) throw new Error(this.lastError || 'Vector database is unavailable');
+
+    const columns = await this.discoverNewsColumns();
+    const pool = await this.getPool();
+    const limit = Math.max(1, Math.min(3000, Number(input.limit) || 3000));
+    const date = this.parseDateOnly(input.date);
+    const lookbackHours = Math.max(1, Math.min(168, Number(input.lookbackHours) || 24));
+    const dateExpr = this.materialDateExpression(columns);
+    const titleExpr = this.materialTitleExpression(columns);
+    const contentExpr = this.materialContentExpression(columns);
+    const urlExpr = columns.url ? `n.${this.qi(columns.url)}` : `''`;
+    const publisherExpr = columns.websiteName ? `n.${this.qi(columns.websiteName)}` : `''`;
+    const metadataExpr = this.materialMetadataExpression(columns);
+    const tagExpr = this.materialTagExpression(columns);
+
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (dateExpr) {
+      params.push(date);
+      params.push(lookbackHours);
+      where.push(`${dateExpr} >= ($${params.length - 1}::date - ($${params.length}::int * interval '1 hour'))`);
+      where.push(`${dateExpr} < ($${params.length - 1}::date + interval '1 day')`);
+    }
+    const keyword = String(input.keyword || '').trim();
+    if (keyword) {
+      params.push(`%${keyword}%`);
+      where.push(`(${titleExpr} ILIKE $${params.length} OR ${contentExpr} ILIKE $${params.length})`);
+    }
+    const region = String(input.region || '').trim();
+    if (region) {
+      params.push(`%${region}%`);
+      where.push(`(${titleExpr} ILIKE $${params.length} OR ${contentExpr} ILIKE $${params.length} OR ${tagExpr} ILIKE $${params.length})`);
+    }
+    const categories = Array.isArray(input.categories) ? input.categories.map((item) => String(item || '').trim()).filter(Boolean) : [];
+    if (categories.length) {
+      params.push(categories.map((item) => `%${item}%`));
+      where.push(`EXISTS (SELECT 1 FROM unnest($${params.length}::text[]) AS category_pattern WHERE ${tagExpr} ILIKE category_pattern)`);
+    }
+    params.push(limit);
+
+    const rows = await pool.query(
+      `SELECT
+          ${columns.id ? `n.${this.qi(columns.id)}::text` : 'row_number() over ()::text'} AS material_id,
+          ${titleExpr} AS material_title,
+          ${contentExpr} AS material_content,
+          ${urlExpr} AS material_url,
+          ${publisherExpr} AS material_publisher,
+          ${dateExpr || 'NULL'} AS material_time,
+          ${metadataExpr} AS material_metadata,
+          ${tagExpr} AS material_tags
+         FROM ${this.qi(ACTIVE_VECTOR_CONFIG.sourceTable)} n
+         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY ${dateExpr || 'NULL'} DESC NULLS LAST
+        LIMIT $${params.length}`,
+      params,
+    );
+
+    const seenUrls = new Set<string>();
+    const seenTitles = new Set<string>();
+    const materials: VectorMaterialByDate[] = [];
+    for (const row of rows.rows) {
+      const title = this.clean(String(row.material_title ?? ''), 512);
+      const content = this.clean(String(row.material_content ?? ''), 800);
+      if (!title && !content) continue;
+      const url = this.clean(String(row.material_url ?? ''), 2048);
+      const titleKey = this.materialTitleKey(title);
+      if (url && seenUrls.has(url)) continue;
+      if (titleKey && seenTitles.has(titleKey)) continue;
+      if (url) seenUrls.add(url);
+      if (titleKey) seenTitles.add(titleKey);
+      materials.push({
+        id: this.clean(String(row.material_id ?? ''), 128) || crypto.createHash('sha1').update(`${title}:${url}:${content}`).digest('hex'),
+        title,
+        content,
+        url,
+        publisher: this.clean(String(row.material_publisher ?? ''), 256),
+        publishedAt: this.toIsoTime(row.material_time),
+        metadata: {
+          ...(this.parseMetadata(row.material_metadata)),
+          tags: row.material_tags || undefined,
+          dateFallback: !dateExpr,
+        },
+      });
+    }
+    return materials;
+  }
+
   async indexPendingNews(options: { limit?: number } = {}): Promise<{ indexed: number; skipped: number }> {
     const available = await this.ensureReady();
     if (!available) return { indexed: 0, skipped: 0 };
@@ -521,6 +629,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       sourceTime: pick('crawl_time', 'crawled_at', 'created_at', 'updated_at', 'inserted_at', 'publish_time'),
       content: pick('content', 'body', 'text'),
       contentExcerpt: pick('content_excerpt', 'excerpt'),
+      metadata: pick('metadata', 'meta', 'raw_metadata'),
       embeddingText: pick('embedding_text'),
       embedding: pick('embedding'),
       embeddingVector: pick('embedding_vector'),
@@ -612,6 +721,67 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
   private freshnessExpression(columns: NewsColumns): string {
     const column = columns.sourceTime || columns.publishTime;
     return column ? `n.${this.qi(column)}::timestamptz` : 'NULL::timestamptz';
+  }
+
+  private materialDateExpression(columns: NewsColumns): string {
+    const column = columns.publishTime || columns.sourceTime;
+    return column ? `n.${this.qi(column)}::timestamptz` : '';
+  }
+
+  private materialTitleExpression(columns: NewsColumns): string {
+    const fields = [columns.chTitle, columns.entitle]
+      .filter(Boolean)
+      .map((column) => `NULLIF(n.${this.qi(column)}::text, '')`);
+    return fields.length ? `COALESCE(${fields.join(', ')}, '')` : `''`;
+  }
+
+  private materialContentExpression(columns: NewsColumns): string {
+    const fields = [columns.content, columns.contentExcerpt, columns.summary, columns.embeddingText]
+      .filter(Boolean)
+      .map((column) => `NULLIF(n.${this.qi(column)}::text, '')`);
+    return fields.length ? `COALESCE(${fields.join(', ')}, '')` : `''`;
+  }
+
+  private materialTagExpression(columns: NewsColumns): string {
+    const fields = [columns.tag, columns.designatedTag, columns.metadata]
+      .filter(Boolean)
+      .map((column) => `COALESCE(n.${this.qi(column)}::text, '')`);
+    return fields.length ? `concat_ws(' ', ${fields.join(', ')})` : `''`;
+  }
+
+  private materialMetadataExpression(columns: NewsColumns): string {
+    const fields = [
+      columns.metadata ? `'metadata', n.${this.qi(columns.metadata)}` : '',
+      columns.tag ? `'tag', n.${this.qi(columns.tag)}` : '',
+      columns.designatedTag ? `'designatedTag', n.${this.qi(columns.designatedTag)}` : '',
+      columns.sourceTime ? `'sourceTime', n.${this.qi(columns.sourceTime)}` : '',
+    ].filter(Boolean);
+    return fields.length ? `jsonb_build_object(${fields.join(', ')})` : `'{}'::jsonb`;
+  }
+
+  private parseDateOnly(value: string): string {
+    const match = String(value || '').match(/^\d{4}-\d{2}-\d{2}$/);
+    if (!match) throw new Error('date must be formatted as YYYY-MM-DD');
+    return match[0];
+  }
+
+  private materialTitleKey(value: string): string {
+    return value.replace(/[“”"'‘’`´]/g, '').replace(/[|｜:：,，.。;；!！?？()[\]{}<>《》、/\-_\s]/g, '').toLowerCase().slice(0, 160);
+  }
+
+  private toIsoTime(value: unknown): string {
+    return this.dateString(value);
+  }
+
+  private parseMetadata(value: unknown): Record<string, unknown> {
+    if (!value) return {};
+    if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(String(value));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
   }
 
   private newsSelectList(columns: NewsColumns, sourceKeyExpr: string, sourceHashExpr: string, freshnessExpr: string): string {
@@ -999,6 +1169,4 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       .slice(0, 300);
   }
 }
-
-
 

@@ -240,6 +240,41 @@ export function upsertQaSessionSources(sessionId, body) {
   })
 }
 
+export function generateDailyBrief(payload) {
+  return request('/daily-awareness/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getDailyBriefs(params = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value))
+  })
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request(`/daily-awareness/briefs${suffix}`)
+}
+
+export function getDailyBrief(briefId) {
+  return request(`/daily-awareness/briefs/${encodeURIComponent(briefId)}`)
+}
+
+export function getDailyBriefEvents(briefId, params = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value))
+  })
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request(`/daily-awareness/briefs/${encodeURIComponent(briefId)}/events${suffix}`)
+}
+
+export function importDailyEventToDraft(itemId) {
+  return request(`/daily-awareness/events/${encodeURIComponent(itemId)}/import-draft`, {
+    method: 'POST',
+  })
+}
+
 export function fetchReportJobs(params = {}) {
   const query = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {

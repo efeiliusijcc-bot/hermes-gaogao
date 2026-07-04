@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   analyzeDraftEvent,
   generateDraftOutline,
@@ -17,6 +17,10 @@ const props = defineProps({
   currentUser: {
     type: Object,
     default: null,
+  },
+  initialEventId: {
+    type: String,
+    default: '',
   },
 })
 
@@ -789,8 +793,13 @@ function shortId(value) {
   return text.length > 12 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text
 }
 
-onMounted(() => {
-  void loadEvents()
+onMounted(async () => {
+  await loadEvents()
+  if (props.initialEventId) await openEvent(props.initialEventId)
+})
+
+watch(() => props.initialEventId, (eventId) => {
+  if (eventId && eventId !== currentEventId.value) void openEvent(eventId)
 })
 </script>
 
