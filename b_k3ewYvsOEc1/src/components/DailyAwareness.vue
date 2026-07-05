@@ -397,7 +397,13 @@ watch(() => props.currentUser?.id, () => {
 
 <style scoped>
 .daily-awareness-page {
-  min-height: calc(100vh - 76px);
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 76px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 24px;
   background: #f3f6fb;
   color: #0f172a;
@@ -448,6 +454,8 @@ watch(() => props.currentUser?.id, () => {
   gap: 18px;
   max-width: 1440px;
   margin: 0 auto;
+  min-height: 0;
+  padding-bottom: 32px;
 }
 
 .daily-sidebar,
@@ -455,6 +463,17 @@ watch(() => props.currentUser?.id, () => {
   display: grid;
   gap: 14px;
   align-content: start;
+  min-height: 0;
+}
+
+.daily-sidebar {
+  position: sticky;
+  top: 18px;
+  max-height: calc(100vh - 124px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 
 .daily-panel,
@@ -842,8 +861,20 @@ watch(() => props.currentUser?.id, () => {
 }
 
 @media (max-width: 980px) {
+  .daily-awareness-page {
+    height: calc(100vh - 76px);
+    padding: 18px;
+  }
+
   .daily-layout {
     grid-template-columns: 1fr;
+  }
+
+  .daily-sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .daily-overview,
