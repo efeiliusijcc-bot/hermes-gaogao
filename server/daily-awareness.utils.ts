@@ -100,6 +100,15 @@ export function rankDailyEvents(events: DailyAwarenessScoredEvent[], maxItems: n
     .slice(0, limit);
 }
 
+export function selectClassificationCandidates<T>(candidates: T[], maxItems: number): { items: T[]; limit: number } {
+  const requested = Math.max(1, Math.min(50, Number(maxItems) || 50));
+  const limit = Math.min(120, Math.max(80, requested * 4));
+  return {
+    items: candidates.slice(0, limit),
+    limit,
+  };
+}
+
 export function extractJsonObject(value: string): unknown {
   const text = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
   try {

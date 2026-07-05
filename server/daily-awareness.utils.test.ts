@@ -7,6 +7,7 @@ import {
   extractJsonObject,
   normalizeEventTitle,
   rankDailyEvents,
+  selectClassificationCandidates,
 } from './daily-awareness.utils.js';
 import type { DailyAwarenessMaterial, DailyAwarenessScoredEvent } from './daily-awareness.types.js';
 
@@ -62,6 +63,22 @@ test('ranks daily events by weighted importance and risk scores', () => {
 
   assert.equal(ranked.length, 1);
   assert.equal(ranked[0].eventTitle, 'B');
+});
+
+test('limits classification candidates dynamically from requested output size', () => {
+  const candidates = Array.from({ length: 300 }, (_, index) => ({
+    candidateId: `candidate_${index}`,
+    title: `事件${index}`,
+    summaryText: `正文${index}`,
+    sources: [],
+    relatedMaterialIds: [],
+    sourceCount: 1,
+  }));
+
+  assert.equal(selectClassificationCandidates(candidates, 50).items.length, 120);
+  assert.equal(selectClassificationCandidates(candidates, 5).items.length, 80);
+  assert.equal(selectClassificationCandidates(candidates.slice(0, 42), 50).items.length, 42);
+  assert.equal(selectClassificationCandidates(candidates, 50).limit, 120);
 });
 
 test('uses 70 percent importance and 30 percent risk for daily event ranking', () => {

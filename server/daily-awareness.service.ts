@@ -32,6 +32,7 @@ import {
   dedupeMaterials,
   extractJsonObject,
   rankDailyEvents,
+  selectClassificationCandidates,
 } from './daily-awareness.utils.js';
 import { VectorSourceService } from './vector-source.service.js';
 
@@ -51,7 +52,6 @@ const DEFAULT_CATEGORIES = [
   '社会舆情',
   '其他',
 ];
-const MAX_CLASSIFICATION_CANDIDATES = 300;
 const CLASSIFICATION_BATCH_SIZE = 40;
 const CLASSIFICATION_CONCURRENCY = 3;
 
@@ -87,7 +87,8 @@ export class DailyAwarenessService implements OnModuleDestroy {
     const diagnostics = materialResult.diagnostics as DailyAwarenessMaterialDiagnostics;
     const deduped = dedupeMaterials(materials);
     const allCandidates = buildEventCandidates(deduped);
-    const candidates = allCandidates.slice(0, MAX_CLASSIFICATION_CANDIDATES);
+    const classificationSelection = selectClassificationCandidates(allCandidates, maxItems);
+    const candidates = classificationSelection.items;
     if (!candidates.length) {
       throw new BadRequestException({
         error: '信源库中未检索到可用于每日动态感知的材料，请检查 PGVector 信源库是否有数据，或扩大回溯范围。',
@@ -121,7 +122,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
         dedupedMaterialCount: deduped.length,
         candidateEventCount: candidates.length,
         totalCandidateEventCount: allCandidates.length,
-        classificationCandidateLimit: MAX_CLASSIFICATION_CANDIDATES,
+        classificationCandidateLimit: classificationSelection.limit,
         classificationBatchSize: CLASSIFICATION_BATCH_SIZE,
         classificationConcurrency: CLASSIFICATION_CONCURRENCY,
         selectedEventCount: ranked.length,
