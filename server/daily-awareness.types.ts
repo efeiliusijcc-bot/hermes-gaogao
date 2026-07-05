@@ -5,6 +5,7 @@ export interface DailyAwarenessMaterial {
   url: string;
   publisher: string;
   publishedAt: string;
+  fetchedAt?: string;
   metadata: Record<string, unknown>;
 }
 
@@ -42,10 +43,26 @@ export interface DailyAwarenessScoredEvent {
 export interface DailyAwarenessGenerateInput {
   date?: string;
   maxItems?: number;
+  maxEvents?: number;
   categories?: string[];
   region?: string;
   keyword?: string;
   lookbackHours?: number;
+}
+
+export interface DailyAwarenessMaterialDiagnostics {
+  targetDate: string;
+  lookbackHours: number;
+  sourceTable: string;
+  queryStart: string;
+  queryEnd: string;
+  fallbackStart: string;
+  fallbackEnd: string;
+  exactMaterialCount: number;
+  fallbackMaterialCount: number;
+  returnedMaterialCount: number;
+  usedFallback: boolean;
+  fallbackReason: string;
 }
 
 export interface DailyAwarenessBriefRow {

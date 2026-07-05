@@ -48,6 +48,7 @@ const openingBriefId = ref('')
 const importingItemId = ref('')
 const errorMessage = ref('')
 const noticeMessage = ref('')
+const diagnostics = ref(null)
 const selectedCategory = ref('')
 const activeBrief = ref(null)
 const events = ref([])
@@ -79,10 +80,14 @@ const overview = computed(() => {
   const generation = content.generation || {}
   return {
     date: activeBrief.value?.briefDate || filters.date,
-    candidates: activeBrief.value?.totalCandidates || generation.totalCandidates || 0,
-    selected: activeBrief.value?.selectedCount || events.value.length,
+    materials: activeBrief.value?.candidateMaterialCount || generation.candidateMaterialCount || generation.totalMaterials || 0,
+    candidates: activeBrief.value?.candidateEventCount || generation.candidateEventCount || activeBrief.value?.totalCandidates || generation.totalCandidates || 0,
+    selected: activeBrief.value?.selectedEventCount || activeBrief.value?.selectedCount || generation.selectedEventCount || events.value.length,
     categoryCount: categoryStats.value.length,
     createdAt: activeBrief.value?.createdAt || '',
+    usedFallback: Boolean(activeBrief.value?.usedFallback || generation.usedFallback),
+    fallbackReason: activeBrief.value?.fallbackReason || generation.fallbackReason || '',
+    diagnostics: generation.diagnostics || null,
   }
 })
 
@@ -120,6 +125,7 @@ async function generateBrief() {
   loading.value = true
   errorMessage.value = ''
   noticeMessage.value = ''
+  diagnostics.value = null
   selectedCategory.value = ''
   try {
     const result = await generateDailyBrief({
@@ -132,10 +138,13 @@ async function generateBrief() {
     })
     activeBrief.value = result?.brief || null
     events.value = Array.isArray(result?.events) ? result.events : []
-    noticeMessage.value = '每日动态简报已生成。'
+    noticeMessage.value = result?.brief?.usedFallback
+      ? '当前日期无可用材料，已使用最近可用信源生成。'
+      : '每日动态简报已生成。'
     await loadHistory()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
+    diagnostics.value = error?.data?.diagnostics || null
   } finally {
     loading.value = false
   }
@@ -146,6 +155,7 @@ async function openBrief(briefId) {
   openingBriefId.value = briefId
   errorMessage.value = ''
   noticeMessage.value = ''
+  diagnostics.value = null
   selectedCategory.value = ''
   try {
     const result = await getDailyBrief(briefId)
@@ -267,6 +277,18 @@ watch(() => props.currentUser?.id, () => {
       <section class="daily-main">
         <div v-if="errorMessage" class="daily-message error">{{ errorMessage }}</div>
         <div v-if="noticeMessage" class="daily-message success">{{ noticeMessage }}</div>
+        <section v-if="diagnostics" class="daily-diagnostics">
+          <div class="daily-card-kicker">查询诊断</div>
+          <div class="daily-diagnostics-grid">
+            <p><span>查询日期</span><strong>{{ diagnostics.targetDate || filters.date }}</strong></p>
+            <p><span>回溯小时</span><strong>{{ diagnostics.lookbackHours || filters.lookbackHours }}</strong></p>
+            <p><span>数据库表</span><strong>{{ diagnostics.sourceTable || '--' }}</strong></p>
+            <p><span>指定窗口材料</span><strong>{{ diagnostics.exactMaterialCount ?? 0 }}</strong></p>
+            <p><span>Fallback</span><strong>{{ diagnostics.usedFallback ? '已启用' : '未启用' }}</strong></p>
+            <p><span>返回材料</span><strong>{{ diagnostics.returnedMaterialCount ?? 0 }}</strong></p>
+          </div>
+          <small>查询窗口：{{ diagnostics.queryStart || '--' }} 至 {{ diagnostics.queryEnd || '--' }}。建议扩大回溯范围或检查 PGVector 信源库入库时间。</small>
+        </section>
 
         <section class="daily-overview">
           <article>
@@ -274,16 +296,16 @@ watch(() => props.currentUser?.id, () => {
             <strong>{{ overview.date }}</strong>
           </article>
           <article>
-            <span>候选事件</span>
+            <span>候选材料</span>
+            <strong>{{ overview.materials }}</strong>
+          </article>
+          <article>
+            <span>聚合事件</span>
             <strong>{{ overview.candidates }}</strong>
           </article>
           <article>
             <span>入选事件</span>
             <strong>{{ overview.selected }}</strong>
-          </article>
-          <article>
-            <span>分类数量</span>
-            <strong>{{ overview.categoryCount }}</strong>
           </article>
         </section>
 
@@ -295,6 +317,9 @@ watch(() => props.currentUser?.id, () => {
           </div>
           <small>生成时间：{{ formatTime(overview.createdAt) }}</small>
         </section>
+        <div v-if="overview.usedFallback" class="daily-message warning">
+          {{ overview.fallbackReason || '当前日期无可用材料，已使用最近可用信源生成。' }}
+        </div>
 
         <section class="daily-category-bar">
           <button type="button" :class="{ active: !selectedCategory }" @click="selectedCategory = ''">全部</button>
@@ -585,6 +610,50 @@ watch(() => props.currentUser?.id, () => {
   border: 1px solid #bbf7d0;
   background: #f0fdf4;
   color: #15803d;
+}
+
+.daily-message.warning {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.daily-diagnostics {
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  background: #fff7ed;
+  padding: 14px;
+  color: #7c2d12;
+}
+
+.daily-diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.daily-diagnostics p {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  border: 1px solid rgba(251, 146, 60, 0.24);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.62);
+  padding: 8px;
+}
+
+.daily-diagnostics span,
+.daily-diagnostics small {
+  color: #9a3412;
+  font-size: 12px;
+}
+
+.daily-diagnostics strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #431407;
+  font-size: 13px;
 }
 
 .daily-overview {

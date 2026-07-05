@@ -2,6 +2,7 @@
 import crypto from 'crypto';
 import { createRequire } from 'module';
 import OpenAI from 'openai';
+import { buildDailyMaterialWindow } from './daily-awareness.utils.js';
 import { ResearchKeysService } from './research-keys.service.js';
 
 type PgPool = {
@@ -70,6 +71,15 @@ export interface ListMaterialsByDateInput {
   region?: string;
 }
 
+export interface ListDailyMaterialsInput {
+  targetDate: string;
+  lookbackHours?: number;
+  limit?: number;
+  keyword?: string;
+  categories?: string[];
+  region?: string;
+}
+
 export interface VectorMaterialByDate {
   id: string;
   title: string;
@@ -77,7 +87,26 @@ export interface VectorMaterialByDate {
   url: string;
   publisher: string;
   publishedAt: string;
+  fetchedAt: string;
   metadata: Record<string, unknown>;
+}
+
+export interface DailyMaterialSearchResult {
+  materials: VectorMaterialByDate[];
+  diagnostics: {
+    targetDate: string;
+    lookbackHours: number;
+    sourceTable: string;
+    queryStart: string;
+    queryEnd: string;
+    fallbackStart: string;
+    fallbackEnd: string;
+    exactMaterialCount: number;
+    fallbackMaterialCount: number;
+    returnedMaterialCount: number;
+    usedFallback: boolean;
+    fallbackReason: string;
+  };
 }
 
 const require = createRequire(import.meta.url);
@@ -318,92 +347,105 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
   }
 
   async listMaterialsByDate(input: ListMaterialsByDateInput): Promise<VectorMaterialByDate[]> {
+    const result = await this.listDailyMaterials({
+      targetDate: input.date,
+      lookbackHours: input.lookbackHours,
+      limit: input.limit,
+      keyword: input.keyword,
+      categories: input.categories,
+      region: input.region,
+    });
+    return result.materials;
+  }
+
+  async listDailyMaterials(input: ListDailyMaterialsInput): Promise<DailyMaterialSearchResult> {
     const available = await this.ensureReady();
     if (!available) throw new Error(this.lastError || 'Vector database is unavailable');
 
     const columns = await this.discoverNewsColumns();
     const pool = await this.getPool();
     const limit = Math.max(1, Math.min(3000, Number(input.limit) || 3000));
-    const date = this.parseDateOnly(input.date);
-    const lookbackHours = Math.max(1, Math.min(168, Number(input.lookbackHours) || 24));
+    const window = buildDailyMaterialWindow(input.targetDate, input.lookbackHours);
     const dateExpr = this.materialDateExpression(columns);
     const titleExpr = this.materialTitleExpression(columns);
     const contentExpr = this.materialContentExpression(columns);
     const urlExpr = columns.url ? `n.${this.qi(columns.url)}` : `''`;
     const publisherExpr = columns.websiteName ? `n.${this.qi(columns.websiteName)}` : `''`;
+    const publishedExpr = columns.publishTime ? `n.${this.qi(columns.publishTime)}::timestamptz` : (dateExpr || 'NULL::timestamptz');
+    const fetchedExpr = columns.sourceTime ? `n.${this.qi(columns.sourceTime)}::timestamptz` : (dateExpr || 'NULL::timestamptz');
     const metadataExpr = this.materialMetadataExpression(columns);
     const tagExpr = this.materialTagExpression(columns);
 
-    const params: unknown[] = [];
-    const where: string[] = [];
-    if (dateExpr) {
-      params.push(date);
-      params.push(lookbackHours);
-      where.push(`${dateExpr} >= ($${params.length - 1}::date - ($${params.length}::int * interval '1 hour'))`);
-      where.push(`${dateExpr} < ($${params.length - 1}::date + interval '1 day')`);
-    }
-    const keyword = String(input.keyword || '').trim();
-    if (keyword) {
-      params.push(`%${keyword}%`);
-      where.push(`(${titleExpr} ILIKE $${params.length} OR ${contentExpr} ILIKE $${params.length})`);
-    }
-    const region = String(input.region || '').trim();
-    if (region) {
-      params.push(`%${region}%`);
-      where.push(`(${titleExpr} ILIKE $${params.length} OR ${contentExpr} ILIKE $${params.length} OR ${tagExpr} ILIKE $${params.length})`);
-    }
-    const categories = Array.isArray(input.categories) ? input.categories.map((item) => String(item || '').trim()).filter(Boolean) : [];
-    if (categories.length) {
-      params.push(categories.map((item) => `%${item}%`));
-      where.push(`EXISTS (SELECT 1 FROM unnest($${params.length}::text[]) AS category_pattern WHERE ${tagExpr} ILIKE category_pattern)`);
-    }
-    params.push(limit);
+    const exactRows = await this.queryDailyMaterialRows({
+      pool,
+      columns,
+      titleExpr,
+      contentExpr,
+      urlExpr,
+      publisherExpr,
+      publishedExpr,
+      fetchedExpr,
+      metadataExpr,
+      tagExpr,
+      dateExpr,
+      startIso: window.exactStart,
+      endIso: window.exactEnd,
+      keyword: input.keyword,
+      region: input.region,
+      limit,
+    });
+    let usedFallback = false;
+    let fallbackReason = '';
+    let selectedRows = exactRows;
+    let fallbackRows: Array<Record<string, unknown>> = [];
 
-    const rows = await pool.query(
-      `SELECT
-          ${columns.id ? `n.${this.qi(columns.id)}::text` : 'row_number() over ()::text'} AS material_id,
-          ${titleExpr} AS material_title,
-          ${contentExpr} AS material_content,
-          ${urlExpr} AS material_url,
-          ${publisherExpr} AS material_publisher,
-          ${dateExpr || 'NULL'} AS material_time,
-          ${metadataExpr} AS material_metadata,
-          ${tagExpr} AS material_tags
-         FROM ${this.qi(ACTIVE_VECTOR_CONFIG.sourceTable)} n
-         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY ${dateExpr || 'NULL'} DESC NULLS LAST
-        LIMIT $${params.length}`,
-      params,
-    );
-
-    const seenUrls = new Set<string>();
-    const seenTitles = new Set<string>();
-    const materials: VectorMaterialByDate[] = [];
-    for (const row of rows.rows) {
-      const title = this.clean(String(row.material_title ?? ''), 512);
-      const content = this.clean(String(row.material_content ?? ''), 800);
-      if (!title && !content) continue;
-      const url = this.clean(String(row.material_url ?? ''), 2048);
-      const titleKey = this.materialTitleKey(title);
-      if (url && seenUrls.has(url)) continue;
-      if (titleKey && seenTitles.has(titleKey)) continue;
-      if (url) seenUrls.add(url);
-      if (titleKey) seenTitles.add(titleKey);
-      materials.push({
-        id: this.clean(String(row.material_id ?? ''), 128) || crypto.createHash('sha1').update(`${title}:${url}:${content}`).digest('hex'),
-        title,
-        content,
-        url,
-        publisher: this.clean(String(row.material_publisher ?? ''), 256),
-        publishedAt: this.toIsoTime(row.material_time),
-        metadata: {
-          ...(this.parseMetadata(row.material_metadata)),
-          tags: row.material_tags || undefined,
-          dateFallback: !dateExpr,
-        },
+    if (!exactRows.length) {
+      usedFallback = true;
+      fallbackReason = '当前日期窗口无可用材料，已使用最近 7 天可用信源。';
+      fallbackRows = await this.queryDailyMaterialRows({
+        pool,
+        columns,
+        titleExpr,
+        contentExpr,
+        urlExpr,
+        publisherExpr,
+        publishedExpr,
+        fetchedExpr,
+        metadataExpr,
+        tagExpr,
+        dateExpr,
+        startIso: window.fallbackStart,
+        endIso: window.fallbackEnd,
+        keyword: input.keyword,
+        region: input.region,
+        limit,
       });
+      selectedRows = fallbackRows;
     }
-    return materials;
+
+    if (!dateExpr) {
+      usedFallback = true;
+      fallbackReason = '材料表缺少可用时间字段，已按最近入库顺序读取。';
+    }
+
+    const materials = this.mapDailyMaterialRows(selectedRows, Boolean(dateExpr));
+    return {
+      materials,
+      diagnostics: {
+        targetDate: window.targetDate,
+        lookbackHours: window.lookbackHours,
+        sourceTable: ACTIVE_VECTOR_CONFIG.sourceTable,
+        queryStart: window.exactStart,
+        queryEnd: window.exactEnd,
+        fallbackStart: window.fallbackStart,
+        fallbackEnd: window.fallbackEnd,
+        exactMaterialCount: exactRows.length,
+        fallbackMaterialCount: fallbackRows.length,
+        returnedMaterialCount: materials.length,
+        usedFallback,
+        fallbackReason,
+      },
+    };
   }
 
   async indexPendingNews(options: { limit?: number } = {}): Promise<{ indexed: number; skipped: number }> {
@@ -757,6 +799,95 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       columns.sourceTime ? `'sourceTime', n.${this.qi(columns.sourceTime)}` : '',
     ].filter(Boolean);
     return fields.length ? `jsonb_build_object(${fields.join(', ')})` : `'{}'::jsonb`;
+  }
+
+  private async queryDailyMaterialRows(input: {
+    pool: PgPool;
+    columns: NewsColumns;
+    titleExpr: string;
+    contentExpr: string;
+    urlExpr: string;
+    publisherExpr: string;
+    publishedExpr: string;
+    fetchedExpr: string;
+    metadataExpr: string;
+    tagExpr: string;
+    dateExpr: string;
+    startIso: string;
+    endIso: string;
+    keyword?: string;
+    region?: string;
+    limit: number;
+  }): Promise<Array<Record<string, unknown>>> {
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (input.dateExpr) {
+      params.push(input.startIso, input.endIso);
+      where.push(`${input.dateExpr} >= $1::timestamptz`);
+      where.push(`${input.dateExpr} < $2::timestamptz`);
+    }
+    const keyword = String(input.keyword || '').trim();
+    if (keyword) {
+      params.push(`%${keyword}%`);
+      where.push(`(${input.titleExpr} ILIKE $${params.length} OR ${input.contentExpr} ILIKE $${params.length})`);
+    }
+    const region = String(input.region || '').trim();
+    if (region) {
+      params.push(`%${region}%`);
+      where.push(`(${input.titleExpr} ILIKE $${params.length} OR ${input.contentExpr} ILIKE $${params.length} OR ${input.tagExpr} ILIKE $${params.length})`);
+    }
+    params.push(input.limit);
+    const orderExpr = input.dateExpr || input.fetchedExpr || 'NULL';
+    const rows = await input.pool.query(
+      `SELECT
+          ${input.columns.id ? `n.${this.qi(input.columns.id)}::text` : 'row_number() over ()::text'} AS material_id,
+          ${input.titleExpr} AS material_title,
+          ${input.contentExpr} AS material_content,
+          ${input.urlExpr} AS material_url,
+          ${input.publisherExpr} AS material_publisher,
+          ${input.publishedExpr} AS material_published_time,
+          ${input.fetchedExpr} AS material_fetched_time,
+          ${input.metadataExpr} AS material_metadata,
+          ${input.tagExpr} AS material_tags
+         FROM ${this.qi(ACTIVE_VECTOR_CONFIG.sourceTable)} n
+         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY ${orderExpr} DESC NULLS LAST
+        LIMIT $${params.length}`,
+      params,
+    );
+    return rows.rows;
+  }
+
+  private mapDailyMaterialRows(rows: Array<Record<string, unknown>>, hasDateExpression: boolean): VectorMaterialByDate[] {
+    const seenUrls = new Set<string>();
+    const seenTitles = new Set<string>();
+    const materials: VectorMaterialByDate[] = [];
+    for (const row of rows) {
+      const title = this.clean(String(row.material_title ?? ''), 512);
+      const content = this.clean(String(row.material_content ?? ''), 1200);
+      if (!title || !content) continue;
+      const url = this.clean(String(row.material_url ?? ''), 2048);
+      const titleKey = this.materialTitleKey(title);
+      if (url && seenUrls.has(url)) continue;
+      if (titleKey && seenTitles.has(titleKey)) continue;
+      if (url) seenUrls.add(url);
+      if (titleKey) seenTitles.add(titleKey);
+      materials.push({
+        id: this.clean(String(row.material_id ?? ''), 128) || crypto.createHash('sha1').update(`${title}:${url}:${content}`).digest('hex'),
+        title,
+        content,
+        url,
+        publisher: this.clean(String(row.material_publisher ?? ''), 256),
+        publishedAt: this.toIsoTime(row.material_published_time),
+        fetchedAt: this.toIsoTime(row.material_fetched_time),
+        metadata: {
+          ...(this.parseMetadata(row.material_metadata)),
+          tags: row.material_tags || undefined,
+          dateFallback: !hasDateExpression,
+        },
+      });
+    }
+    return materials;
   }
 
   private parseDateOnly(value: string): string {
@@ -1169,4 +1300,3 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       .slice(0, 300);
   }
 }
-

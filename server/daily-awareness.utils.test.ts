@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildDailyMaterialWindow,
   buildEventCandidates,
   dedupeMaterials,
   extractJsonObject,
@@ -8,6 +9,15 @@ import {
   rankDailyEvents,
 } from './daily-awareness.utils.js';
 import type { DailyAwarenessMaterial, DailyAwarenessScoredEvent } from './daily-awareness.types.js';
+
+test('builds exact and seven-day fallback material windows from target date', () => {
+  const window = buildDailyMaterialWindow('2026-07-05', 24);
+
+  assert.equal(window.exactStart, '2026-07-04T00:00:00.000Z');
+  assert.equal(window.exactEnd, '2026-07-06T00:00:00.000Z');
+  assert.equal(window.fallbackStart, '2026-06-28T00:00:00.000Z');
+  assert.equal(window.fallbackEnd, '2026-07-06T00:00:00.000Z');
+});
 
 test('normalizes event titles for duplicate comparison', () => {
   assert.equal(normalizeEventTitle('【快讯】英国拟禁止 16 岁以下使用高风险社交媒体 - BBC'), '英国拟禁止16岁以下使用高风险社交媒体');
@@ -52,6 +62,17 @@ test('ranks daily events by weighted importance and risk scores', () => {
 
   assert.equal(ranked.length, 1);
   assert.equal(ranked[0].eventTitle, 'B');
+});
+
+test('uses 70 percent importance and 30 percent risk for daily event ranking', () => {
+  const events: DailyAwarenessScoredEvent[] = [
+    { candidateId: 'importance', eventTitle: 'Importance', category: '其他', region: '', basicSituation: '', backgroundContext: '', importanceJudgement: '', riskToUs: '', importanceScore: 90, riskScore: 0, sourceInfo: [], relatedMaterialIds: [] },
+    { candidateId: 'risk', eventTitle: 'Risk', category: '其他', region: '', basicSituation: '', backgroundContext: '', importanceJudgement: '', riskToUs: '', importanceScore: 59, riskScore: 70, sourceInfo: [], relatedMaterialIds: [] },
+  ];
+
+  const ranked = rankDailyEvents(events, 2);
+
+  assert.equal(ranked[0].eventTitle, 'Importance');
 });
 
 test('extracts a JSON object from fenced model output', () => {

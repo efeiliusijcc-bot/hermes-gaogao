@@ -21,6 +21,7 @@ import type {
   DailyAwarenessBriefRow,
   DailyAwarenessEventRow,
   DailyAwarenessGenerateInput,
+  DailyAwarenessMaterialDiagnostics,
   DailyAwarenessScoredEvent,
   DailyAwarenessSourceInfo,
 } from './daily-awareness.types.js';
@@ -65,24 +66,29 @@ export class DailyAwarenessService implements OnModuleDestroy {
   async generate(input: DailyAwarenessGenerateInput, user: AuthUser) {
     if (user.role === 'viewer') throw new ForbiddenException({ error: 'Viewer cannot generate daily briefs' });
     const date = this.requiredDate(input.date);
-    const maxItems = this.clampNumber(input.maxItems, 50, 1, 50);
+    const maxItems = this.clampNumber(input.maxEvents ?? input.maxItems, 50, 1, 50);
     const lookbackHours = this.clampNumber(input.lookbackHours, 24, 1, 168);
     const categories = this.normalizeStringArray(input.categories).slice(0, 20);
     const region = this.text(input.region, 128);
     const keyword = this.text(input.keyword, 128);
 
-    const materials = await this.vectorSources.listMaterialsByDate({
-      date,
+    const materialResult = await this.vectorSources.listDailyMaterials({
+      targetDate: date,
       lookbackHours,
       limit: 3000,
       keyword,
       categories,
       region,
     });
+    const materials = materialResult.materials;
+    const diagnostics = materialResult.diagnostics as DailyAwarenessMaterialDiagnostics;
     const deduped = dedupeMaterials(materials);
     const candidates = buildEventCandidates(deduped);
     if (!candidates.length) {
-      throw new BadRequestException({ error: '未找到可用于生成每日简报的候选材料' });
+      throw new BadRequestException({
+        error: '信源库中未检索到可用于每日动态感知的材料，请检查 PGVector 信源库是否有数据，或扩大回溯范围。',
+        diagnostics,
+      });
     }
 
     const batchErrors: string[] = [];
@@ -92,7 +98,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
       try {
         scoredEvents.push(...await this.classifyBatch(batch, categories));
       } catch (error) {
-        batchErrors.push(this.safeError(error));
+        batchErrors.push(`batch ${Math.floor(index / 40) + 1}: ${this.safeError(error)}`);
       }
     }
     if (!scoredEvents.length) {
@@ -114,10 +120,17 @@ export class DailyAwarenessService implements OnModuleDestroy {
         keyword,
         region,
         requestedCategories: categories,
+        candidateMaterialCount: materials.length,
+        dedupedMaterialCount: deduped.length,
+        candidateEventCount: candidates.length,
+        selectedEventCount: ranked.length,
         totalMaterials: materials.length,
         totalCandidates: candidates.length,
         selectedCount: ranked.length,
         batchErrors,
+        diagnostics,
+        usedFallback: diagnostics.usedFallback,
+        fallbackReason: diagnostics.fallbackReason,
       },
       categoryStats: stats,
     };
@@ -410,6 +423,8 @@ export class DailyAwarenessService implements OnModuleDestroy {
   }
 
   private toBrief(row: DailyAwarenessBriefRow, includeOwner: boolean) {
+    const contentJson = this.asObject(row.content_json);
+    const generation = this.asObject(contentJson.generation);
     return {
       briefId: String(row.brief_id || ''),
       ownerId: includeOwner ? String(row.owner_id || '') : undefined,
@@ -421,7 +436,12 @@ export class DailyAwarenessService implements OnModuleDestroy {
       totalCandidates: Number(row.total_candidates || 0),
       selectedCount: Number(row.selected_count || 0),
       categories: this.asArray(row.categories),
-      contentJson: this.asObject(row.content_json),
+      contentJson,
+      candidateMaterialCount: Number(generation.candidateMaterialCount || 0),
+      candidateEventCount: Number(generation.candidateEventCount || row.total_candidates || 0),
+      selectedEventCount: Number(row.selected_count || 0),
+      usedFallback: Boolean(generation.usedFallback),
+      fallbackReason: String(generation.fallbackReason || ''),
       createdAt: this.dateString(row.created_at),
       updatedAt: this.dateString(row.updated_at),
     };

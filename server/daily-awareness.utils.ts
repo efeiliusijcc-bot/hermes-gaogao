@@ -9,6 +9,22 @@ import type {
 const LEADING_PREFIX_PATTERN = /^(【[^】]{1,20}】|\[[^\]]{1,20}\]|快讯[:：]?|突发[:：]?|独家[:：]?|最新[:：]?)+/i;
 const SOURCE_SUFFIX_PATTERN = /([_-]\s*)?(bbc|cnn|reuters|ap|法新社|路透社|新华社|央视新闻|环球网|观察者网)$/i;
 
+export function buildDailyMaterialWindow(targetDate: string, lookbackHours = 24) {
+  const date = parseDateOnly(targetDate);
+  const hours = Math.max(1, Math.min(168, Math.floor(Number(lookbackHours) || 24)));
+  const exactStart = new Date(date.getTime() - hours * 60 * 60 * 1000);
+  const exactEnd = new Date(date.getTime() + 24 * 60 * 60 * 1000);
+  const fallbackStart = new Date(date.getTime() - 7 * 24 * 60 * 60 * 1000);
+  return {
+    targetDate: targetDate.slice(0, 10),
+    lookbackHours: hours,
+    exactStart: exactStart.toISOString(),
+    exactEnd: exactEnd.toISOString(),
+    fallbackStart: fallbackStart.toISOString(),
+    fallbackEnd: exactEnd.toISOString(),
+  };
+}
+
 export function normalizeEventTitle(value: unknown): string {
   return String(value || '')
     .trim()
@@ -103,7 +119,7 @@ export function clampScore(value: unknown): number {
 }
 
 export function weightedScore(event: Pick<DailyAwarenessScoredEvent, 'importanceScore' | 'riskScore'>): number {
-  return clampScore(event.importanceScore) * 0.65 + clampScore(event.riskScore) * 0.35;
+  return clampScore(event.importanceScore) * 0.7 + clampScore(event.riskScore) * 0.3;
 }
 
 export function categoryStats(events: DailyAwarenessScoredEvent[]): Array<{ category: string; count: number }> {
@@ -137,4 +153,12 @@ function dateValue(value: string): number {
 
 function hashText(value: string): string {
   return crypto.createHash('sha1').update(value).digest('hex');
+}
+
+function parseDateOnly(value: string): Date {
+  const text = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new Error('date must be formatted as YYYY-MM-DD');
+  const date = new Date(`${text}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) throw new Error('date must be formatted as YYYY-MM-DD');
+  return date;
 }
