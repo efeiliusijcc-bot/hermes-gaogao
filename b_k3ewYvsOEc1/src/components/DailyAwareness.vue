@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   generateDailyBrief,
   getDailyBrief,
@@ -53,6 +53,10 @@ const selectedCategory = ref('')
 const activeBrief = ref(null)
 const events = ref([])
 const historyItems = ref([])
+const showHistoryDrawer = ref(false)
+
+const RECOVERY_POLL_ATTEMPTS = 6
+const RECOVERY_POLL_INTERVAL_MS = 1500
 
 const isLoggedIn = computed(() => Boolean(props.currentUser))
 const canGenerate = computed(() => isLoggedIn.value && props.currentUser.role !== 'viewer')
@@ -120,9 +124,19 @@ async function loadHistory() {
   }
 }
 
+async function openHistoryDrawer() {
+  showHistoryDrawer.value = true
+  await loadHistory()
+}
+
+function closeHistoryDrawer() {
+  showHistoryDrawer.value = false
+}
+
 async function generateBrief() {
   if (!canGenerate.value || loading.value) return
   loading.value = true
+  const requestStartedAt = Date.now()
   errorMessage.value = ''
   noticeMessage.value = ''
   diagnostics.value = null
@@ -143,11 +157,58 @@ async function generateBrief() {
       : '每日动态简报已生成。'
     await loadHistory()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error)
+    const recovered = await recoverGeneratedBrief(requestStartedAt)
+    if (recovered) {
+      noticeMessage.value = '每日动态简报已生成，但网络响应超时；已自动读取最新结果。'
+      return
+    }
+    errorMessage.value = formatGenerateError(error)
     diagnostics.value = error?.data?.diagnostics || null
   } finally {
     loading.value = false
   }
+}
+
+async function recoverGeneratedBrief(requestStartedAt) {
+  for (let attempt = 0; attempt < RECOVERY_POLL_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await sleep(RECOVERY_POLL_INTERVAL_MS)
+    try {
+      const result = await getDailyBriefs({ page: 1, pageSize: 5, date: filters.date })
+      const items = Array.isArray(result?.items) ? result.items : []
+      const brief = items.find((item) => isBriefCreatedAfterRequest(item, requestStartedAt))
+      if (!brief?.briefId) continue
+      await openGeneratedBrief(brief.briefId)
+      await loadHistory()
+      return true
+    } catch {
+      // Keep polling briefly; the generate request may have completed while the proxy response failed.
+    }
+  }
+  return false
+}
+
+async function openGeneratedBrief(briefId) {
+  const result = await getDailyBrief(briefId)
+  activeBrief.value = result?.brief || null
+  events.value = Array.isArray(result?.events?.items) ? result.events.items : Array.isArray(result?.events) ? result.events : []
+}
+
+function isBriefCreatedAfterRequest(brief, requestStartedAt) {
+  const createdAt = new Date(brief?.createdAt || '').getTime()
+  if (!Number.isFinite(createdAt)) return false
+  return createdAt >= requestStartedAt - 30_000
+}
+
+function formatGenerateError(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/Unexpected token ['"]?</i.test(message) || /not valid JSON/i.test(message)) {
+    return '生成请求返回了非 JSON 内容，可能是代理超时。请稍后查看历史简报，或减少最大条数后重试。'
+  }
+  return message
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 async function openBrief(briefId) {
@@ -166,6 +227,10 @@ async function openBrief(briefId) {
   } finally {
     openingBriefId.value = ''
   }
+}
+
+function handleKeydown(event) {
+  if (event.key === 'Escape' && showHistoryDrawer.value) closeHistoryDrawer()
 }
 
 async function importToDraft(event) {
@@ -191,13 +256,34 @@ function formatTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function historyCategoryCount(brief) {
+  const categories = Array.isArray(brief?.categories) ? brief.categories : []
+  if (categories.length) return categories.length
+  const stats = brief?.contentJson?.categoryStats
+  return Array.isArray(stats) ? stats.length : 0
+}
+
+function historyMaterialCount(brief) {
+  return brief?.candidateMaterialCount || brief?.contentJson?.generation?.candidateMaterialCount || brief?.contentJson?.generation?.totalMaterials || 0
+}
+
+function historyUsesFallback(brief) {
+  return Boolean(brief?.usedFallback || brief?.contentJson?.generation?.usedFallback)
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', handleKeydown)
   void loadHistory()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown)
 })
 
 watch(() => props.currentUser?.id, () => {
   errorMessage.value = ''
   noticeMessage.value = ''
+  showHistoryDrawer.value = false
   void loadHistory()
 })
 </script>
@@ -211,6 +297,10 @@ watch(() => props.currentUser?.id, () => {
         <h1>每日动态感知</h1>
         <p>基于现有信源库自动筛选每日重点事件，生成动态简报。</p>
       </div>
+      <button type="button" class="daily-history-trigger" @click="openHistoryDrawer">
+        历史简报
+        <span>{{ historyItems.length }}</span>
+      </button>
     </header>
 
     <section class="daily-layout">
@@ -253,24 +343,6 @@ watch(() => props.currentUser?.id, () => {
             {{ loading ? '生成中...' : '生成每日简报' }}
           </button>
           <p v-if="permissionHint" class="daily-helper">{{ permissionHint }}</p>
-        </section>
-
-        <section class="daily-panel daily-history">
-          <div class="daily-panel-title">历史简报</div>
-          <div v-if="historyLoading" class="daily-empty">正在读取历史简报...</div>
-          <button
-            v-for="brief in historyItems"
-            v-else
-            :key="brief.briefId"
-            type="button"
-            class="daily-history-item"
-            :class="{ active: activeBrief?.briefId === brief.briefId }"
-            @click="openBrief(brief.briefId)"
-          >
-            <strong>{{ brief.title || brief.briefDate }}</strong>
-            <small>{{ brief.selectedCount }} 条事件 · {{ formatTime(brief.createdAt) }}</small>
-          </button>
-          <div v-if="!historyLoading && !historyItems.length" class="daily-empty">暂无历史简报。</div>
         </section>
       </aside>
 
@@ -392,6 +464,58 @@ watch(() => props.currentUser?.id, () => {
         </section>
       </section>
     </section>
+
+    <div
+      v-if="showHistoryDrawer"
+      class="daily-history-overlay"
+      role="presentation"
+      @click="closeHistoryDrawer"
+    >
+      <aside
+        class="daily-history-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="daily-history-drawer-title"
+        @click.stop
+      >
+        <header class="daily-history-drawer-head">
+          <div>
+            <h2 id="daily-history-drawer-title">历史简报</h2>
+            <p>查看已生成的每日动态简报</p>
+          </div>
+          <button type="button" class="daily-drawer-close" aria-label="关闭历史简报" @click="closeHistoryDrawer">×</button>
+        </header>
+
+        <div class="daily-history-drawer-body">
+          <div v-if="historyLoading" class="daily-empty drawer-empty">正在读取历史简报...</div>
+          <div v-else-if="!historyItems.length" class="daily-empty drawer-empty">
+            <strong>暂无历史简报</strong>
+            <span>生成每日动态简报后，将在这里显示记录。</span>
+          </div>
+          <button
+            v-for="brief in historyItems"
+            v-else
+            :key="brief.briefId"
+            type="button"
+            class="daily-history-card"
+            :class="{ active: activeBrief?.briefId === brief.briefId }"
+            :disabled="openingBriefId === brief.briefId"
+            @click="openBrief(brief.briefId)"
+          >
+            <div class="daily-history-card-top">
+              <strong>{{ brief.title || `${brief.briefDate} 每日动态简报` }}</strong>
+              <span v-if="historyUsesFallback(brief)" class="daily-fallback-chip">使用最近信源</span>
+            </div>
+            <small>{{ brief.selectedCount || 0 }} 条事件 · {{ formatTime(brief.createdAt) }}</small>
+            <div class="daily-history-card-meta">
+              <span>候选材料：{{ historyMaterialCount(brief) }} 条</span>
+              <span>分类：{{ historyCategoryCount(brief) }} 类</span>
+            </div>
+            <em>{{ openingBriefId === brief.briefId ? '读取中...' : '查看' }}</em>
+          </button>
+        </div>
+      </aside>
+    </div>
   </main>
 </template>
 
@@ -446,6 +570,32 @@ watch(() => props.currentUser?.id, () => {
   margin: 0;
   color: #64748b;
   font-size: 13px;
+}
+
+.daily-history-trigger {
+  margin-left: auto;
+  min-height: 38px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1d4ed8;
+  padding: 0 13px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.daily-history-trigger span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  margin-left: 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 11px;
 }
 
 .daily-layout {
@@ -579,38 +729,6 @@ watch(() => props.currentUser?.id, () => {
   color: #64748b;
   font-size: 12px;
   line-height: 1.6;
-}
-
-.daily-history {
-  max-height: 420px;
-  overflow: auto;
-}
-
-.daily-history-item {
-  width: 100%;
-  display: grid;
-  gap: 5px;
-  margin-bottom: 8px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #ffffff;
-  padding: 10px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.daily-history-item.active {
-  border-color: #2563eb;
-  background: #eff6ff;
-}
-
-.daily-history-item strong {
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.daily-history-item small {
-  color: #64748b;
 }
 
 .daily-message {
@@ -860,6 +978,165 @@ watch(() => props.currentUser?.id, () => {
   text-align: center;
 }
 
+.daily-history-overlay {
+  position: fixed;
+  top: 76px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 80;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(3px);
+}
+
+.daily-history-drawer {
+  width: min(440px, calc(100vw - 28px));
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #dbe4f0;
+  background: #f8fafc;
+  box-shadow: -20px 0 44px rgba(15, 23, 42, 0.16);
+}
+
+.daily-history-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid #dbe4f0;
+  background: #ffffff;
+  padding: 18px;
+}
+
+.daily-history-drawer-head h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.daily-history-drawer-head p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.daily-drawer-close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #dbe4f0;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.daily-history-drawer-body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 14px;
+}
+
+.daily-history-card {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 13px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+
+.daily-history-card.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.13);
+}
+
+.daily-history-card:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.daily-history-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.daily-history-card strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.daily-history-card small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.daily-history-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.daily-history-card-meta span {
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.daily-history-card em {
+  justify-self: end;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.daily-fallback-chip {
+  flex-shrink: 0;
+  border: 1px solid #fde68a;
+  border-radius: 999px;
+  background: #fffbeb;
+  color: #92400e;
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.drawer-empty {
+  display: grid;
+  gap: 6px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 28px 18px;
+  text-align: center;
+}
+
+.drawer-empty strong {
+  color: #0f172a;
+  font-size: 15px;
+}
+
 @media (max-width: 980px) {
   .daily-awareness-page {
     height: calc(100vh - 76px);
@@ -888,6 +1165,27 @@ watch(() => props.currentUser?.id, () => {
 
   .daily-summary-card {
     display: grid;
+  }
+}
+
+@media (max-width: 640px) {
+  .daily-awareness-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .daily-history-trigger {
+    width: 100%;
+    margin-left: 52px;
+  }
+
+  .daily-history-overlay {
+    top: 76px;
+  }
+
+  .daily-history-drawer {
+    width: 100%;
+    border-left: 0;
   }
 }
 </style>
