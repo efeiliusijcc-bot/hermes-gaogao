@@ -90,6 +90,7 @@ docker run -d \
   -e HERMES_API_KEY=${HERMES_API_KEY} \
   -e JWT_SECRET=${JWT_SECRET} \
   -e AUTH_DATABASE_URL=${AUTH_DATABASE_URL} \
+  -e FRONTEND_ORIGINS=${FRONTEND_ORIGINS:-https://hermes-gaogao.vercel.app,http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000} \
   -e HERMES_MODEL=${HERMES_MODEL:-hermes-agent} \
   -e HERMES_QA_AGENT_ID=${HERMES_QA_AGENT_ID:-qa-agent} \
   -e HERMES_QA_MODEL=${HERMES_QA_MODEL:-openclaw/qa-agent} \

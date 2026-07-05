@@ -51,6 +51,7 @@ const DEFAULT_CATEGORIES = [
   '社会舆情',
   '其他',
 ];
+const MAX_CLASSIFICATION_CANDIDATES = 300;
 
 @Injectable()
 export class DailyAwarenessService implements OnModuleDestroy {
@@ -83,7 +84,8 @@ export class DailyAwarenessService implements OnModuleDestroy {
     const materials = materialResult.materials;
     const diagnostics = materialResult.diagnostics as DailyAwarenessMaterialDiagnostics;
     const deduped = dedupeMaterials(materials);
-    const candidates = buildEventCandidates(deduped);
+    const allCandidates = buildEventCandidates(deduped);
+    const candidates = allCandidates.slice(0, MAX_CLASSIFICATION_CANDIDATES);
     if (!candidates.length) {
       throw new BadRequestException({
         error: '信源库中未检索到可用于每日动态感知的材料，请检查 PGVector 信源库是否有数据，或扩大回溯范围。',
@@ -123,6 +125,8 @@ export class DailyAwarenessService implements OnModuleDestroy {
         candidateMaterialCount: materials.length,
         dedupedMaterialCount: deduped.length,
         candidateEventCount: candidates.length,
+        totalCandidateEventCount: allCandidates.length,
+        classificationCandidateLimit: MAX_CLASSIFICATION_CANDIDATES,
         selectedEventCount: ranked.length,
         totalMaterials: materials.length,
         totalCandidates: candidates.length,
