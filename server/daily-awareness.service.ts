@@ -52,6 +52,8 @@ const DEFAULT_CATEGORIES = [
   '其他',
 ];
 const MAX_CLASSIFICATION_CANDIDATES = 300;
+const CLASSIFICATION_BATCH_SIZE = 40;
+const CLASSIFICATION_CONCURRENCY = 3;
 
 @Injectable()
 export class DailyAwarenessService implements OnModuleDestroy {
@@ -95,14 +97,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
 
     const batchErrors: string[] = [];
     const scoredEvents: DailyAwarenessScoredEvent[] = [];
-    for (let index = 0; index < candidates.length; index += 40) {
-      const batch = candidates.slice(index, index + 40);
-      try {
-        scoredEvents.push(...await this.classifyBatch(batch, categories));
-      } catch (error) {
-        batchErrors.push(`batch ${Math.floor(index / 40) + 1}: ${this.safeError(error)}`);
-      }
-    }
+    await this.classifyBatches(candidates, categories, scoredEvents, batchErrors);
     if (!scoredEvents.length) {
       throw new ServiceUnavailableException({ error: '每日简报生成失败：模型未返回可用事件', batchErrors });
     }
@@ -127,6 +122,8 @@ export class DailyAwarenessService implements OnModuleDestroy {
         candidateEventCount: candidates.length,
         totalCandidateEventCount: allCandidates.length,
         classificationCandidateLimit: MAX_CLASSIFICATION_CANDIDATES,
+        classificationBatchSize: CLASSIFICATION_BATCH_SIZE,
+        classificationConcurrency: CLASSIFICATION_CONCURRENCY,
         selectedEventCount: ranked.length,
         totalMaterials: materials.length,
         totalCandidates: candidates.length,
@@ -298,6 +295,27 @@ export class DailyAwarenessService implements OnModuleDestroy {
       );
     }
     return { eventId };
+  }
+
+  private async classifyBatches(
+    candidates: Array<{ candidateId: string; title: string; summaryText: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>,
+    categories: string[],
+    output: DailyAwarenessScoredEvent[],
+    batchErrors: string[],
+  ) {
+    const batches: Array<{ index: number; items: typeof candidates }> = [];
+    for (let index = 0; index < candidates.length; index += CLASSIFICATION_BATCH_SIZE) {
+      batches.push({ index: Math.floor(index / CLASSIFICATION_BATCH_SIZE) + 1, items: candidates.slice(index, index + CLASSIFICATION_BATCH_SIZE) });
+    }
+    for (let index = 0; index < batches.length; index += CLASSIFICATION_CONCURRENCY) {
+      const group = batches.slice(index, index + CLASSIFICATION_CONCURRENCY);
+      const results = await Promise.allSettled(group.map((batch) => this.classifyBatch(batch.items, categories)));
+      results.forEach((result, resultIndex) => {
+        const batch = group[resultIndex];
+        if (result.status === 'fulfilled') output.push(...result.value);
+        else batchErrors.push(`batch ${batch.index}: ${this.safeError(result.reason)}`);
+      });
+    }
   }
 
   private async classifyBatch(candidates: Array<{ candidateId: string; title: string; summaryText: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>, categories: string[]) {
