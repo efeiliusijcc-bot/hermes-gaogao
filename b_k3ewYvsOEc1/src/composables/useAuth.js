@@ -75,8 +75,8 @@ async function login(username, password) {
   }
 }
 
-function logout() {
-  logoutStorage()
+async function logout() {
+  await logoutStorage()
   accessToken.value = ''
   currentUser.value = null
   errorMessage.value = ''

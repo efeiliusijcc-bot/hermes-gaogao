@@ -35,7 +35,8 @@ scp -i "$SSH_KEY" server/*.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/server/"
 scp -i "$SSH_KEY" src/types/report.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/src/types/"
 scp -i "$SSH_KEY" \
   scripts/init-auth-users.sql scripts/init-chat-sessions.sql scripts/init-draft-assistant.sql \
-  scripts/init-report-plans.sql scripts/init-daily-awareness.sql \
+  scripts/init-report-plans.sql scripts/init-daily-awareness.sql scripts/init-rbac.sql \
+  scripts/init-audit-logs.sql scripts/init-user-preferences.sql scripts/init-report-edits.sql \
   "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/scripts/"
 
 echo "=== 2. Build and deploy backend remotely ==="
@@ -60,6 +61,10 @@ docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-chat-ses
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-draft-assistant.sql
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-report-plans.sql
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-daily-awareness.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-rbac.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-audit-logs.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-user-preferences.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-report-edits.sql
 
 echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true
@@ -77,6 +82,7 @@ docker run -d \
   --user 0:0 \
   -p 1556:1555 \
   -e PORT=1555 \
+  -e HERMES_STATE_DIR=/opt/data \
   -e HERMES_RUN_MODE=${HERMES_RUN_MODE:-runs} \
   -e HERMES_BASE_URL=${HERMES_BASE_URL:-http://hermes:8642/v1} \
   -e HERMES_HEALTH_URL=${HERMES_HEALTH_URL:-http://hermes:8642/health} \

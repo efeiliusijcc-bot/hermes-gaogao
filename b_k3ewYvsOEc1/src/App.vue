@@ -4,6 +4,7 @@ import ControlPanel from './components/ControlPanel.vue'
 import DataCanvas from './components/DataCanvas.vue'
 import DailyAwareness from './components/DailyAwareness.vue'
 import DraftAssistant from './components/DraftAssistant.vue'
+import PersonalSettings from './components/PersonalSettings.vue'
 import UserManagement from './components/UserManagement.vue'
 import { useAuth } from './composables/useAuth.js'
 import { useReportJobs } from './composables/useReportJobs.js'
@@ -31,6 +32,7 @@ const {
   planSourceInput,
   planSupplement,
   databaseSourceEnabled,
+  useMyPreferences,
   databaseSources,
   databaseSourcesLoading,
   planError,
@@ -102,6 +104,7 @@ const selectedQaSessionId = ref('')
 const showUserManagement = ref(false)
 const showDraftAssistant = ref(false)
 const showDailyAwareness = ref(false)
+const showPersonalSettings = ref(false)
 const draftInitialEventId = ref('')
 const {
   currentUser: authUser,
@@ -142,6 +145,12 @@ const sidebarCurrentJobId = computed(() => {
   return openedHistoryJobId.value || job.value?.jobId || activeWorkspaceJobId.value
 })
 
+const currentWorkspace = computed(() => {
+  if (showDailyAwareness.value) return 'daily'
+  if (!showUserManagement.value && !showDraftAssistant.value && homeMode.value === 'qa') return 'qa'
+  return 'report'
+})
+
 async function handleLogin(credentials) {
   return loginUser(credentials?.username || '', credentials?.password || '')
 }
@@ -151,6 +160,7 @@ function handleLogout() {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   draftInitialEventId.value = ''
   returnHome()
 }
@@ -165,9 +175,18 @@ function openUserManagement() {
     return
   }
   backgroundActiveWorkspace()
+  showPersonalSettings.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
   showUserManagement.value = true
+}
+
+function openPersonalSettings() {
+  if (!authUser.value) {
+    setAuthNotice('请先登录')
+    return
+  }
+  showPersonalSettings.value = true
 }
 
 function openDraftAssistant() {
@@ -176,13 +195,15 @@ function openDraftAssistant() {
     return
   }
   backgroundActiveWorkspace()
+  showPersonalSettings.value = false
   showUserManagement.value = false
   showDailyAwareness.value = false
   showDraftAssistant.value = true
 }
 
 function openDailyAwareness() {
-  backgroundActiveWorkspace()
+  exitReportDetailForWorkspace()
+  showPersonalSettings.value = false
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = true
@@ -192,12 +213,14 @@ function openDraftFromDaily(payload) {
   draftInitialEventId.value = payload?.eventId || ''
   showDailyAwareness.value = false
   showUserManagement.value = false
+  showPersonalSettings.value = false
   showDraftAssistant.value = true
 }
 
 function openWorkspaceFromDaily(mode) {
   showDailyAwareness.value = false
   showUserManagement.value = false
+  showPersonalSettings.value = false
   showDraftAssistant.value = false
   homeMode.value = mode === 'qa' ? 'qa' : 'report'
   if (homeMode.value === 'report') selectedQaSessionId.value = ''
@@ -247,9 +270,44 @@ function setHomeMode(mode) {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
-  if (mode === 'qa') backgroundActiveWorkspace()
+  showPersonalSettings.value = false
+  if (mode === 'qa') exitReportDetailForWorkspace()
   homeMode.value = mode === 'qa' ? 'qa' : 'report'
   if (homeMode.value === 'report') selectedQaSessionId.value = ''
+}
+
+function exitReportDetailForWorkspace() {
+  const backgrounded = backgroundActiveWorkspace()
+  if (!backgrounded && (currentView.value !== 'generator' || phase.value !== 'idle')) {
+    resetForNewReport()
+  }
+}
+
+function switchWorkspace(mode) {
+  showUserManagement.value = false
+  showDraftAssistant.value = false
+  showDailyAwareness.value = false
+  showPersonalSettings.value = false
+  draftInitialEventId.value = ''
+
+  if (mode === 'daily') {
+    exitReportDetailForWorkspace()
+    selectedQaSessionId.value = ''
+    homeMode.value = 'report'
+    showDailyAwareness.value = true
+    return
+  }
+
+  if (mode === 'qa') {
+    exitReportDetailForWorkspace()
+    homeMode.value = 'qa'
+    selectedQaSessionId.value = ''
+    return
+  }
+
+  homeMode.value = 'report'
+  selectedQaSessionId.value = ''
+  resetForNewReport()
 }
 
 function upsertQaSession(session) {
@@ -273,6 +331,7 @@ function openQaSession(session) {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   backgroundActiveWorkspace()
   homeMode.value = 'qa'
   selectedQaSessionId.value = session.id
@@ -282,6 +341,7 @@ function openReportJob(item) {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   monitorJobFromList(item)
@@ -291,6 +351,7 @@ function startQaFromSidebar() {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   backgroundActiveWorkspace()
   homeMode.value = 'qa'
   selectedQaSessionId.value = ''
@@ -304,6 +365,7 @@ function startReportFromSidebar() {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
 }
@@ -312,6 +374,7 @@ function openReportHistoryList() {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   loadJobList(true)
@@ -321,6 +384,7 @@ function resetForNewReportFromCanvas() {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   resetForNewReport()
@@ -330,6 +394,7 @@ function returnHome() {
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
+  showPersonalSettings.value = false
   draftInitialEventId.value = ''
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
@@ -350,6 +415,7 @@ watch(authUser, (user) => {
   } else {
     showDraftAssistant.value = false
     showDailyAwareness.value = false
+    showPersonalSettings.value = false
     draftInitialEventId.value = ''
     clearReportHistoryState()
   }
@@ -399,11 +465,19 @@ function jobActionLabel(status) {
       :auth-loading="authLoading"
       :auth-error="authError"
       :auth-notice="authNotice"
+      :current-workspace="currentWorkspace"
       @return-home="returnHome"
       @login="handleLogin"
       @logout="handleLogout"
       @open-user-management="openUserManagement"
       @open-draft-assistant="openDraftAssistant"
+      @open-personal-settings="openPersonalSettings"
+      @switch-workspace="switchWorkspace"
+    />
+
+    <PersonalSettings
+      v-if="showPersonalSettings"
+      @close="showPersonalSettings = false"
     />
 
     <DraftAssistant
@@ -480,6 +554,7 @@ function jobActionLabel(status) {
         v-model:planSourceInput="planSourceInput"
         v-model:planSupplement="planSupplement"
         v-model:databaseSourceEnabled="databaseSourceEnabled"
+        v-model:useMyPreferences="useMyPreferences"
         :planError="planError"
         :executionLogs="executionLogs"
         :progress-state="progressState"

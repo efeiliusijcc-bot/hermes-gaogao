@@ -17,6 +17,7 @@ dist-ssr
 *.local
 .env
 .claude
+.codebase-memory/
 _tmp_*
 health-check-output.json
 gaogao-api.tar.gz

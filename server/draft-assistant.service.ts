@@ -1,10 +1,12 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
   OnModuleDestroy,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import OpenAI from 'openai';
@@ -37,6 +39,7 @@ import type {
 } from './draft-assistant.types.js';
 import type { VectorSourceItem } from './vector-source.service.js';
 import { VectorSourceService } from './vector-source.service.js';
+import { UserPreferencesService } from './user-preferences.service.js';
 
 const OUTLINE_KEYS: Array<keyof DraftOutlineJson> = [
   'reportTitle',
@@ -99,7 +102,10 @@ export class DraftAssistantService implements OnModuleDestroy {
   private pool: PgPool | null = null;
   private llm: OpenAI | null = null;
 
-  constructor(private readonly vectorSources: VectorSourceService) {}
+  constructor(
+    private readonly vectorSources: VectorSourceService,
+    @Optional() @Inject(UserPreferencesService) private readonly userPreferences?: UserPreferencesService,
+  ) {}
 
   async onModuleDestroy() {
     if (this.pool) await this.pool.end();
@@ -198,12 +204,13 @@ export class DraftAssistantService implements OnModuleDestroy {
     const event = await this.loadEventForUser(eventId, user);
     const sources = await this.listSources(eventId);
     const attitudes = await this.listAttitudes(eventId);
+    const preferenceContext = await this.outlineUserPreferenceText(user);
     const outline = this.normalizeOutline(await this.generateOutlineJson({
       mode: 'create',
       event,
       sources,
       attitudes,
-      preference: this.text(input.outlinePreference, 4000),
+      preference: [this.text(input.outlinePreference, 4000), preferenceContext].filter(Boolean).join('\n\n'),
     }));
     return this.insertOutline(eventId, event.ownerId, outline, {
       editType: 'ai',
@@ -1096,6 +1103,41 @@ export class DraftAssistantService implements OnModuleDestroy {
   private normalizeLinks(value: unknown): string[] {
     const items = Array.isArray(value) ? value : [];
     return [...new Set(items.map((item) => String(item || '').trim()).filter(Boolean))].slice(0, 20);
+  }
+
+  private async outlineUserPreferenceText(user: AuthUser): Promise<string> {
+    if (!this.userPreferences) return '';
+    try {
+      const context = await this.userPreferences.buildUserPreferenceContext(user);
+      const preferences = this.objectValue(context.preferences);
+      const template = this.objectValue(context.template || {});
+      const templateJson = this.objectValue(template.templateJson);
+      const snippets = Array.isArray(context.promptSnippets) ? context.promptSnippets : [];
+      return JSON.stringify({
+        note: '以下为用户个人偏好，只能作为提纲生成的附加约束；不得覆盖事件事实、信源事实或用户手动输入。',
+        writingStyle: preferences.writingStyle || '',
+        tone: preferences.tone || '',
+        defaultRegion: preferences.defaultRegion || '',
+        defaultReportType: preferences.defaultReportType || '',
+        defaultSourceOptions: preferences.defaultSourceOptions || {},
+        defaultOutlineOptions: preferences.defaultOutlineOptions || {},
+        template: template.templateId ? {
+          templateId: template.templateId,
+          templateName: template.templateName,
+          writingConstraints: Array.isArray(templateJson.writingConstraints) ? templateJson.writingConstraints : [],
+          sourceRequirements: Array.isArray(templateJson.sourceRequirements) ? templateJson.sourceRequirements : [],
+          sections: Array.isArray(templateJson.sections) ? templateJson.sections : [],
+        } : null,
+        promptSnippets: snippets.slice(0, 20).map((item) => ({
+          snippetName: this.text(this.objectValue(item).snippetName, 255),
+          snippetType: this.text(this.objectValue(item).snippetType, 128),
+          content: this.text(this.objectValue(item).content, 2000),
+        })),
+      });
+    } catch (error) {
+      console.warn('Draft Assistant user preference context unavailable:', error instanceof Error ? error.message : error);
+      return '';
+    }
   }
 
   private requiredText(value: unknown, field: string, maxLength: number): string {

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
-import { createChatCompletion, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl } from '../lib/api.js'
+import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits } from '../lib/api.js'
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -62,6 +62,10 @@ const props = defineProps({
   databaseSourceEnabled: {
     type: Boolean,
     default: true,
+  },
+  useMyPreferences: {
+    type: Boolean,
+    default: false,
   },
   planError: String,
   executionLogs: {
@@ -124,6 +128,7 @@ const emit = defineEmits([
   'update:planSourceInput',
   'update:planSupplement',
   'update:databaseSourceEnabled',
+  'update:useMyPreferences',
   'update:homeMode',
   'qa-session-upsert',
   'qa-session-clear-selection',
@@ -148,6 +153,20 @@ const technicalLogCollapsedIds = ref(new Set())
 const dbSourcesExpanded = ref(false)
 const expandedSourceId = ref('')
 const sourceListRef = ref(null)
+const reportEditOpen = ref(false)
+const reportEditLoading = ref(false)
+const reportEditHistoryLoading = ref(false)
+const reportEditError = ref('')
+const reportEditNotice = ref('')
+const reportEditResult = ref(null)
+const reportEditHistory = ref([])
+const reportEditForm = ref({
+  targetType: 'selected_text',
+  targetPath: '',
+  originalText: '',
+  editMode: 'polish',
+  instruction: '',
+})
 const activeSourceType = ref('database_recall')
 const sourceSearchQuery = ref('')
 const sourceKindFilter = ref('全部')
@@ -254,6 +273,84 @@ const taskStatusClass = computed(() => {
   return 'text-cyber-yellow'
 })
 const sanitizedHtml = computed(() => DOMPurify.sanitize(props.generatedHtml || '', purifyConfig))
+
+const reportEditModes = [
+  { value: 'polish', label: '润色' },
+  { value: 'expand', label: '扩写' },
+  { value: 'shorten', label: '缩写' },
+  { value: 'clarify_facts', label: '强化事实描述' },
+  { value: 'add_sources', label: '补充各方态度' },
+  { value: 'strengthen_risk', label: '强化涉我风险' },
+  { value: 'custom', label: '自定义' },
+]
+
+function selectedReportText() {
+  try {
+    const selection = window.getSelection?.()
+    return String(selection?.toString() || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+async function openReportEditPanel() {
+  reportEditError.value = ''
+  reportEditNotice.value = ''
+  reportEditResult.value = null
+  reportEditForm.value = {
+    targetType: 'selected_text',
+    targetPath: '',
+    originalText: selectedReportText(),
+    editMode: 'polish',
+    instruction: '',
+  }
+  reportEditOpen.value = true
+  await loadReportEditHistory()
+}
+
+async function loadReportEditHistory() {
+  if (!props.job?.jobId) return
+  reportEditHistoryLoading.value = true
+  try {
+    const result = await getReportEdits(props.job.jobId)
+    reportEditHistory.value = Array.isArray(result?.items) ? result.items : []
+  } catch (error) {
+    reportEditError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    reportEditHistoryLoading.value = false
+  }
+}
+
+async function submitReportEdit() {
+  if (!props.job?.jobId || reportEditLoading.value) return
+  reportEditError.value = ''
+  reportEditNotice.value = ''
+  reportEditResult.value = null
+  reportEditLoading.value = true
+  try {
+    const result = await createReportEdit(props.job.jobId, {
+      ...reportEditForm.value,
+      targetType: reportEditForm.value.targetType || 'selected_text',
+    })
+    reportEditResult.value = result
+    reportEditNotice.value = '局部修改已生成，原报告未被覆盖。'
+    await loadReportEditHistory()
+  } catch (error) {
+    reportEditError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    reportEditLoading.value = false
+  }
+}
+
+async function copyReportEditResult(text) {
+  try {
+    await navigator.clipboard.writeText(String(text || ''))
+    reportEditNotice.value = '修改结果已复制。'
+  } catch {
+    reportEditError.value = '复制失败，请手动选择文本复制。'
+  }
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -4173,7 +4270,17 @@ function exportPdf() {
             </div>
 
             <div class="mt-5 flex items-center justify-between gap-4 report-form-actions">
-              <div class="font-mono text-[10px] text-slate-500">先生成编报规划，确认后才会创建正式编报任务</div>
+              <div class="grid gap-2">
+                <div class="font-mono text-[10px] text-slate-500">先生成编报规划，确认后才会创建正式编报任务</div>
+                <label class="inline-flex items-center gap-2 font-mono text-[11px] text-slate-600">
+                  <input
+                    type="checkbox"
+                    :checked="useMyPreferences"
+                    @change="emit('update:useMyPreferences', $event.target.checked)"
+                  />
+                  使用个人偏好和默认模板
+                </label>
+              </div>
               <button
                 class="generate-btn shrink-0 font-mono text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0"
                 type="button"
@@ -4887,6 +4994,14 @@ function exportPdf() {
             </nav>
 
             <div class="result-actions">
+              <button
+                v-if="job?.jobId && generatedHtml"
+                @click="openReportEditPanel"
+                class="result-action-btn"
+                type="button"
+              >
+                <span>✎</span> 局部修改
+              </button>
               <button @click="exportWord" :disabled="!canExport" class="result-action-btn" type="button">
                 <span>▣</span> 导出 Word
               </button>
@@ -4919,6 +5034,70 @@ function exportPdf() {
         </div>
 
         <section v-if="activeResultTab === 'report'" class="result-tab-panel">
+          <aside v-if="reportEditOpen" class="report-edit-panel">
+            <div class="report-edit-head">
+              <div>
+                <strong>局部段落修改</strong>
+                <span>选中文本后生成局部改写，不覆盖原报告。</span>
+              </div>
+              <button type="button" class="report-edit-close" @click="reportEditOpen = false">×</button>
+            </div>
+
+            <div v-if="reportEditError" class="report-edit-alert error">{{ reportEditError }}</div>
+            <div v-if="reportEditNotice" class="report-edit-alert notice">{{ reportEditNotice }}</div>
+
+            <div class="report-edit-grid">
+              <label>
+                修改方式
+                <select v-model="reportEditForm.editMode">
+                  <option v-for="mode in reportEditModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+                </select>
+              </label>
+              <label>
+                目标路径
+                <input v-model="reportEditForm.targetPath" type="text" placeholder="可选，如 sections[2].paragraphs[1]" />
+              </label>
+            </div>
+
+            <label class="report-edit-field">
+              原文
+              <textarea v-model="reportEditForm.originalText" rows="5" placeholder="可先在报告正文中选中文本，再点击局部修改；也可手动粘贴。"></textarea>
+            </label>
+
+            <label class="report-edit-field">
+              修改要求
+              <textarea v-model="reportEditForm.instruction" rows="3" placeholder="例如：请补充各方态度的表态时间、媒体和来源，语言保持简洁正式。"></textarea>
+            </label>
+
+            <div class="report-edit-actions">
+              <button type="button" class="result-action-btn result-action-primary" :disabled="reportEditLoading" @click="submitReportEdit">
+                {{ reportEditLoading ? '生成中...' : '生成修改' }}
+              </button>
+              <button v-if="reportEditResult?.editedText" type="button" class="result-action-btn" @click="copyReportEditResult(reportEditResult.editedText)">
+                复制结果
+              </button>
+            </div>
+
+            <div v-if="reportEditResult?.editedText" class="report-edit-result">
+              <strong>修改结果</strong>
+              <pre>{{ reportEditResult.editedText }}</pre>
+            </div>
+
+            <details class="report-edit-history">
+              <summary>修改历史 {{ reportEditHistory.length ? `(${reportEditHistory.length})` : '' }}</summary>
+              <div v-if="reportEditHistoryLoading" class="report-edit-empty">正在加载...</div>
+              <div v-else-if="!reportEditHistory.length" class="report-edit-empty">暂无修改历史</div>
+              <article v-for="item in reportEditHistory" v-else :key="item.editId" class="report-edit-history-item">
+                <div>
+                  <strong>{{ item.editMode }}</strong>
+                  <span>{{ item.createdAt }}</span>
+                </div>
+                <p>{{ item.instruction }}</p>
+                <button type="button" class="result-action-btn" @click="copyReportEditResult(item.editedText)">复制</button>
+              </article>
+            </details>
+          </aside>
+
           <article
             v-if="generatedHtml"
             class="report-html prose prose-invert max-w-none text-sm leading-relaxed bg-black/20 border border-neon-cyan/10 rounded p-6"

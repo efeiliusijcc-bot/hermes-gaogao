@@ -14,12 +14,19 @@ interface UserRow {
   updated_at: Date | string;
 }
 
+interface RoleRow {
+  id: string;
+  name: string;
+}
+
 export interface UserResponse {
   id: string;
   username: string;
   displayName: string;
   email: string | null;
   role: UserRole;
+  roles: string[];
+  permissions: string[];
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -31,12 +38,14 @@ interface CreateUserInput {
   displayName?: string;
   email?: string | null;
   role?: string;
+  roles?: string[];
 }
 
 interface UpdateUserInput {
   displayName?: string;
   email?: string | null;
   role?: string;
+  roles?: string[];
   isActive?: boolean;
 }
 
@@ -52,24 +61,51 @@ export class UsersService implements OnModuleDestroy {
 
   async listUsers(): Promise<UserResponse[]> {
     const pool = await this.getPool();
-    const result = await pool.query(
-      `SELECT id, username, display_name, email, role, is_active, created_at, updated_at
-         FROM users
-        ORDER BY created_at DESC, username ASC`,
-    );
-    return result.rows.map((row) => this.toUserResponse(row));
+    try {
+      const result = await pool.query(
+        `SELECT u.id, u.username, u.display_name, u.email, u.role, u.is_active, u.created_at, u.updated_at,
+                COALESCE(
+                  array_agg(DISTINCT r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL),
+                  ARRAY[]::text[]
+                ) AS roles,
+                COALESCE(
+                  array_agg(DISTINCT concat(p.resource, ':', p.action) ORDER BY concat(p.resource, ':', p.action))
+                    FILTER (WHERE p.id IS NOT NULL),
+                  ARRAY[]::text[]
+                ) AS permissions
+           FROM users u
+           LEFT JOIN user_roles ur ON ur.user_id = u.id
+           LEFT JOIN roles r ON r.id = ur.role_id
+           LEFT JOIN role_permissions rp ON rp.role_id = r.id
+           LEFT JOIN permissions p ON p.id = rp.permission_id
+          GROUP BY u.id, u.username, u.display_name, u.email, u.role, u.is_active, u.created_at, u.updated_at
+          ORDER BY u.created_at DESC, u.username ASC`,
+      );
+      return result.rows.map((row) => this.toUserResponse(row));
+    } catch (error) {
+      if (!this.isMissingRbacTable(error)) throw error;
+      const result = await pool.query(
+        `SELECT id, username, display_name, email, role, is_active, created_at, updated_at
+           FROM users
+          ORDER BY created_at DESC, username ASC`,
+      );
+      return result.rows.map((row) => this.toUserResponse(row));
+    }
   }
 
   async createUser(input: CreateUserInput): Promise<UserResponse> {
     const username = this.normalizeUsername(input.username);
     const password = String(input.password || '');
     if (!username) throw new BadRequestException({ error: 'username is required' });
-    if (!password) throw new BadRequestException({ error: 'password is required' });
-    const role = this.normalizeRole(input.role || 'viewer');
+    this.validatePasswordStrength(password);
+    const roleNames = this.resolveRequestedRoles(input, 'viewer');
+    const roleRows = await this.resolveRoleRows(roleNames);
+    const role = this.compatRole(roleNames, input.role);
     const passwordHash = await bcrypt.hash(password, 12);
     const pool = await this.getPool();
 
     try {
+      await pool.query('BEGIN');
       const result = await pool.query(
         `INSERT INTO users (username, password_hash, display_name, email, role, is_active)
          VALUES ($1, $2, $3, $4, $5, true)
@@ -82,8 +118,12 @@ export class UsersService implements OnModuleDestroy {
           role,
         ],
       );
-      return this.toUserResponse(result.rows[0]);
+      const userId = String(result.rows[0].id);
+      await this.replaceUserRoles(userId, roleRows);
+      await pool.query('COMMIT');
+      return this.getUserById(userId);
     } catch (error) {
+      await this.rollbackQuietly(pool);
       if (this.isUniqueViolation(error)) {
         throw new ConflictException({ error: 'username already exists' });
       }
@@ -93,8 +133,20 @@ export class UsersService implements OnModuleDestroy {
 
   async updateUser(id: string, input: UpdateUserInput, currentUser?: AuthUser): Promise<UserResponse> {
     const userId = this.normalizeId(id);
+    const current = await this.getUserById(userId);
     const fields: string[] = [];
     const params: unknown[] = [];
+    const hasRoles = Object.prototype.hasOwnProperty.call(input, 'roles') || Object.prototype.hasOwnProperty.call(input, 'role');
+    const roleNames = hasRoles ? this.resolveRequestedRoles(input, current.role) : current.roles;
+    const roleRows = hasRoles ? await this.resolveRoleRows(roleNames) : [];
+    const nextLegacyRole = hasRoles ? this.compatRole(roleNames, input.role) : current.role;
+    const nextIsActive = Object.prototype.hasOwnProperty.call(input, 'isActive')
+      ? this.normalizeBoolean(input.isActive)
+      : current.isActive;
+
+    if ((current.role === 'admin' || current.roles.includes('admin')) && (!roleNames.includes('admin') || !nextIsActive)) {
+      await this.assertNotLastAdmin(userId);
+    }
 
     if (Object.prototype.hasOwnProperty.call(input, 'displayName')) {
       params.push(this.normalizeDisplayName(input.displayName));
@@ -105,7 +157,10 @@ export class UsersService implements OnModuleDestroy {
       fields.push(`email = $${params.length}`);
     }
     if (Object.prototype.hasOwnProperty.call(input, 'role')) {
-      params.push(this.normalizeRole(input.role));
+      params.push(nextLegacyRole);
+      fields.push(`role = $${params.length}`);
+    } else if (hasRoles) {
+      params.push(nextLegacyRole);
       fields.push(`role = $${params.length}`);
     }
     if (Object.prototype.hasOwnProperty.call(input, 'isActive')) {
@@ -117,24 +172,34 @@ export class UsersService implements OnModuleDestroy {
       fields.push(`is_active = $${params.length}`);
     }
 
-    if (!fields.length) return this.getUserById(userId);
+    if (!fields.length && !hasRoles) return this.getUserById(userId);
 
     params.push(userId);
     const pool = await this.getPool();
-    const result = await pool.query(
-      `UPDATE users
-          SET ${fields.join(', ')}
-        WHERE id = $${params.length}
-        RETURNING id, username, display_name, email, role, is_active, created_at, updated_at`,
-      params,
-    );
-    if (!result.rows[0]) throw new NotFoundException({ error: 'User not found' });
-    return this.toUserResponse(result.rows[0]);
+    await pool.query('BEGIN');
+    try {
+      if (fields.length) {
+        const result = await pool.query(
+          `UPDATE users
+              SET ${fields.join(', ')}
+            WHERE id = $${params.length}
+            RETURNING id, username, display_name, email, role, is_active, created_at, updated_at`,
+          params,
+        );
+        if (!result.rows[0]) throw new NotFoundException({ error: 'User not found' });
+      }
+      if (hasRoles) await this.replaceUserRoles(userId, roleRows);
+      await pool.query('COMMIT');
+      return this.getUserById(userId);
+    } catch (error) {
+      await this.rollbackQuietly(pool);
+      throw error;
+    }
   }
 
   async resetPassword(id: string, password: string): Promise<UserResponse> {
     const userId = this.normalizeId(id);
-    if (!password) throw new BadRequestException({ error: 'password is required' });
+    this.validatePasswordStrength(password);
     const passwordHash = await bcrypt.hash(password, 12);
     const pool = await this.getPool();
     const result = await pool.query(
@@ -167,25 +232,55 @@ export class UsersService implements OnModuleDestroy {
 
   private async getUserById(id: string): Promise<UserResponse> {
     const pool = await this.getPool();
-    const result = await pool.query(
-      `SELECT id, username, display_name, email, role, is_active, created_at, updated_at
-         FROM users
-        WHERE id = $1
-        LIMIT 1`,
-      [id],
-    );
+    let result;
+    try {
+      result = await pool.query(
+        `SELECT u.id, u.username, u.display_name, u.email, u.role, u.is_active, u.created_at, u.updated_at,
+                COALESCE(
+                  array_agg(DISTINCT r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL),
+                  ARRAY[]::text[]
+                ) AS roles,
+                COALESCE(
+                  array_agg(DISTINCT concat(p.resource, ':', p.action) ORDER BY concat(p.resource, ':', p.action))
+                    FILTER (WHERE p.id IS NOT NULL),
+                  ARRAY[]::text[]
+                ) AS permissions
+           FROM users u
+           LEFT JOIN user_roles ur ON ur.user_id = u.id
+           LEFT JOIN roles r ON r.id = ur.role_id
+           LEFT JOIN role_permissions rp ON rp.role_id = r.id
+           LEFT JOIN permissions p ON p.id = rp.permission_id
+          WHERE u.id = $1
+          GROUP BY u.id, u.username, u.display_name, u.email, u.role, u.is_active, u.created_at, u.updated_at
+          LIMIT 1`,
+        [id],
+      );
+    } catch (error) {
+      if (!this.isMissingRbacTable(error)) throw error;
+      result = await pool.query(
+        `SELECT id, username, display_name, email, role, is_active, created_at, updated_at
+           FROM users
+          WHERE id = $1
+          LIMIT 1`,
+        [id],
+      );
+    }
     if (!result.rows[0]) throw new NotFoundException({ error: 'User not found' });
     return this.toUserResponse(result.rows[0]);
   }
 
   private toUserResponse(row: Record<string, unknown>): UserResponse {
     const role = this.isUserRole(row.role) ? row.role : 'viewer';
+    const roles = Array.isArray(row.roles) && row.roles.length ? row.roles.map((item) => String(item)) : [role];
+    const permissions = Array.isArray(row.permissions) ? row.permissions.map((item) => String(item)).filter(Boolean) : [];
     return {
       id: String(row.id || ''),
       username: String(row.username || ''),
       displayName: String(row.display_name || ''),
       email: row.email ? String(row.email) : null,
       role,
+      roles,
+      permissions,
       isActive: row.is_active === true || String(row.is_active).toLowerCase() === 'true',
       createdAt: this.dateString(row.created_at),
       updatedAt: this.dateString(row.updated_at),
@@ -215,6 +310,78 @@ export class UsersService implements OnModuleDestroy {
     throw new BadRequestException({ error: 'role must be admin, operator, or viewer' });
   }
 
+  private validatePasswordStrength(password: string): void {
+    const value = String(password || '');
+    if (value.trim().length < 8) throw new BadRequestException('Password must be at least 8 characters');
+    if (!/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
+      throw new BadRequestException('Password must include letters and numbers');
+    }
+  }
+
+  private resolveRequestedRoles(input: { role?: string; roles?: string[] }, fallback: string): string[] {
+    const raw = Array.isArray(input.roles) && input.roles.length ? input.roles : [input.role || fallback];
+    const roles = Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)));
+    if (!roles.length) return ['viewer'];
+    roles.forEach((role) => {
+      if (role.length > 64 || !/^[A-Za-z0-9_-]+$/.test(role)) {
+        throw new BadRequestException({ error: 'roles contain invalid role name' });
+      }
+    });
+    return roles;
+  }
+
+  private compatRole(roleNames: string[], requestedRole?: string): UserRole {
+    if (this.isUserRole(requestedRole)) return requestedRole;
+    const firstSystemRole = roleNames.find((role) => this.isUserRole(role));
+    return this.isUserRole(firstSystemRole) ? firstSystemRole : 'viewer';
+  }
+
+  private async resolveRoleRows(roleNames: string[]): Promise<RoleRow[]> {
+    const pool = await this.getPool();
+    const result = await pool.query(
+      `SELECT id, name
+         FROM roles
+        WHERE name = ANY($1::text[])
+        ORDER BY name ASC`,
+      [roleNames],
+    );
+    const rows = result.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
+    const found = new Set(rows.map((row) => row.name));
+    const missing = roleNames.filter((role) => !found.has(role));
+    if (missing.length) throw new BadRequestException({ error: `Unknown roles: ${missing.join(', ')}` });
+    return rows;
+  }
+
+  private async replaceUserRoles(userId: string, roles: RoleRow[]): Promise<void> {
+    const pool = await this.getPool();
+    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [userId]);
+    for (const role of roles) {
+      await pool.query(
+        `INSERT INTO user_roles (user_id, role_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [userId, role.id],
+      );
+    }
+  }
+
+  private async assertNotLastAdmin(userId: string): Promise<void> {
+    const pool = await this.getPool();
+    const result = await pool.query(
+      `SELECT COUNT(*) AS count
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id
+         LEFT JOIN roles r ON r.id = ur.role_id
+        WHERE u.is_active = true
+          AND (u.role = 'admin' OR r.name = 'admin')`,
+    );
+    const adminCount = Number(result.rows[0]?.count || 0);
+    if (adminCount <= 1) {
+      void userId;
+      throw new BadRequestException('Cannot remove last admin');
+    }
+  }
+
   private isUserRole(value: unknown): value is UserRole {
     return USER_ROLES.includes(value as UserRole);
   }
@@ -240,6 +407,18 @@ export class UsersService implements OnModuleDestroy {
 
   private isUniqueViolation(error: unknown): boolean {
     return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === '23505');
+  }
+
+  private isMissingRbacTable(error: unknown): boolean {
+    return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === '42P01');
+  }
+
+  private async rollbackQuietly(pool: PgPool): Promise<void> {
+    try {
+      await pool.query('ROLLBACK');
+    } catch {
+      // Preserve the original failure.
+    }
   }
 
   private async getPool(): Promise<PgPool> {

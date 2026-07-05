@@ -1,18 +1,21 @@
-import { Body, Controller, Delete, Get, Header, HttpException, HttpStatus, Param, Post, Query, Sse, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, HttpException, HttpStatus, Inject, Param, Post, Query, Sse, UseGuards } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
 import { CurrentUser } from './current-user.decorator.js';
+import { PermissionsGuard } from './permissions.guard.js';
+import { RequirePermissions } from './require-permissions.decorator.js';
 import { ReportsService } from './reports.service.js';
 import type { CreateJobRequest } from '../src/types/report.js';
 import type { ServerEvent } from './types.js';
 
 @Controller('/api/report-jobs')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
 export class ReportsController {
-  constructor(private readonly reports: ReportsService) {}
+  constructor(@Inject(ReportsService) private readonly reports: ReportsService) {}
 
   @Post()
+  @RequirePermissions('report:create')
   create(@Body() body: CreateJobRequest, @CurrentUser() user: AuthUser) {
     if (!body.skill || !body.payload) {
       throw new HttpException({ error: 'Missing skill or payload' }, HttpStatus.BAD_REQUEST);
@@ -52,12 +55,30 @@ export class ReportsController {
   }
 
   @Delete(':jobId')
+  @RequirePermissions('report:delete')
   async delete(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const job = await this.reports.deleteJob(jobId, user);
     if (!job) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
     }
     return this.reports.serializeJob(job);
+  }
+
+  @Post(':jobId/edits')
+  @RequirePermissions('report:update')
+  createReportEdit(@Param('jobId') jobId: string, @Body() body: Record<string, unknown>, @CurrentUser() user: AuthUser) {
+    return this.reports.createReportEdit(jobId, user, body || {});
+  }
+
+  @Get(':jobId/edits')
+  async listReportEdits(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    return this.reports.listReportEdits(jobId, user);
+  }
+
+  @Post(':jobId/edits/:editId/apply')
+  @RequirePermissions('report:update')
+  applyReportEdit(@Param('jobId') jobId: string, @Param('editId') editId: string, @CurrentUser() user: AuthUser) {
+    return this.reports.applyReportEdit(jobId, user, editId);
   }
 
   @Post(':jobId/restore')

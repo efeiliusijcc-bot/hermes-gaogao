@@ -19,14 +19,20 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  currentWorkspace: {
+    type: String,
+    default: 'report',
+  },
 })
 
-const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-draft-assistant'])
+const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-draft-assistant', 'open-personal-settings', 'switch-workspace'])
 
 const currentTime = ref('')
 const canvasRef = ref(null)
+const workspaceNavRef = ref(null)
 const settingsButtonRef = ref(null)
 const settingsMenuRef = ref(null)
+const workspaceNavOpen = ref(false)
 const showSettingsMenu = ref(false)
 const settingsMenuStyle = ref({})
 const showKeySettings = ref(false)
@@ -72,6 +78,14 @@ const loginExpiredNotice = computed(() => {
 const usernameRequired = computed(() => loginTouched.username && !loginForm.username.trim())
 const passwordRequired = computed(() => loginTouched.password && !loginForm.password.trim())
 const loginStatusMessage = computed(() => loginError.value || loginExpiredNotice.value)
+const workspaceItems = [
+  { key: 'report', title: 'AI智能体深度编报' },
+  { key: 'qa', title: 'QA问答' },
+  { key: 'daily', title: '每日动态感知' },
+]
+const activeWorkspaceItem = computed(() => {
+  return workspaceItems.find((item) => item.key === props.currentWorkspace) || workspaceItems[0]
+})
 
 const keyFields = [
   { key: 'tavilyApiKey', label: 'Tavily', placeholder: 'tvly-...，每行一个，可配置多个' },
@@ -218,6 +232,11 @@ function openDraftAssistant() {
   emit('open-draft-assistant')
 }
 
+function openPersonalSettings() {
+  closeSettingsMenu()
+  emit('open-personal-settings')
+}
+
 function roleLabel(role) {
   if (role === 'admin') return '管理员'
   if (role === 'operator') return '操作员'
@@ -252,16 +271,55 @@ function closeSettingsMenu() {
   showSettingsMenu.value = false
 }
 
+let workspaceNavCloseTimer = null
+
+function openWorkspaceNav() {
+  if (workspaceNavCloseTimer) {
+    clearTimeout(workspaceNavCloseTimer)
+    workspaceNavCloseTimer = null
+  }
+  workspaceNavOpen.value = true
+}
+
+function scheduleWorkspaceNavClose() {
+  if (workspaceNavCloseTimer) clearTimeout(workspaceNavCloseTimer)
+  workspaceNavCloseTimer = window.setTimeout(() => {
+    workspaceNavOpen.value = false
+    workspaceNavCloseTimer = null
+  }, 180)
+}
+
+function closeWorkspaceNav() {
+  if (workspaceNavCloseTimer) {
+    clearTimeout(workspaceNavCloseTimer)
+    workspaceNavCloseTimer = null
+  }
+  workspaceNavOpen.value = false
+}
+
+function toggleWorkspaceNav() {
+  if (workspaceNavOpen.value) closeWorkspaceNav()
+  else openWorkspaceNav()
+}
+
+function switchWorkspace(key) {
+  closeWorkspaceNav()
+  emit('switch-workspace', key)
+}
+
 function handleDocumentClick(event) {
   const menu = settingsMenuRef.value
   const button = settingsButtonRef.value
   if (menu?.contains(event.target) || button?.contains(event.target)) return
+  if (workspaceNavRef.value?.contains(event.target)) return
   closeSettingsMenu()
+  closeWorkspaceNav()
 }
 
 function handleDocumentKeydown(event) {
   if (event.key === 'Escape') closeSettingsMenu()
   if (event.key === 'Escape') closeLoginDialog()
+  if (event.key === 'Escape') closeWorkspaceNav()
 }
 
 function handleWindowResize() {
@@ -395,6 +453,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.clearInterval(timeInterval)
   stopVectorStatusPolling()
+  closeWorkspaceNav()
   document.removeEventListener('click', handleDocumentClick)
   document.removeEventListener('keydown', handleDocumentKeydown)
   window.removeEventListener('resize', handleWindowResize)
@@ -432,6 +491,42 @@ watch(() => props.authError, (error) => {
       <span class="font-mono tracking-wide" style="font-size: 22px; font-weight: 800; color: #0f172a; letter-spacing: 0.02em; line-height: 1.2;">
         AI深度编报
       </span>
+    </div>
+
+    <div class="header-center flex-1 mx-8">
+      <div
+        ref="workspaceNavRef"
+        class="workspace-quick-nav header-workspace-nav"
+        :class="{ expanded: workspaceNavOpen }"
+        @mouseenter="openWorkspaceNav"
+        @mouseleave="scheduleWorkspaceNavClose"
+        @focusin="openWorkspaceNav"
+      >
+        <button
+          class="workspace-quick-trigger"
+          type="button"
+          :aria-expanded="workspaceNavOpen"
+          aria-controls="global-workspace-quick-options"
+          @click.stop="toggleWorkspaceNav"
+        >
+          <span>当前模块：{{ activeWorkspaceItem.title }}</span>
+          <span class="workspace-quick-chevron">▾</span>
+        </button>
+        <div id="global-workspace-quick-options" class="workspace-quick-options" role="tablist" aria-label="全局工作区导航">
+          <button
+            v-for="item in workspaceItems"
+            :key="item.key"
+            class="workspace-quick-option"
+            :class="{ active: item.key === currentWorkspace }"
+            type="button"
+            role="tab"
+            :aria-selected="item.key === currentWorkspace"
+            @click.stop="switchWorkspace(item.key)"
+          >
+            {{ item.title }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="header-tech-line flex-1 mx-8 h-10">
@@ -502,18 +597,23 @@ watch(() => props.authError, (error) => {
   </header>
 
   <Teleport to="body">
-    <button
+    <div
       v-if="showSettingsMenu"
       ref="settingsMenuRef"
       class="settings-dropdown"
-      type="button"
-      role="menuitem"
+      role="menu"
       :style="settingsMenuStyle"
-      @click.stop="openKeySettings"
+      @click.stop
     >
-      <span class="settings-menu-icon">⌁</span>
-      <span>信源设置</span>
-    </button>
+      <button v-if="user" class="settings-dropdown-item" type="button" role="menuitem" @click="openPersonalSettings">
+        <span class="settings-menu-icon">◌</span>
+        <span>个人设置</span>
+      </button>
+      <button class="settings-dropdown-item" type="button" role="menuitem" @click="openKeySettings">
+        <span class="settings-menu-icon">⌁</span>
+        <span>信源设置</span>
+      </button>
+    </div>
   </Teleport>
 
   <Teleport to="body">

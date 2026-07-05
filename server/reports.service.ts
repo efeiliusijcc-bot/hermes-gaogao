@@ -1,12 +1,14 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, InternalServerErrorException, NotFoundException, OnModuleDestroy, Optional } from '@nestjs/common';
 import { marked } from 'marked';
+import OpenAI from 'openai';
 import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
-import { HERMES_RUN_MODE, REPORT_AGENT_PROVIDER } from './config.js';
+import { HERMES_RUN_MODE, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL, REPORT_AGENT_PROVIDER } from './config.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
+import { UserPreferencesService } from './user-preferences.service.js';
 import type { CreateJobRequest } from '../src/types/report.js';
 import type { AuthUser } from './auth-user.interface.js';
 import type {
@@ -22,6 +24,31 @@ import type {
 } from './types.js';
 
 type JobListTypeFilter = 'all' | 'write-hb-k' | 'write-hb-hb' | 'person-intelligence-report' | 'risk-assessment-reports';
+type ReportEditTargetType = 'paragraph' | 'section' | 'selected_text' | 'full_section';
+type ReportEditMode = 'rewrite' | 'expand' | 'shorten' | 'polish' | 'add_sources' | 'strengthen_risk' | 'clarify_facts' | 'custom';
+
+interface ReportEditInput {
+  targetType?: unknown;
+  targetPath?: unknown;
+  originalText?: unknown;
+  instruction?: unknown;
+  editMode?: unknown;
+}
+
+interface ReportEditResponse {
+  editId: string;
+  jobId: string;
+  ownerId: string;
+  targetType: string;
+  targetPath: string | null;
+  originalText: string;
+  instruction: string;
+  editedText: string;
+  editMode: string;
+  modelUsed: string | null;
+  status: string;
+  createdAt: string;
+}
 
 interface JobListOptions {
   page?: string | number;
@@ -158,6 +185,7 @@ export class ReportsService implements OnModuleDestroy {
     private readonly hermes: HermesService,
     private readonly remoteFs: RemoteFileService,
     private readonly vectorSources: VectorSourceService,
+    @Optional() @Inject(UserPreferencesService) private readonly userPreferences?: UserPreferencesService,
   ) {
     this.jobsReady = this.loadPersistedJobs();
   }
@@ -170,7 +198,7 @@ export class ReportsService implements OnModuleDestroy {
     if (!this.canCreateReport(user)) {
       throw new ForbiddenException({ error: 'Viewer cannot create report jobs' });
     }
-    const payload = req.payload as unknown as Record<string, unknown>;
+    const payload = await this.enhancePayloadWithUserPreferences(req.payload as unknown as Record<string, unknown>, user);
     const planId = this.optionalId(payload.planId);
     const planBundle = planId ? await this.loadDraftAssistantPlanBundle(planId, user) : null;
     const eventId = this.optionalId(payload.eventId) || planBundle?.eventId;
@@ -184,7 +212,7 @@ export class ReportsService implements OnModuleDestroy {
     const job: JobRecord = {
       jobId,
       skill: req.skill,
-      payload: req.payload,
+      payload: payload as unknown as CreateJobRequest['payload'],
       eventId,
       outlineId,
       planId,
@@ -335,6 +363,75 @@ export class ReportsService implements OnModuleDestroy {
     return { jobId, deleted: true };
   }
 
+  async createReportEdit(jobId: string, user: AuthUser, input: ReportEditInput): Promise<ReportEditResponse> {
+    await this.jobsReady;
+    if (!this.canUpdateReport(user)) {
+      throw new ForbiddenException({ error: 'Insufficient report update permissions' });
+    }
+    const job = this.assertCanAccessJob(jobId, user);
+    const normalized = this.normalizeReportEditInput(input);
+    let generated: { editedText: string; modelUsed: string };
+    try {
+      generated = await this.generateReportEditText(job, normalized);
+    } catch (error) {
+      throw new InternalServerErrorException({
+        error: '局部修改生成失败',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const editedText = String(generated.editedText || '').trim();
+    if (!editedText) throw new InternalServerErrorException({ error: '局部修改生成失败', message: 'model returned empty text' });
+
+    const result = await (await this.getPool()).query(
+      `INSERT INTO report_edits (
+         job_id, owner_id, target_type, target_path, original_text, instruction,
+         edited_text, edit_mode, model_used, status
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed')
+       RETURNING edit_id, job_id, owner_id, target_type, target_path, original_text,
+                 instruction, edited_text, edit_mode, model_used, status, created_at`,
+      [
+        job.jobId,
+        job.ownerUserId || user.id,
+        normalized.targetType,
+        normalized.targetPath,
+        normalized.originalText,
+        normalized.instruction,
+        editedText,
+        normalized.editMode,
+        generated.modelUsed || REPORT_AGENT_MODEL,
+      ],
+    );
+    return this.toReportEdit(result.rows[0]);
+  }
+
+  async listReportEdits(jobId: string, user: AuthUser): Promise<{ items: ReportEditResponse[] }> {
+    await this.jobsReady;
+    this.assertCanAccessJob(jobId, user);
+    const result = await (await this.getPool()).query(
+      `SELECT edit_id, job_id, owner_id, target_type, target_path, original_text,
+              instruction, edited_text, edit_mode, model_used, status, created_at
+         FROM report_edits
+        WHERE job_id = $1
+        ORDER BY created_at DESC`,
+      [jobId],
+    );
+    return { items: result.rows.map((row) => this.toReportEdit(row)) };
+  }
+
+  async applyReportEdit(jobId: string, user: AuthUser, editId: string): Promise<never> {
+    await this.jobsReady;
+    if (!this.canUpdateReport(user)) {
+      throw new ForbiddenException({ error: 'Insufficient report update permissions' });
+    }
+    this.assertCanAccessJob(jobId, user);
+    throw new BadRequestException({
+      error: 'Automatic apply is not supported in this version',
+      message: '请先复制 editedText 手动替换，避免误改报告文件。',
+      editId,
+    });
+  }
+
   async getJobWithRecoveredReport(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
     await this.jobsReady;
     const job = this.assertCanAccessJob(jobId, user);
@@ -398,6 +495,10 @@ export class ReportsService implements OnModuleDestroy {
 
   canDeleteReport(user: AuthUser): boolean {
     return this.isAdmin(user);
+  }
+
+  canUpdateReport(user: AuthUser): boolean {
+    return this.isAdmin(user) || user.permissions?.includes('report:update') || user.role === 'operator';
   }
 
   canAccessJob(job: JobRecord, user: AuthUser): boolean {
@@ -538,7 +639,7 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private canReadAllReports(user: AuthUser): boolean {
-    return user.role === 'admin' || user.role === 'operator';
+    return user.role === 'admin';
   }
 
   private canManageJob(job: JobRecord, user: AuthUser): boolean {
@@ -1300,6 +1401,161 @@ export class ReportsService implements OnModuleDestroy {
     };
   }
 
+  private async enhancePayloadWithUserPreferences(payload: Record<string, unknown>, user: AuthUser): Promise<Record<string, unknown>> {
+    if (payload.useMyPreferences !== true || !this.userPreferences) return payload;
+    const templateId = this.optionalId(payload.templateId);
+    const userPreferenceContext = await this.userPreferences.buildUserPreferenceContext(user, templateId || undefined);
+    const nextContext = {
+      ...this.contextObjectFromPayload(payload),
+      userPreferenceContext,
+    };
+    return {
+      ...payload,
+      known_context: JSON.stringify(nextContext),
+    };
+  }
+
+  private normalizeReportEditInput(input: ReportEditInput): {
+    targetType: ReportEditTargetType;
+    targetPath: string | null;
+    originalText: string;
+    instruction: string;
+    editMode: ReportEditMode;
+  } {
+    const targetTypes = new Set<ReportEditTargetType>(['paragraph', 'section', 'selected_text', 'full_section']);
+    const editModes = new Set<ReportEditMode>(['rewrite', 'expand', 'shorten', 'polish', 'add_sources', 'strengthen_risk', 'clarify_facts', 'custom']);
+    const targetType = String(input?.targetType || 'selected_text').trim() as ReportEditTargetType;
+    if (!targetTypes.has(targetType)) throw new BadRequestException({ error: 'targetType is invalid' });
+    const originalText = String(input?.originalText || '').trim();
+    if (!originalText) throw new BadRequestException({ error: 'originalText is required' });
+    const instruction = String(input?.instruction || '').trim();
+    if (!instruction) throw new BadRequestException({ error: 'instruction is required' });
+    const editMode = String(input?.editMode || 'rewrite').trim() as ReportEditMode;
+    if (!editModes.has(editMode)) throw new BadRequestException({ error: 'editMode is invalid' });
+    const targetPath = String(input?.targetPath || '').trim();
+    return {
+      targetType,
+      targetPath: targetPath || null,
+      originalText: originalText.slice(0, 20000),
+      instruction: instruction.slice(0, 4000),
+      editMode,
+    };
+  }
+
+  private async generateReportEditText(
+    job: JobRecord,
+    input: ReturnType<ReportsService['normalizeReportEditInput']>,
+  ): Promise<{ editedText: string; modelUsed: string }> {
+    if (!REPORT_AGENT_API_KEY) throw new Error('REPORT_AGENT_API_KEY is not configured');
+    const client = new OpenAI({ apiKey: REPORT_AGENT_API_KEY, baseURL: REPORT_AGENT_BASE_URL });
+    const response = await client.chat.completions.create({
+      model: REPORT_AGENT_MODEL,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你是深度编报报告的局部段落修改助手。',
+            '只输出修改后的段落或小节文本，不要输出解释、标题“以下是修改后”或 Markdown 包装。',
+            '不得编造来源；如果用户要求补充来源但上下文没有可核实来源，必须写“暂无可核实来源”或保持谨慎表述。',
+            '各方态度类修改必须尽量保留表态主体、时间、媒体、来源。',
+            '涉我风险类修改必须避免空泛判断，明确事实依据和不确定性。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: JSON.stringify(this.buildReportEditPromptPayload(job, input)),
+        },
+      ],
+    });
+    const editedText = String(response.choices?.[0]?.message?.content || '').trim();
+    return { editedText, modelUsed: REPORT_AGENT_MODEL };
+  }
+
+  private buildReportEditPromptPayload(
+    job: JobRecord,
+    input: ReturnType<ReportsService['normalizeReportEditInput']>,
+  ): Record<string, unknown> {
+    const payload = this.plainObject(job.payload);
+    const context = this.contextObjectFromPayload(payload);
+    const title = String(payload.topic || payload.title || payload.target_country || job.jobId || '');
+    return {
+      task: 'revise_report_segment',
+      outputRules: [
+        '只输出修改后的文本。',
+        '不输出解释。',
+        '不输出“以下是修改后”。',
+        '不编造来源。',
+        '没有可核实来源时保持谨慎并标注暂无可核实来源。',
+      ],
+      target: {
+        targetType: input.targetType,
+        targetPath: input.targetPath,
+        editMode: input.editMode,
+      },
+      originalText: input.originalText,
+      instruction: input.instruction,
+      report: {
+        jobId: job.jobId,
+        title,
+        reportType: payload.report_type || payload.reportType || '',
+        status: job.status,
+      },
+      contextSummary: this.safeJsonSlice(context, 12000),
+      draftAssistantContext: this.safeJsonSlice(this.plainObject(context.draftAssistantContext), 8000),
+      userPreferenceContext: this.safeJsonSlice(this.plainObject(context.userPreferenceContext), 8000),
+      reportPlan: this.safeJsonSlice(this.plainObject(context.report_plan), 8000),
+      availableSources: this.extractSourceSummaryFromContext(context),
+    };
+  }
+
+  private extractSourceSummaryFromContext(context: Record<string, unknown>): unknown[] {
+    const candidates = [
+      context.database_sources,
+      context.vector_sources,
+      context.vectorDatabaseSources,
+      this.plainObject(context.draftAssistantContext).sources,
+    ];
+    for (const value of candidates) {
+      if (Array.isArray(value) && value.length) {
+        return value.slice(0, 20).map((item) => {
+          const row = this.plainObject(item);
+          return {
+            title: row.title || row.ch_title || row.sourceTitle || '',
+            url: row.url || row.data_source_url || row.sourceUrl || '',
+            sourceName: row.websiteName || row.website_name || row.publisher || row.media || '',
+            publishTime: row.publishTime || row.publish_time || row.publishedAt || '',
+            summary: String(row.summary || row.sourceSummary || row.contentExcerpt || row.content_text || '').slice(0, 800),
+          };
+        });
+      }
+    }
+    return [];
+  }
+
+  private safeJsonSlice(value: unknown, maxLength: number): unknown {
+    const text = JSON.stringify(value || {});
+    if (text.length <= maxLength) return value;
+    return { truncated: true, excerpt: text.slice(0, maxLength) };
+  }
+
+  private toReportEdit(row: Record<string, unknown>): ReportEditResponse {
+    return {
+      editId: String(row.edit_id || ''),
+      jobId: String(row.job_id || ''),
+      ownerId: String(row.owner_id || ''),
+      targetType: String(row.target_type || ''),
+      targetPath: row.target_path ? String(row.target_path) : null,
+      originalText: String(row.original_text || ''),
+      instruction: String(row.instruction || ''),
+      editedText: String(row.edited_text || ''),
+      editMode: String(row.edit_mode || ''),
+      modelUsed: row.model_used ? String(row.model_used) : null,
+      status: String(row.status || ''),
+      createdAt: this.isoString(row.created_at),
+    };
+  }
+
   private async writeBackendDatabaseRecallArtifacts(
     job: JobRecord,
     context: Record<string, unknown>,
@@ -1464,6 +1720,8 @@ export class ReportsService implements OnModuleDestroy {
         displayName: job.ownerUsername || '',
         email: '',
         role: job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer',
+        roles: [job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer'],
+        permissions: [],
       });
       const runInput: RunInput = {
         skill: job.skill,

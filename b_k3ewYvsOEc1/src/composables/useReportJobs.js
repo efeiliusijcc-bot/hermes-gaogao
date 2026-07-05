@@ -142,6 +142,7 @@ export function useReportJobs() {
   const planSourceInput = ref('')
   const planSupplement = ref('')
   const databaseSourceEnabled = ref(true)
+  const useMyPreferences = ref(false)
   const planError = ref('')
   const generatedHtml = ref('')
   const phase = ref('idle')
@@ -1281,6 +1282,7 @@ export function useReportJobs() {
           current_position: currentPosition.value.trim() || '待研判',
           report_type: 'visiting_dignitary',
           visit_context: context,
+          useMyPreferences: useMyPreferences.value === true,
           focus_areas: ['基本情况', '政治立场', '风险点', '接待建议'],
           output_depth: outputDepth.value,
           language: 'zh-CN',
@@ -1295,6 +1297,7 @@ export function useReportJobs() {
           topic: subject,
           report_type: reportType.value === 'write-hb-hb' ? 'HB报' : 'K报',
           known_context: context,
+          useMyPreferences: useMyPreferences.value === true,
           focus_areas: isStructuredContext ? buildPlanningFocusAreas(extraContext) : ['国家', '地方', '政策', '社会', '传播'],
           language: 'zh-CN',
         },
@@ -1309,6 +1312,7 @@ export function useReportJobs() {
         target_city: targetCity.value.trim(),
         visit_time: visitTime.value.trim(),
         known_context: context,
+        useMyPreferences: useMyPreferences.value === true,
         focus_areas: ['公开信息检索', '风险识别', '舆情走势', '处置建议'],
         language: 'zh-CN',
       },
@@ -1920,6 +1924,7 @@ export function useReportJobs() {
     planSourceInput,
     planSupplement,
     databaseSourceEnabled,
+    useMyPreferences,
     planError,
     generatedHtml,
     phase,

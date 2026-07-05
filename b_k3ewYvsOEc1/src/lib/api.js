@@ -3,6 +3,7 @@ export const AUTH_TOKEN_KEY = 'gaogao_access_token'
 export const AUTH_USER_KEY = 'gaogao_current_user'
 
 let unauthorizedHandler = null
+let refreshPromise = null
 
 export class ApiError extends Error {
   constructor(message, status, data) {
@@ -45,12 +46,43 @@ export function clearAuthSession() {
   setAuthSession('', null)
 }
 
-export function logout() {
-  clearAuthSession()
+export async function logout() {
+  try {
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    })
+  } catch {
+    // Logout should clear local state even if the server is unavailable.
+  } finally {
+    clearAuthSession()
+  }
 }
 
 export function setUnauthorizedHandler(handler) {
   unauthorizedHandler = typeof handler === 'function' ? handler : null
+}
+
+async function refreshAuthSession() {
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    })
+      .then(async (response) => {
+        const text = await response.text()
+        const data = text ? JSON.parse(text) : null
+        if (!response.ok) throw new ApiError(data?.error || data?.message || `HTTP ${response.status}`, response.status, data)
+        setAuthSession(data?.access_token || '', data?.user || null)
+        return data
+      })
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+  return refreshPromise
 }
 
 async function request(path, options = {}) {
@@ -62,6 +94,7 @@ async function request(path, options = {}) {
   }
   const response = await fetch(`${API_BASE}${path}`, {
     headers,
+    credentials: 'include',
     ...options,
   })
 
@@ -71,7 +104,15 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const fallbackMessage = response.status === 403 ? '无权限访问用户管理' : `HTTP ${response.status}`
     const error = new ApiError(data?.error || data?.message || data?.details?.[0] || fallbackMessage, response.status, data)
-    if (response.status === 401) {
+    if (response.status === 401 && !options.skipRefresh) {
+      try {
+        await refreshAuthSession()
+        return request(path, { ...options, skipRefresh: true })
+      } catch {
+        clearAuthSession()
+        unauthorizedHandler?.(error)
+      }
+    } else if (response.status === 401) {
       clearAuthSession()
       unauthorizedHandler?.(error)
     }
@@ -90,6 +131,13 @@ export function login(username, password) {
 
 export function getCurrentUser() {
   return request('/auth/me')
+}
+
+export function changePassword(oldPassword, newPassword) {
+  return request('/auth/password', {
+    method: 'PUT',
+    body: JSON.stringify({ oldPassword, newPassword }),
+  })
 }
 
 export const loginAuth = (body) => login(body?.username || '', body?.password || '')
@@ -122,6 +170,107 @@ export function resetUserPassword(id, password) {
 
 export function disableUser(id) {
   return request(`/users/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function getRoles() {
+  return request('/roles')
+}
+
+export function createRole(payload) {
+  return request('/roles', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateRole(id, payload) {
+  return request(`/roles/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteRole(id) {
+  return request(`/roles/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function getPermissions() {
+  return request('/permissions')
+}
+
+function querySuffix(params = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value))
+  })
+  return query.toString() ? `?${query.toString()}` : ''
+}
+
+export function getMyPreferences() {
+  return request('/user-preferences/me')
+}
+
+export function updateMyPreferences(payload) {
+  return request('/user-preferences/me', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getUserTemplates(params = {}) {
+  return request(`/user-templates${querySuffix(params)}`)
+}
+
+export function createUserTemplate(payload) {
+  return request('/user-templates', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateUserTemplate(id, payload) {
+  return request(`/user-templates/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteUserTemplate(id) {
+  return request(`/user-templates/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function applyUserTemplate(id) {
+  return request(`/user-templates/${encodeURIComponent(id)}/apply`, {
+    method: 'POST',
+  })
+}
+
+export function getPromptSnippets(params = {}) {
+  return request(`/user-prompt-snippets${querySuffix(params)}`)
+}
+
+export function createPromptSnippet(payload) {
+  return request('/user-prompt-snippets', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updatePromptSnippet(id, payload) {
+  return request(`/user-prompt-snippets/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deletePromptSnippet(id) {
+  return request(`/user-prompt-snippets/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
 }
@@ -316,6 +465,23 @@ export function fetchReportProgress(jobId) {
 
 export function fetchReportResult(jobId) {
   return request(`/report-jobs/${jobId}/result`)
+}
+
+export function createReportEdit(jobId, payload) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/edits`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getReportEdits(jobId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/edits`)
+}
+
+export function applyReportEdit(jobId, editId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/edits/${encodeURIComponent(editId)}/apply`, {
+    method: 'POST',
+  })
 }
 
 export function fetchReportDatabaseSources(jobId) {

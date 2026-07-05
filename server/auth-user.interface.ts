@@ -6,10 +6,15 @@ export interface AuthUser {
   displayName: string;
   email: string | null;
   role: UserRole;
+  roles: string[];
+  permissions: string[];
 }
 
 export interface JwtAuthPayload {
   sub: string;
   username: string;
   role: UserRole;
+  roles?: string[];
+  permissions?: string[];
+  typ?: 'access' | 'refresh';
 }

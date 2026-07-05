@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
+import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface.js';
 import { AppModule } from './app.module.js';
 import {
   HEALTH_TIMEOUT_MS,
@@ -34,9 +35,38 @@ process.on('uncaughtException', (error) => {
   throw error;
 });
 
+export function buildCorsOptions(): CorsOptions {
+  const configuredOrigins = String(process.env.FRONTEND_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const isProduction = process.env.NODE_ENV === 'production';
+  const allowedOrigins = new Set([
+    ...configuredOrigins,
+    ...(isProduction ? [] : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000']),
+  ]);
+  if (isProduction && configuredOrigins.length === 0) {
+    console.warn('FRONTEND_ORIGINS is not configured in production; browser cross-origin requests will be rejected.');
+  }
+  return {
+    credentials: true,
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      if (allowedOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error('CORS origin is not allowed'));
+    },
+  };
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
-  app.enableCors();
+  app.enableCors(buildCorsOptions());
 
   const port = Number(process.env.PORT || 3001);
   await app.listen(port);
