@@ -54,9 +54,18 @@ const activeBrief = ref(null)
 const events = ref([])
 const historyItems = ref([])
 const showHistoryDrawer = ref(false)
+const settingsCollapsed = ref(false)
+const summaryExpanded = ref(false)
+const viewMode = ref('compact')
+const sortMode = ref('rank')
+const highRiskOnly = ref(false)
+const importFilter = ref('all')
+const expandedEventIds = ref(new Set())
+const importedEventIds = ref(new Set())
 
 const RECOVERY_POLL_ATTEMPTS = 6
 const RECOVERY_POLL_INTERVAL_MS = 1500
+const HIGH_RISK_SCORE = 80
 
 const isLoggedIn = computed(() => Boolean(props.currentUser))
 const canGenerate = computed(() => isLoggedIn.value && props.currentUser.role !== 'viewer')
@@ -76,8 +85,18 @@ const categoryStats = computed(() => {
   return [...counts.entries()].map(([category, count]) => ({ category, count }))
 })
 const visibleEvents = computed(() => {
-  if (!selectedCategory.value) return events.value
-  return events.value.filter((event) => event.category === selectedCategory.value)
+  let items = enrichedEvents.value
+  if (selectedCategory.value) items = items.filter((event) => event.category === selectedCategory.value)
+  if (highRiskOnly.value) items = items.filter((event) => Number(event.riskScore || 0) >= HIGH_RISK_SCORE)
+  if (importFilter.value === 'imported') items = items.filter((event) => event.imported)
+  if (importFilter.value === 'notImported') items = items.filter((event) => !event.imported)
+
+  return [...items].sort((a, b) => {
+    if (sortMode.value === 'importance') return Number(b.importanceScore || 0) - Number(a.importanceScore || 0)
+    if (sortMode.value === 'risk') return Number(b.riskScore || 0) - Number(a.riskScore || 0)
+    if (sortMode.value === 'time') return b.latestPublishedAtValue - a.latestPublishedAtValue
+    return Number(a.rankNo || 0) - Number(b.rankNo || 0)
+  })
 })
 const overview = computed(() => {
   const content = activeBrief.value?.contentJson || {}
@@ -94,6 +113,54 @@ const overview = computed(() => {
     diagnostics: generation.diagnostics || null,
   }
 })
+const enrichedEvents = computed(() => events.value.map((event) => normalizeEventForDisplay(event)))
+const summaryCards = computed(() => {
+  const content = activeBrief.value?.contentJson || {}
+  const summary = activeBrief.value?.summary || ''
+  const highRiskEvent = enrichedEvents.value.find((event) => Number(event.riskScore || 0) >= HIGH_RISK_SCORE) || enrichedEvents.value[0]
+  return {
+    overall: content.overallJudgement || splitSummary(summary)[0] || summary || '暂无总体判断。',
+    themes: normalizeThemeList(content.keyThemes || content.themes).length
+      ? normalizeThemeList(content.keyThemes || content.themes)
+      : categoryStats.value.slice(0, 4).map((item) => item.category),
+    risk: content.riskSummary || highRiskEvent?.riskToUs || highRiskEvent?.compactSummary || '暂无明确风险提示。',
+    rawSummary: summary,
+    shouldCollapse: String(summary || '').length > 180,
+  }
+})
+const displayedSummaryText = computed(() => {
+  const text = summaryCards.value.rawSummary || ''
+  if (summaryExpanded.value || text.length <= 180) return text
+  return `${text.slice(0, 180)}...`
+})
+const emptyState = computed(() => {
+  if (errorMessage.value) {
+    return {
+      title: '生成失败',
+      message: `原因：${errorMessage.value}`,
+      suggestion: '建议：扩大回溯小时、检查信源库、减少筛选条件。',
+    }
+  }
+  if (!isLoggedIn.value) {
+    return {
+      title: '请先登录',
+      message: '登录后可查看和生成每日动态感知内容。',
+      suggestion: '',
+    }
+  }
+  if (events.value.length && !visibleEvents.value.length) {
+    return {
+      title: '当前筛选下暂无事件',
+      message: '可切换分类、关闭高风险筛选，或调整导入状态筛选。',
+      suggestion: '',
+    }
+  }
+  return {
+    title: '未生成每日简报',
+    message: '请选择日期并点击“生成每日简报”。',
+    suggestion: '',
+  }
+})
 
 function toggleCategory(category) {
   if (filters.categories.includes(category)) {
@@ -101,6 +168,31 @@ function toggleCategory(category) {
   } else {
     filters.categories = [...filters.categories, category]
   }
+}
+
+function toggleSettings() {
+  settingsCollapsed.value = !settingsCollapsed.value
+}
+
+function toggleEventDetails(eventId) {
+  const next = new Set(expandedEventIds.value)
+  if (next.has(eventId)) next.delete(eventId)
+  else next.add(eventId)
+  expandedEventIds.value = next
+}
+
+function isEventExpanded(eventId) {
+  return expandedEventIds.value.has(eventId)
+}
+
+function isEventImported(eventId) {
+  return importedEventIds.value.has(eventId)
+}
+
+function markEventImported(eventId) {
+  const next = new Set(importedEventIds.value)
+  next.add(eventId)
+  importedEventIds.value = next
 }
 
 async function loadHistory() {
@@ -151,7 +243,7 @@ async function generateBrief() {
       lookbackHours: Number(filters.lookbackHours) || 24,
     })
     activeBrief.value = result?.brief || null
-    events.value = Array.isArray(result?.events) ? result.events : []
+    setEvents(Array.isArray(result?.events) ? result.events : [])
     noticeMessage.value = result?.brief?.usedFallback
       ? '当前日期无可用材料，已使用最近可用信源生成。'
       : '每日动态简报已生成。'
@@ -190,7 +282,7 @@ async function recoverGeneratedBrief(requestStartedAt) {
 async function openGeneratedBrief(briefId) {
   const result = await getDailyBrief(briefId)
   activeBrief.value = result?.brief || null
-  events.value = Array.isArray(result?.events?.items) ? result.events.items : Array.isArray(result?.events) ? result.events : []
+  setEvents(Array.isArray(result?.events?.items) ? result.events.items : Array.isArray(result?.events) ? result.events : [])
 }
 
 function isBriefCreatedAfterRequest(brief, requestStartedAt) {
@@ -221,7 +313,7 @@ async function openBrief(briefId) {
   try {
     const result = await getDailyBrief(briefId)
     activeBrief.value = result?.brief || null
-    events.value = Array.isArray(result?.events?.items) ? result.events.items : Array.isArray(result?.events) ? result.events : []
+    setEvents(Array.isArray(result?.events?.items) ? result.events.items : Array.isArray(result?.events) ? result.events : [])
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -240,6 +332,7 @@ async function importToDraft(event) {
   noticeMessage.value = ''
   try {
     const result = await importDailyEventToDraft(event.itemId)
+    markEventImported(event.itemId)
     noticeMessage.value = '已导入拟稿助手。'
     if (result?.eventId) emit('open-draft-event', { eventId: result.eventId })
   } catch (error) {
@@ -247,6 +340,52 @@ async function importToDraft(event) {
   } finally {
     importingItemId.value = ''
   }
+}
+
+function setEvents(nextEvents) {
+  events.value = nextEvents
+  expandedEventIds.value = new Set()
+}
+
+function normalizeEventForDisplay(event) {
+  const sources = Array.isArray(event.sourceInfo) ? event.sourceInfo : []
+  const sourceTitle = sources.find((source) => source?.title)?.title || ''
+  const candidateTitle = firstText([
+    event.displayTitle,
+    event.titleZh,
+    event.summaryTitle,
+    event.eventTitle,
+    event.title,
+  ])
+  const originalTitle = firstText([event.originalTitle, event.sourceTitle, sourceTitle])
+  const displayTitle = candidateTitle || originalTitle || '未命名事件'
+  const latestPublishedAtValue = Math.max(0, ...sources.map((source) => new Date(source?.publishedAt || '').getTime()).filter(Number.isFinite))
+  return {
+    ...event,
+    displayTitle,
+    originalTitle: originalTitle && originalTitle !== displayTitle ? originalTitle : '',
+    sourceCount: sources.length,
+    imported: isEventImported(event.itemId),
+    compactSummary: firstText([event.basicSituation, event.backgroundContext, event.importanceJudgement]).slice(0, 120),
+    latestPublishedAtValue,
+  }
+}
+
+function firstText(values) {
+  return values.map((value) => String(value || '').trim()).find(Boolean) || ''
+}
+
+function splitSummary(summary) {
+  return String(summary || '')
+    .split(/(?<=[。！？；])\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function normalizeThemeList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 6)
+  if (typeof value === 'string') return value.split(/[、,，;；\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 6)
+  return []
 }
 
 function formatTime(value) {
@@ -306,43 +445,59 @@ watch(() => props.currentUser?.id, () => {
     <section class="daily-layout">
       <aside class="daily-sidebar">
         <section class="daily-panel">
-          <div class="daily-panel-title">生成设置</div>
-          <label>
-            <span>日期</span>
-            <input v-model="filters.date" type="date" />
-          </label>
-          <label>
-            <span>最大条数</span>
-            <input v-model.number="filters.maxItems" type="number" min="1" max="50" />
-          </label>
-          <label>
-            <span>回溯小时</span>
-            <input v-model.number="filters.lookbackHours" type="number" min="1" max="168" />
-          </label>
-          <label>
-            <span>地区</span>
-            <input v-model="filters.region" placeholder="可选，例如：欧洲、美国" />
-          </label>
-          <label>
-            <span>关键词</span>
-            <input v-model="filters.keyword" placeholder="可选，按标题和正文过滤" />
-          </label>
-          <div class="daily-category-picker">
-            <span>分类范围</span>
-            <button
-              v-for="category in categoryOptions"
-              :key="category"
-              type="button"
-              :class="{ active: filters.categories.includes(category) }"
-              @click="toggleCategory(category)"
-            >
-              {{ category }}
+          <div class="daily-panel-head">
+            <div class="daily-panel-title">生成设置</div>
+            <button v-if="activeBrief" type="button" class="daily-panel-toggle" @click="toggleSettings">
+              {{ settingsCollapsed ? '展开设置' : '收起设置' }}
             </button>
           </div>
-          <button class="daily-primary-btn" type="button" :disabled="!canGenerate || loading" @click="generateBrief">
-            {{ loading ? '生成中...' : '生成每日简报' }}
-          </button>
-          <p v-if="permissionHint" class="daily-helper">{{ permissionHint }}</p>
+
+          <div v-if="settingsCollapsed" class="daily-settings-compact">
+            <p><span>当前日期</span><strong>{{ overview.date }}</strong></p>
+            <p><span>入选事件</span><strong>{{ overview.selected }}</strong></p>
+            <button class="daily-primary-btn compact" type="button" :disabled="!canGenerate || loading" @click="generateBrief">
+              {{ loading ? '生成中...' : '重新生成' }}
+            </button>
+          </div>
+
+          <template v-else>
+            <label>
+              <span>日期</span>
+              <input v-model="filters.date" type="date" />
+            </label>
+            <label>
+              <span>最大条数</span>
+              <input v-model.number="filters.maxItems" type="number" min="1" max="50" />
+            </label>
+            <label>
+              <span>回溯小时</span>
+              <input v-model.number="filters.lookbackHours" type="number" min="1" max="168" />
+            </label>
+            <label>
+              <span>地区</span>
+              <input v-model="filters.region" placeholder="可选，例如：欧洲、美国" />
+            </label>
+            <label>
+              <span>关键词</span>
+              <input v-model="filters.keyword" placeholder="可选，按标题和正文过滤" />
+            </label>
+            <div class="daily-category-picker">
+              <span>分类范围</span>
+              <button
+                v-for="category in categoryOptions"
+                :key="category"
+                type="button"
+                :class="{ active: filters.categories.includes(category) }"
+                @click="toggleCategory(category)"
+              >
+                {{ category }}
+              </button>
+            </div>
+            <button class="daily-primary-btn" type="button" :disabled="!canGenerate || loading" @click="generateBrief">
+              {{ loading ? '生成中...' : '生成每日简报' }}
+            </button>
+            <p v-if="permissionHint" class="daily-helper">{{ permissionHint }}</p>
+          </template>
         </section>
       </aside>
 
@@ -382,16 +537,66 @@ watch(() => props.currentUser?.id, () => {
         </section>
 
         <section v-if="activeBrief" class="daily-summary-card">
-          <div>
+          <div class="daily-summary-head">
             <div class="daily-card-kicker">简报摘要</div>
             <h2>{{ activeBrief.title }}</h2>
-            <p>{{ activeBrief.summary || '暂无摘要。' }}</p>
           </div>
           <small>生成时间：{{ formatTime(overview.createdAt) }}</small>
+          <div class="daily-summary-grid">
+            <article>
+              <span>今日总体判断</span>
+              <p>{{ summaryCards.overall }}</p>
+            </article>
+            <article>
+              <span>重点方向</span>
+              <div class="daily-theme-list">
+                <b v-for="theme in summaryCards.themes" :key="theme">{{ theme }}</b>
+                <b v-if="!summaryCards.themes.length">暂无分类</b>
+              </div>
+            </article>
+            <article>
+              <span>风险提示</span>
+              <p>{{ summaryCards.risk }}</p>
+            </article>
+          </div>
+          <div v-if="summaryCards.rawSummary" class="daily-summary-raw">
+            <p>{{ displayedSummaryText }}</p>
+            <button v-if="summaryCards.shouldCollapse" type="button" @click="summaryExpanded = !summaryExpanded">
+              {{ summaryExpanded ? '收起摘要' : '展开完整摘要' }}
+            </button>
+          </div>
         </section>
         <div v-if="overview.usedFallback" class="daily-message warning">
           {{ overview.fallbackReason || '当前日期无可用材料，已使用最近可用信源生成。' }}
         </div>
+
+        <section class="daily-workbench-toolbar">
+          <div class="daily-view-toggle" aria-label="事件视图切换">
+            <button type="button" :class="{ active: viewMode === 'compact' }" @click="viewMode = 'compact'">紧凑列表</button>
+            <button type="button" :class="{ active: viewMode === 'detail' }" @click="viewMode = 'detail'">卡片详情</button>
+          </div>
+          <label>
+            <span>排序</span>
+            <select v-model="sortMode">
+              <option value="rank">综合排序</option>
+              <option value="importance">重要性优先</option>
+              <option value="risk">涉我风险优先</option>
+              <option value="time">发布时间优先</option>
+            </select>
+          </label>
+          <label>
+            <span>导入状态</span>
+            <select v-model="importFilter">
+              <option value="all">全部</option>
+              <option value="imported">只看已导入</option>
+              <option value="notImported">只看未导入</option>
+            </select>
+          </label>
+          <label class="daily-risk-check">
+            <input v-model="highRiskOnly" type="checkbox" />
+            <span>只看高风险</span>
+          </label>
+        </section>
 
         <section class="daily-category-bar">
           <button type="button" :class="{ active: !selectedCategory }" @click="selectedCategory = ''">全部</button>
@@ -406,28 +611,44 @@ watch(() => props.currentUser?.id, () => {
           </button>
         </section>
 
-        <section class="daily-event-list">
-          <article v-for="event in visibleEvents" :key="event.itemId" class="daily-event-card">
+        <section class="daily-event-list" :class="{ compact: viewMode === 'compact' }">
+          <article
+            v-for="event in visibleEvents"
+            :key="event.itemId"
+            class="daily-event-card"
+            :class="{ compact: viewMode === 'compact' }"
+          >
             <div class="daily-event-head">
               <span class="daily-rank">#{{ event.rankNo }}</span>
               <div>
-                <h3>{{ event.eventTitle }}</h3>
+                <h3>{{ event.displayTitle }}</h3>
+                <small v-if="event.originalTitle" class="daily-original-title">原始标题：{{ event.originalTitle }}</small>
                 <div class="daily-event-meta">
-                  <span>{{ event.category || '其他' }}</span>
+                  <span>分类：{{ event.category || '其他' }}</span>
                   <span>重要性 {{ Number(event.importanceScore || 0).toFixed(0) }}</span>
                   <span>涉我风险 {{ Number(event.riskScore || 0).toFixed(0) }}</span>
+                  <span>来源 {{ event.sourceCount }}</span>
                 </div>
               </div>
               <button
                 type="button"
                 class="daily-import-btn"
-                :disabled="currentUser?.role === 'viewer' || importingItemId === event.itemId"
+                :disabled="currentUser?.role === 'viewer' || importingItemId === event.itemId || event.imported"
                 @click="importToDraft(event)"
               >
-                {{ importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}
+                {{ event.imported ? '已导入' : importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}
               </button>
             </div>
-            <div class="daily-event-grid">
+            <p v-if="viewMode === 'compact'" class="daily-compact-summary">{{ event.compactSummary || '暂无事件摘要。' }}</p>
+            <button
+              v-if="viewMode === 'compact'"
+              type="button"
+              class="daily-expand-btn"
+              @click="toggleEventDetails(event.itemId)"
+            >
+              {{ isEventExpanded(event.itemId) ? '收起详情' : '展开详情' }}
+            </button>
+            <div v-if="viewMode === 'detail' || isEventExpanded(event.itemId)" class="daily-event-grid">
               <section>
                 <h4>事件基本情况</h4>
                 <p>{{ event.basicSituation || '暂无。' }}</p>
@@ -445,7 +666,7 @@ watch(() => props.currentUser?.id, () => {
                 <p>{{ event.riskToUs || '暂无。' }}</p>
               </section>
             </div>
-            <div class="daily-sources">
+            <div v-if="viewMode === 'detail' || isEventExpanded(event.itemId)" class="daily-sources">
               <strong>来源信息</strong>
               <ul>
                 <li v-for="(source, index) in event.sourceInfo || []" :key="`${event.itemId}-${index}`">
@@ -459,7 +680,9 @@ watch(() => props.currentUser?.id, () => {
           </article>
 
           <div v-if="!loading && !visibleEvents.length" class="daily-empty large">
-            {{ isLoggedIn ? '暂无事件。请选择日期并生成每日简报。' : '请先登录后查看每日动态感知内容。' }}
+            <strong>{{ emptyState.title }}</strong>
+            <span>{{ emptyState.message }}</span>
+            <small v-if="emptyState.suggestion">{{ emptyState.suggestion }}</small>
           </div>
         </section>
       </section>
@@ -639,11 +862,55 @@ watch(() => props.currentUser?.id, () => {
   padding: 16px;
 }
 
-.daily-panel-title {
+.daily-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 12px;
+}
+
+.daily-panel-title {
   color: #1e3a8a;
   font-size: 14px;
   font-weight: 800;
+}
+
+.daily-panel-toggle {
+  border: 1px solid #dbe4f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #1d4ed8;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.daily-settings-compact {
+  display: grid;
+  gap: 10px;
+}
+
+.daily-settings-compact p {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.daily-settings-compact span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.daily-settings-compact strong {
+  color: #0f172a;
+  font-size: 14px;
 }
 
 .daily-panel label {
@@ -718,6 +985,10 @@ watch(() => props.currentUser?.id, () => {
   height: 42px;
 }
 
+.daily-primary-btn.compact {
+  height: 38px;
+}
+
 .daily-primary-btn:disabled,
 .daily-import-btn:disabled {
   cursor: not-allowed;
@@ -751,8 +1022,9 @@ watch(() => props.currentUser?.id, () => {
 
 .daily-message.warning {
   border: 1px solid #fde68a;
-  background: #fffbeb;
+  background: #fffdf2;
   color: #92400e;
+  padding: 9px 12px;
 }
 
 .daily-diagnostics {
@@ -820,10 +1092,14 @@ watch(() => props.currentUser?.id, () => {
 }
 
 .daily-summary-card {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 18px;
+  padding: 16px;
+}
+
+.daily-summary-head {
+  min-width: 0;
 }
 
 .daily-summary-card h2 {
@@ -840,6 +1116,137 @@ watch(() => props.currentUser?.id, () => {
 .daily-summary-card small {
   flex-shrink: 0;
   color: #64748b;
+}
+
+.daily-summary-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 1fr;
+  gap: 10px;
+}
+
+.daily-summary-grid article {
+  border: 1px solid #edf2f7;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 11px;
+}
+
+.daily-summary-grid span {
+  display: block;
+  margin-bottom: 6px;
+  color: #1e3a8a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.daily-summary-grid p {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.daily-theme-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.daily-theme-list b {
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.daily-summary-raw {
+  grid-column: 1 / -1;
+  border-top: 1px solid #edf2f7;
+  padding-top: 10px;
+}
+
+.daily-summary-raw p {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.daily-summary-raw button {
+  margin-top: 8px;
+  border: 0;
+  background: transparent;
+  color: #1d4ed8;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.daily-workbench-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+
+.daily-view-toggle {
+  display: inline-flex;
+  border: 1px solid #dbe4f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 3px;
+}
+
+.daily-view-toggle button,
+.daily-workbench-toolbar select {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #475569;
+  font-size: 12px;
+}
+
+.daily-view-toggle button {
+  padding: 7px 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.daily-view-toggle button.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.daily-workbench-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.daily-workbench-toolbar select {
+  min-height: 34px;
+  border: 1px solid #dbe4f0;
+  background: #ffffff;
+  padding: 0 9px;
+  outline: none;
+}
+
+.daily-risk-check {
+  border: 1px solid #dbe4f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 7px 10px;
 }
 
 .daily-category-bar {
@@ -859,18 +1266,26 @@ watch(() => props.currentUser?.id, () => {
 
 .daily-event-list {
   display: grid;
-  gap: 14px;
+  gap: 10px;
+}
+
+.daily-event-list.compact {
+  gap: 8px;
 }
 
 .daily-event-card {
-  padding: 16px;
+  padding: 14px;
+}
+
+.daily-event-card.compact {
+  padding: 11px 13px;
 }
 
 .daily-event-head {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
+  gap: 10px;
+  align-items: center;
 }
 
 .daily-rank {
@@ -886,15 +1301,28 @@ watch(() => props.currentUser?.id, () => {
 }
 
 .daily-event-head h3 {
-  margin: 0 0 8px;
-  font-size: 17px;
+  margin: 0 0 6px;
+  font-size: 16px;
   line-height: 1.45;
+}
+
+.daily-event-card.compact .daily-event-head h3 {
+  font-size: 14px;
+  line-height: 1.38;
+}
+
+.daily-original-title {
+  display: block;
+  margin: -2px 0 6px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .daily-event-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 
 .daily-event-meta span {
@@ -906,9 +1334,30 @@ watch(() => props.currentUser?.id, () => {
 }
 
 .daily-import-btn {
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: 32px;
+  padding: 0 10px;
   white-space: nowrap;
+  font-size: 12px;
+}
+
+.daily-compact-summary {
+  margin: 8px 0 0 52px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.daily-expand-btn {
+  justify-self: start;
+  margin: 8px 0 0 52px;
+  border: 1px solid #dbe4f0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1d4ed8;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .daily-event-grid {
@@ -971,11 +1420,23 @@ watch(() => props.currentUser?.id, () => {
 }
 
 .daily-empty.large {
+  display: grid;
+  gap: 6px;
   border: 1px dashed #cbd5e1;
   border-radius: 12px;
   background: #ffffff;
   padding: 42px;
   text-align: center;
+}
+
+.daily-empty.large strong {
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.daily-empty.large span,
+.daily-empty.large small {
+  color: #64748b;
 }
 
 .daily-history-overlay {
@@ -1155,12 +1616,18 @@ watch(() => props.currentUser?.id, () => {
   }
 
   .daily-overview,
+  .daily-summary-grid,
   .daily-event-grid {
     grid-template-columns: 1fr;
   }
 
   .daily-event-head {
     grid-template-columns: 1fr;
+  }
+
+  .daily-compact-summary,
+  .daily-expand-btn {
+    margin-left: 0;
   }
 
   .daily-summary-card {
