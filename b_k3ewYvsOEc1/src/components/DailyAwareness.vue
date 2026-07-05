@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   generateDailyBrief,
   getDailyBrief,
@@ -14,7 +14,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['back', 'open-draft-event', 'open-workspace'])
+const emit = defineEmits(['back', 'open-draft-event'])
 
 const categoryOptions = [
   '欧洲政治',
@@ -52,15 +52,6 @@ const selectedCategory = ref('')
 const activeBrief = ref(null)
 const events = ref([])
 const historyItems = ref([])
-const workspaceNavRef = ref(null)
-const workspaceNavOpen = ref(false)
-
-const workspaceItems = [
-  { key: 'report', title: 'AI智能体深度编报' },
-  { key: 'qa', title: 'QA问答' },
-  { key: 'daily', title: '每日动态感知' },
-]
-const activeWorkspaceItem = computed(() => workspaceItems.find((item) => item.key === 'daily'))
 
 const isLoggedIn = computed(() => Boolean(props.currentUser))
 const canGenerate = computed(() => isLoggedIn.value && props.currentUser.role !== 'viewer')
@@ -190,57 +181,8 @@ function formatTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-let workspaceNavCloseTimer = null
-
-function openWorkspaceNav() {
-  if (workspaceNavCloseTimer) {
-    clearTimeout(workspaceNavCloseTimer)
-    workspaceNavCloseTimer = null
-  }
-  workspaceNavOpen.value = true
-}
-
-function scheduleWorkspaceNavClose() {
-  if (workspaceNavCloseTimer) clearTimeout(workspaceNavCloseTimer)
-  workspaceNavCloseTimer = window.setTimeout(() => {
-    workspaceNavOpen.value = false
-    workspaceNavCloseTimer = null
-  }, 180)
-}
-
-function closeWorkspaceNav() {
-  if (workspaceNavCloseTimer) {
-    clearTimeout(workspaceNavCloseTimer)
-    workspaceNavCloseTimer = null
-  }
-  workspaceNavOpen.value = false
-}
-
-function toggleWorkspaceNav() {
-  if (workspaceNavOpen.value) closeWorkspaceNav()
-  else openWorkspaceNav()
-}
-
-function selectWorkspace(key) {
-  closeWorkspaceNav()
-  if (key === 'daily') return
-  emit('open-workspace', key)
-}
-
-function handleWorkspaceDocumentClick(event) {
-  if (!workspaceNavOpen.value) return
-  if (workspaceNavRef.value?.contains(event.target)) return
-  closeWorkspaceNav()
-}
-
 onMounted(() => {
-  document.addEventListener('mousedown', handleWorkspaceDocumentClick)
   void loadHistory()
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', handleWorkspaceDocumentClick)
-  closeWorkspaceNav()
 })
 
 watch(() => props.currentUser?.id, () => {
@@ -258,39 +200,6 @@ watch(() => props.currentUser?.id, () => {
         <div class="daily-eyebrow">DAILY AWARENESS</div>
         <h1>每日动态感知</h1>
         <p>基于现有信源库自动筛选每日重点事件，生成动态简报。</p>
-      </div>
-      <div
-        ref="workspaceNavRef"
-        class="workspace-quick-nav daily-workspace-nav"
-        :class="{ expanded: workspaceNavOpen }"
-        @mouseenter="openWorkspaceNav"
-        @mouseleave="scheduleWorkspaceNavClose"
-        @focusin="openWorkspaceNav"
-      >
-        <button
-          class="workspace-quick-trigger"
-          type="button"
-          :aria-expanded="workspaceNavOpen"
-          aria-controls="daily-workspace-quick-options"
-          @click.stop="toggleWorkspaceNav"
-        >
-          <span>当前模块：{{ activeWorkspaceItem.title }}</span>
-          <span class="workspace-quick-chevron">▾</span>
-        </button>
-        <div id="daily-workspace-quick-options" class="workspace-quick-options" role="tablist" aria-label="快捷入口">
-          <button
-            v-for="item in workspaceItems"
-            :key="item.key"
-            class="workspace-quick-option"
-            :class="{ active: item.key === 'daily' }"
-            type="button"
-            role="tab"
-            :aria-selected="item.key === 'daily'"
-            @click.stop="selectWorkspace(item.key)"
-          >
-            {{ item.title }}
-          </button>
-        </div>
       </div>
     </header>
 

@@ -184,8 +184,6 @@ const sourceCurrentPage = ref(1)
 const expandedSourceListId = ref('')
 const sourceListNotice = ref('')
 const activeResultTab = ref('report')
-const workspaceNavRef = ref(null)
-const workspaceNavOpen = ref(false)
 const homeMode = computed({
   get: () => props.homeMode || 'report',
   set: (value) => emit('update:homeMode', value === 'qa' ? 'qa' : 'report'),
@@ -629,34 +627,6 @@ const planningSelectionView = computed(() => {
     totalDirections: modules.reduce((sum, module) => sum + module.directions.length, 0),
   }
 })
-const featureCards = [
-  {
-    key: 'report',
-    title: 'AI智能体深度编报',
-    icon: '▤',
-    desc: '围绕专题任务完成信源检索、研判分析和正式编报。',
-    tags: ['深度调研', '多维分析', '智能编报'],
-    action: '开始深度编报',
-  },
-  {
-    key: 'qa',
-    title: 'QA问答',
-    icon: '⌕',
-    desc: '基于知识库和数据库资料进行检索问答、背景查询和资料核验。',
-    tags: ['知识问答', '信源检索', '可追溯回答'],
-    action: '开始问答',
-  },
-  {
-    key: 'daily',
-    title: '每日动态感知',
-    icon: '◫',
-    desc: '从现有信源库中筛选每日重点事件，自动分类并形成每日简报。',
-    tags: ['每日简报', '事件聚合', '风险评分'],
-    action: '进入动态感知',
-  },
-]
-const activeWorkspaceCard = computed(() => featureCards.find((card) => card.key === homeMode.value) || featureCards[0])
-
 const reportTypeOptions = [
   {
     value: 'write-hb-k',
@@ -922,56 +892,17 @@ function toggleFocusDirection(direction) {
 function selectHomeMode(mode) {
   if (mode === 'daily') {
     emit('open-daily-awareness')
-    closeWorkspaceNav()
     return
   }
   homeMode.value = mode
   qaImportNotice.value = ''
   qaValidationError.value = ''
-  closeWorkspaceNav()
   if (mode === 'report') ensureReportDefaults()
   scrollToTop()
   nextTick(() => {
     if (mode === 'qa') qaInputRef.value?.focus({ preventScroll: true })
     if (mode === 'report') titleInputRef.value?.focus({ preventScroll: true })
   })
-}
-
-let workspaceNavCloseTimer = null
-
-function openWorkspaceNav() {
-  if (workspaceNavCloseTimer) {
-    clearTimeout(workspaceNavCloseTimer)
-    workspaceNavCloseTimer = null
-  }
-  workspaceNavOpen.value = true
-}
-
-function scheduleWorkspaceNavClose() {
-  if (workspaceNavCloseTimer) clearTimeout(workspaceNavCloseTimer)
-  workspaceNavCloseTimer = window.setTimeout(() => {
-    workspaceNavOpen.value = false
-    workspaceNavCloseTimer = null
-  }, 180)
-}
-
-function closeWorkspaceNav() {
-  if (workspaceNavCloseTimer) {
-    clearTimeout(workspaceNavCloseTimer)
-    workspaceNavCloseTimer = null
-  }
-  workspaceNavOpen.value = false
-}
-
-function toggleWorkspaceNav() {
-  if (workspaceNavOpen.value) closeWorkspaceNav()
-  else openWorkspaceNav()
-}
-
-function handleWorkspaceDocumentClick(event) {
-  if (!workspaceNavOpen.value) return
-  if (workspaceNavRef.value?.contains(event.target)) return
-  closeWorkspaceNav()
 }
 
 function qaSessionSnapshot(status = qaStatus.value) {
@@ -3541,7 +3472,6 @@ onMounted(() => {
   ensureReportDefaults()
   window.addEventListener('scroll', handleQaPageScroll, { passive: true })
   window.addEventListener('keydown', handleQaGuideKeydown)
-  document.addEventListener('mousedown', handleWorkspaceDocumentClick)
   nextTick(() => {
     reportRef.value?.addEventListener('scroll', handleQaPageScroll, { passive: true })
   })
@@ -3557,9 +3487,7 @@ watch(() => props.phase, (phase) => {
 onBeforeUnmount(() => {
   window.removeEventListener('scroll', handleQaPageScroll)
   window.removeEventListener('keydown', handleQaGuideKeydown)
-  document.removeEventListener('mousedown', handleWorkspaceDocumentClick)
   reportRef.value?.removeEventListener('scroll', handleQaPageScroll)
-  closeWorkspaceNav()
   closeAllQaStreams()
 })
 
@@ -4203,40 +4131,6 @@ function exportPdf() {
     <div ref="reportRef" class="main-scroll flex-1 overflow-auto px-8 py-7">
       <div v-if="phase === 'idle'" class="min-h-full flex items-start justify-center py-10">
         <section class="main-content home-dual-mode w-full" :class="{ 'qa-main-content': homeMode === 'qa' }">
-          <div
-            ref="workspaceNavRef"
-            class="workspace-quick-nav"
-            :class="{ expanded: workspaceNavOpen }"
-            @mouseenter="openWorkspaceNav"
-            @mouseleave="scheduleWorkspaceNavClose"
-            @focusin="openWorkspaceNav"
-          >
-            <button
-              class="workspace-quick-trigger"
-              type="button"
-              :aria-expanded="workspaceNavOpen"
-              aria-controls="workspace-quick-options"
-              @click.stop="toggleWorkspaceNav"
-            >
-              <span>当前模块：{{ activeWorkspaceCard.title }}</span>
-              <span class="workspace-quick-chevron">▾</span>
-            </button>
-            <div id="workspace-quick-options" class="workspace-quick-options" role="tablist" aria-label="快捷入口">
-              <button
-                v-for="card in featureCards"
-                :key="card.key"
-                class="workspace-quick-option"
-                :class="{ active: homeMode === card.key }"
-                type="button"
-                role="tab"
-                :aria-selected="homeMode === card.key"
-                @click.stop="selectHomeMode(card.key)"
-              >
-                {{ card.title }}
-              </button>
-            </div>
-          </div>
-
           <div v-if="homeMode === 'report'" class="input-panel mx-auto text-left p-5 md:p-6">
             <div v-if="qaImportNotice" class="qa-import-notice mb-4">{{ qaImportNotice }}</div>
             <div class="input-title-shell p-5 md:p-6">

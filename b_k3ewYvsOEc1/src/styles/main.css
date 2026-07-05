@@ -841,6 +841,7 @@ canvas {
   height: var(--header-height);
   flex-shrink: 0;
   gap: 16px;
+  position: relative;
   background: rgba(255, 255, 255, 0.84) !important;
   backdrop-filter: blur(16px);
   border-bottom: 1px solid rgba(148, 163, 184, 0.22) !important;
@@ -887,8 +888,15 @@ canvas {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   min-width: 280px;
   max-width: 560px;
+  width: max-content;
+  z-index: 40;
+  pointer-events: none;
 }
 
 .header-workspace-nav {
@@ -896,7 +904,8 @@ canvas {
   margin: 0;
   border-radius: 999px;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-  z-index: 35;
+  z-index: 45;
+  pointer-events: auto;
 }
 
 .header-workspace-nav .workspace-quick-trigger,
@@ -1997,11 +2006,6 @@ canvas {
   background: #2563eb;
   color: #ffffff;
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.18);
-}
-
-.daily-workspace-nav {
-  margin: 0 0 0 auto;
-  flex-shrink: 0;
 }
 
 .workspace-mode-tabs-wrap {
@@ -6347,8 +6351,8 @@ canvas {
   }
 
   .header-center {
-    margin-inline: 10px !important;
     min-width: 220px;
+    max-width: min(520px, calc(100vw - 420px));
   }
 
   .topbar {
@@ -6439,11 +6443,15 @@ canvas {
   }
 
   .header-center {
+    position: static;
+    transform: none;
     order: 3;
     flex-basis: 100%;
+    width: 100%;
     max-width: none;
     min-width: 0;
     margin: 6px 0 0 !important;
+    pointer-events: auto;
   }
 
   .header-workspace-nav {
@@ -7174,11 +7182,6 @@ body {
   .workspace-quick-option {
     width: 100%;
     justify-content: center;
-  }
-
-  .daily-workspace-nav {
-    width: 100%;
-    margin: 10px 0 0;
   }
 
   .task-stage-flow,

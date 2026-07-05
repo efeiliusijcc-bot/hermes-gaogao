@@ -217,15 +217,6 @@ function openDraftFromDaily(payload) {
   showDraftAssistant.value = true
 }
 
-function openWorkspaceFromDaily(mode) {
-  showDailyAwareness.value = false
-  showUserManagement.value = false
-  showPersonalSettings.value = false
-  showDraftAssistant.value = false
-  homeMode.value = mode === 'qa' ? 'qa' : 'report'
-  if (homeMode.value === 'report') selectedQaSessionId.value = ''
-}
-
 function requestDraftLogin() {
   setAuthNotice('请先登录')
 }
@@ -494,7 +485,6 @@ function jobActionLabel(status) {
       :current-user="authUser"
       @back="returnHome"
       @open-draft-event="openDraftFromDaily"
-      @open-workspace="openWorkspaceFromDaily"
     />
 
     <main v-else-if="showUserManagement" class="user-management-main">

@@ -493,7 +493,7 @@ watch(() => props.authError, (error) => {
       </span>
     </div>
 
-    <div class="header-center flex-1 mx-8">
+    <div class="header-center">
       <div
         ref="workspaceNavRef"
         class="workspace-quick-nav header-workspace-nav"
