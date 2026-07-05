@@ -2538,25 +2538,32 @@ function firstPositiveCount(...values) {
   return null
 }
 
+function firstAvailableCount(...values) {
+  for (const value of values) {
+    const number = Number(value)
+    if (Number.isFinite(number) && number >= 0) return number
+  }
+  return null
+}
+
 function loadedSourceCountFor(group) {
   if (activeSourceType.value === group) {
-    return firstPositiveCount(sourceListTotal.value, sourceListItems.value.length)
+    if (sourceListLoading.value && sourceListTotal.value === null && !sourceListItems.value.length) return null
+    return firstAvailableCount(sourceListTotal.value, sourceListItems.value.length)
   }
-  return firstPositiveCount(sourceListItems.value.filter((item) => item.sourceGroup === group).length)
+  return null
 }
 
 const sourceOverviewStats = computed(() => {
   const summary = sourceListSummary.value || {}
-  const databaseRecall = firstPositiveCount(
+  const databaseRecall = firstAvailableCount(
     summary.databaseRecallCount,
     loadedSourceCountFor('database_recall'),
     normalizedSources.value.length,
   )
-  const toolSearch = firstPositiveCount(
+  const toolSearch = firstAvailableCount(
     summary.toolSearchCount,
     loadedSourceCountFor('tool_search'),
-    localSourcePool('tool_search').length,
-    reportCitationNumbers.value.length,
   )
   const structuredSources = firstPositiveCount(summary.structuredSourceCount, normalizedSources.value.length)
   const reportCitations = firstPositiveCount(summary.reportReferenceCount, reportCitationNumbers.value.length)
@@ -3115,13 +3122,13 @@ const currentSourceEmptyDesc = computed(() => {
   return activeSourceConfig.value.emptyDesc || '当前报告没有该类型的信源记录，您可以切换其他类型查看。'
 })
 
-function resetSourceListState() {
+function resetSourceListState({ preserveSummary = false } = {}) {
   sourceListRequestId += 1
   sourceListItems.value = []
   sourceListPage.value = 1
   sourceListTotal.value = null
   sourceListHasMore.value = false
-  sourceListSummary.value = null
+  if (!preserveSummary) sourceListSummary.value = null
   sourceCurrentPage.value = 1
   sourceListError.value = ''
   sourceListNotice.value = ''
@@ -3216,7 +3223,7 @@ async function loadMoreSourceRows() {
 }
 
 function reloadSourceRows() {
-  resetSourceListState()
+  resetSourceListState({ preserveSummary: true })
   scrollSourceListToTop()
   loadSourceListPage(1)
 }
@@ -3244,7 +3251,7 @@ function handleSourceFiltersChanged() {
 function selectSourceType(type) {
   if (!props.job?.jobId) return
   activeSourceType.value = type
-  resetSourceListState()
+  resetSourceListState({ preserveSummary: true })
   scrollSourceListToTop()
   loadSourceListPage(1)
 }
