@@ -10,6 +10,7 @@ function sameMembers(actual: string[], expected: string[]) {
 }
 
 sameMembers(modulesFromPermissions(['report:create', 'chat:read', 'daily_awareness:read']), ['report', 'qa', 'daily']);
+sameMembers(modulesFromPermissions(['crawler:delete']), []);
 sameMembers(deriveUserModules({ modules: ['report', 'draft'], permissions: ['chat:read'] }), ['report', 'draft']);
 sameMembers(deriveUserModules({ permissions: ['chat:execute', 'draft_assistant:create'] }), ['qa', 'draft']);
 sameMembers(deriveUserModules({ role: 'admin', roles: ['admin'], modules: [], permissions: [] }), ['report', 'qa', 'draft', 'daily']);

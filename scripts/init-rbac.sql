@@ -71,26 +71,48 @@ VALUES
 ON CONFLICT (resource, action) DO UPDATE
 SET description = EXCLUDED.description;
 
-WITH admin_permissions AS (
-  SELECT r.id AS role_id, p.id AS permission_id
-  FROM roles r
-  CROSS JOIN permissions p
-  WHERE r.name = 'admin'
-)
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT role_id, permission_id
-FROM admin_permissions
-ON CONFLICT DO NOTHING;
+DELETE FROM role_permissions rp
+USING roles r
+WHERE rp.role_id = r.id
+  AND r.name = 'admin';
 
-WITH operator_permissions(permission_key) AS (
+WITH business_permissions(permission_key) AS (
   VALUES
     ('report:create'),
     ('report:read'),
     ('report:update'),
     ('chat:execute'),
     ('chat:read'),
-    ('research_key:read'),
-    ('vector_source:read'),
+    ('draft_assistant:create'),
+    ('draft_assistant:read'),
+    ('draft_assistant:update'),
+    ('daily_awareness:create'),
+    ('daily_awareness:read'),
+    ('daily_awareness:import'),
+    ('preference:read'),
+    ('preference:update'),
+    ('template:create'),
+    ('template:read'),
+    ('template:update'),
+    ('template:delete'),
+    ('crawler:create'),
+    ('crawler:execute'),
+    ('crawler:read')
+)
+DELETE FROM role_permissions rp
+USING roles r, permissions p
+WHERE rp.role_id = r.id
+  AND rp.permission_id = p.id
+  AND r.name IN ('operator', 'viewer')
+  AND concat(p.resource, ':', p.action) NOT IN (SELECT permission_key FROM business_permissions);
+
+WITH admin_permissions(permission_key) AS (
+  VALUES
+    ('report:create'),
+    ('report:read'),
+    ('report:update'),
+    ('chat:execute'),
+    ('chat:read'),
     ('draft_assistant:create'),
     ('draft_assistant:read'),
     ('draft_assistant:update'),
@@ -106,7 +128,46 @@ WITH operator_permissions(permission_key) AS (
     ('crawler:create'),
     ('crawler:execute'),
     ('crawler:read'),
-    ('crawler:delete')
+    ('user:manage'),
+    ('role:manage'),
+    ('research_key:update'),
+    ('vector_source:update'),
+    ('report:delete')
+),
+resolved AS (
+  SELECT r.id AS role_id, p.id AS permission_id
+  FROM roles r
+  JOIN admin_permissions ap ON true
+  JOIN permissions p ON concat(p.resource, ':', p.action) = ap.permission_key
+  WHERE r.name = 'admin'
+)
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT role_id, permission_id
+FROM resolved
+ON CONFLICT DO NOTHING;
+
+WITH operator_permissions(permission_key) AS (
+  VALUES
+    ('report:create'),
+    ('report:read'),
+    ('report:update'),
+    ('chat:execute'),
+    ('chat:read'),
+    ('draft_assistant:create'),
+    ('draft_assistant:read'),
+    ('draft_assistant:update'),
+    ('daily_awareness:create'),
+    ('daily_awareness:read'),
+    ('daily_awareness:import'),
+    ('preference:read'),
+    ('preference:update'),
+    ('template:create'),
+    ('template:read'),
+    ('template:update'),
+    ('template:delete'),
+    ('crawler:create'),
+    ('crawler:execute'),
+    ('crawler:read')
 ),
 resolved AS (
   SELECT r.id AS role_id, p.id AS permission_id
@@ -114,6 +175,11 @@ resolved AS (
   JOIN operator_permissions op ON true
   JOIN permissions p ON concat(p.resource, ':', p.action) = op.permission_key
   WHERE r.name = 'operator'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM role_permissions existing
+      WHERE existing.role_id = r.id
+    )
 )
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT role_id, permission_id
@@ -122,22 +188,9 @@ ON CONFLICT DO NOTHING;
 
 WITH viewer_permissions(permission_key) AS (
   VALUES
-    ('report:read'),
     ('chat:execute'),
     ('chat:read'),
-    ('research_key:read'),
-    ('vector_source:read'),
-    ('draft_assistant:create'),
-    ('draft_assistant:read'),
-    ('draft_assistant:update'),
-    ('daily_awareness:read'),
-    ('preference:read'),
-    ('preference:update'),
-    ('template:create'),
-    ('template:read'),
-    ('template:update'),
-    ('template:delete'),
-    ('crawler:read')
+    ('daily_awareness:read')
 ),
 resolved AS (
   SELECT r.id AS role_id, p.id AS permission_id
@@ -145,6 +198,11 @@ resolved AS (
   JOIN viewer_permissions vp ON true
   JOIN permissions p ON concat(p.resource, ':', p.action) = vp.permission_key
   WHERE r.name = 'viewer'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM role_permissions existing
+      WHERE existing.role_id = r.id
+    )
 )
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT role_id, permission_id

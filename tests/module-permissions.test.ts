@@ -18,8 +18,15 @@ function testPermissionModuleMappings() {
   assert.ok(reportPermissions.includes('crawler:execute'));
   assert.ok(reportPermissions.includes('template:update'));
   assert.ok(reportPermissions.includes('preference:update'));
+  assert.ok(!reportPermissions.includes('crawler:delete'));
   assert.ok(!reportPermissions.includes('report:delete'));
   assert.ok(!reportPermissions.includes('user:manage'));
+
+  const draftPermissions = permissionsFromModules(['draft']);
+  sameMembers(draftPermissions, ['draft_assistant:create', 'draft_assistant:read', 'draft_assistant:update']);
+
+  const dailyPermissions = permissionsFromModules(['daily']);
+  sameMembers(dailyPermissions, ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import']);
 
   sameMembers(modulesFromPermissions(['report:read']), ['report']);
   sameMembers(modulesFromPermissions(['chat:execute']), ['qa']);
@@ -80,11 +87,24 @@ async function testRolesServiceAcceptsModulesAndProtectsAdmin() {
   assert.ok(created.permissions.includes('chat:execute'));
   assert.ok(!created.permissions.includes('report:delete'));
 
+  const legacyCreated = await service.createRole({
+    name: 'legacy',
+    description: '旧接口兼容',
+    permissions: ['chat:read', 'user:manage', 'role:manage', 'report:delete'],
+  });
+  sameMembers(legacyCreated.permissions, ['chat:read']);
+  sameMembers(legacyCreated.modules, ['qa']);
+
   const updatedAdmin = await service.updateRole('role-admin', { modules: ['report'] });
+  sameMembers(updatedAdmin.modules, ['report', 'qa', 'draft', 'daily']);
   assert.ok(updatedAdmin.permissions.includes('user:manage'));
   assert.ok(updatedAdmin.permissions.includes('role:manage'));
   assert.ok(updatedAdmin.permissions.includes('report:delete'));
   assert.ok(updatedAdmin.permissions.includes('report:create'));
+  assert.ok(updatedAdmin.permissions.includes('chat:execute'));
+  assert.ok(updatedAdmin.permissions.includes('draft_assistant:create'));
+  assert.ok(updatedAdmin.permissions.includes('daily_awareness:create'));
+  assert.ok(!updatedAdmin.permissions.includes('crawler:delete'));
 }
 
 async function testUsersAndAuthExposeModules() {

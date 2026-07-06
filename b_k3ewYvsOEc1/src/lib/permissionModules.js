@@ -16,7 +16,6 @@ const MODULE_PERMISSION_HINTS = {
     'crawler:create',
     'crawler:read',
     'crawler:execute',
-    'crawler:delete',
     'template:create',
     'template:read',
     'template:update',

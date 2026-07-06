@@ -1,6 +1,14 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import { createAuthPool, type PgPool } from './auth-database.js';
-import { modulesFromPermissions, normalizeModules, permissionsFromModules, SYSTEM_ADMIN_PERMISSIONS, uniqueStrings, type PermissionModule } from './permission-modules.js';
+import {
+  BUSINESS_MODULE_PERMISSIONS,
+  modulesFromPermissions,
+  normalizeModules,
+  permissionsFromModules,
+  SYSTEM_ADMIN_PERMISSIONS,
+  uniqueStrings,
+  type PermissionModule,
+} from './permission-modules.js';
 
 export interface PermissionResponse {
   resource: string;
@@ -71,7 +79,7 @@ export class RolesService implements OnModuleDestroy {
   async createRole(input: CreateRoleInput): Promise<RoleResponse> {
     const name = this.normalizeRoleName(input.name);
     const description = this.normalizeDescription(input.description);
-    const permissions = this.permissionsFromInput(input);
+    const permissions = this.businessPermissionsFromInput(input);
     const pool = await this.getPool();
 
     try {
@@ -110,10 +118,10 @@ export class RolesService implements OnModuleDestroy {
       const nextDescription = Object.prototype.hasOwnProperty.call(input, 'description')
         ? this.normalizeDescription(input.description)
         : String(existing.description || '');
-      const permissions = this.protectAdminPermissions(
+      const permissions = this.protectRolePermissions(
         String(existing.name),
         Object.prototype.hasOwnProperty.call(input, 'modules') || Object.prototype.hasOwnProperty.call(input, 'permissions')
-          ? this.permissionsFromInput(input)
+          ? this.businessPermissionsFromInput(input)
           : await this.getRolePermissions(roleId),
       );
       const permissionRows = await this.resolvePermissionRows(permissions);
@@ -223,14 +231,18 @@ export class RolesService implements OnModuleDestroy {
 
   private toRoleResponse(row: Record<string, unknown>): RoleResponse {
     const rawPermissions = Array.isArray(row.permissions) ? row.permissions : [];
+    const roleName = String(row.name || '');
     const permissions = rawPermissions.map((permission) => String(permission)).filter(Boolean);
+    const effectivePermissions = roleName === 'admin' && !permissions.length
+      ? uniqueStrings([...BUSINESS_MODULE_PERMISSIONS, ...SYSTEM_ADMIN_PERMISSIONS])
+      : permissions;
     return {
       id: String(row.id || ''),
-      name: String(row.name || ''),
+      name: roleName,
       description: String(row.description || ''),
       isSystem: row.is_system === true || String(row.is_system).toLowerCase() === 'true',
-      modules: modulesFromPermissions(permissions),
-      permissions,
+      modules: modulesFromPermissions(effectivePermissions),
+      permissions: effectivePermissions,
     };
   }
 
@@ -264,16 +276,23 @@ export class RolesService implements OnModuleDestroy {
     return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)));
   }
 
-  private permissionsFromInput(input: { modules?: unknown; permissions?: unknown }): string[] {
+  private businessPermissionsFromInput(input: { modules?: unknown; permissions?: unknown }): string[] {
     if (Object.prototype.hasOwnProperty.call(input, 'modules')) {
       return permissionsFromModules(normalizeModules(input.modules));
     }
-    return this.normalizePermissions(input.permissions);
+    return this.filterBusinessPermissions(this.normalizePermissions(input.permissions));
   }
 
-  private protectAdminPermissions(roleName: string, permissions: string[]): string[] {
-    if (roleName !== 'admin') return permissions;
-    return uniqueStrings([...permissions, ...SYSTEM_ADMIN_PERMISSIONS]);
+  private protectRolePermissions(roleName: string, permissions: string[]): string[] {
+    if (roleName === 'admin') {
+      return uniqueStrings([...BUSINESS_MODULE_PERMISSIONS, ...SYSTEM_ADMIN_PERMISSIONS]);
+    }
+    return this.filterBusinessPermissions(permissions);
+  }
+
+  private filterBusinessPermissions(permissions: string[]): string[] {
+    const allowed = new Set(BUSINESS_MODULE_PERMISSIONS);
+    return permissions.filter((permission) => allowed.has(permission));
   }
 
   private normalizeId(id: string): string {

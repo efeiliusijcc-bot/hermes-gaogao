@@ -382,7 +382,7 @@ async function confirmDeleteRole(role) {
       <div>
         <div class="user-management__eyebrow">ACCESS CONTROL</div>
         <h1>用户与角色管理</h1>
-        <p>管理系统账号、角色、权限点和启用状态。</p>
+        <p>管理系统账号、角色、功能模块和启用状态。</p>
       </div>
       <div class="user-management__actions">
         <button class="sci-btn" type="button" @click="emit('back')">返回工作台</button>

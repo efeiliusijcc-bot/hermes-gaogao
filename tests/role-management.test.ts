@@ -97,7 +97,13 @@ async function testRolesServiceCrud() {
         return { rows: [{ resource: 'report', action: 'read', description: '读取编报' }] };
       }
       if (text.includes('SELECT id, resource, action') && text.includes('FROM permissions')) {
-        return { rows: [{ id: 'perm-report-read', resource: 'report', action: 'read' }] };
+        const permissions = (params?.[0] || []) as string[];
+        return {
+          rows: permissions.map((permission) => {
+            const [resource, action] = permission.split(':');
+            return { id: `perm-${permission}`, resource, action };
+          }),
+        };
       }
       if (text.includes('INSERT INTO roles')) {
         return { rows: [{ id: 'role-editor', name: params?.[0], description: params?.[1], is_system: false }] };
@@ -108,8 +114,14 @@ async function testRolesServiceCrud() {
       if (text.includes('SELECT id, name, description, is_system') && params?.[0] === 'role-editor') {
         return { rows: [{ id: 'role-editor', name: 'editor', description: '编报编辑员', is_system: false }] };
       }
+      if (text.includes('SELECT id, name, description, is_system') && params?.[0] === 'role-bound') {
+        return { rows: [{ id: 'role-bound', name: 'bound', description: '已绑定角色', is_system: false }] };
+      }
       if (text.includes('SELECT 1 FROM user_roles') && params?.[0] === 'role-editor') {
         return { rows: [] };
+      }
+      if (text.includes('SELECT 1 FROM user_roles') && params?.[0] === 'role-bound') {
+        return { rows: [{ '?column?': 1 }] };
       }
       if (text.includes('UPDATE roles')) {
         return { rows: [{ id: params?.[2], name: params?.[0], description: params?.[1], is_system: false }] };
@@ -124,16 +136,27 @@ async function testRolesServiceCrud() {
   const permissions = await service.listPermissions();
   assert.deepEqual(permissions, [{ resource: 'report', action: 'read', permission: 'report:read', description: '读取编报' }]);
 
-  const created = await service.createRole({ name: 'editor', description: '编报编辑员', permissions: ['report:read'] });
+  const created = await service.createRole({ name: 'editor', description: '编报编辑员', modules: ['report', 'qa'] });
   assert.equal(created.name, 'editor');
-  assert.deepEqual(created.permissions, ['report:read']);
+  assert.ok(created.permissions.includes('report:create'));
+  assert.ok(created.permissions.includes('chat:execute'));
+  assert.ok(!created.permissions.includes('report:delete'));
   assert.ok(queries.some((query) => query.text === 'BEGIN'));
   assert.ok(queries.some((query) => query.text.includes('INSERT INTO role_permissions')));
 
-  const updated = await service.updateRole('role-editor', { description: '新的描述', permissions: ['report:read'] });
+  const legacy = await service.createRole({
+    name: 'legacy',
+    description: '旧接口',
+    permissions: ['chat:read', 'user:manage', 'role:manage', 'report:delete'],
+  });
+  assert.deepEqual(legacy.permissions, ['chat:read']);
+
+  const updated = await service.updateRole('role-editor', { description: '新的描述', modules: ['daily'] });
   assert.equal(updated.description, '新的描述');
+  assert.deepEqual(updated.permissions.sort(), ['daily_awareness:create', 'daily_awareness:import', 'daily_awareness:read'].sort());
 
   await assert.rejects(() => service.deleteRole('role-system'), /System roles cannot be deleted/);
+  await assert.rejects(() => service.deleteRole('role-bound'), /仍有用户使用/);
   const deleted = await service.deleteRole('role-editor');
   assert.deepEqual(deleted, { id: 'role-editor', deleted: true });
 }
