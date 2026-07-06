@@ -5,6 +5,8 @@ import { AuthService } from './auth.service.js';
 import { AuditLogService } from './audit-log.service.js';
 import { ChatController } from './chat.controller.js';
 import { ChatService } from './chat.service.js';
+import { CrawlerController, InternalCrawlerController } from './crawler.controller.js';
+import { CrawlerService } from './crawler.service.js';
 import { DailyAwarenessController } from './daily-awareness.controller.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
 import { DraftAssistantController } from './draft-assistant.controller.js';
@@ -41,6 +43,8 @@ import { VectorSourceService } from './vector-source.service.js';
     ReportPlansController,
     ResearchKeysController,
     VectorSourcesController,
+    CrawlerController,
+    InternalCrawlerController,
     ChatController,
     DailyAwarenessController,
     DraftAssistantController,
@@ -61,6 +65,7 @@ import { VectorSourceService } from './vector-source.service.js';
     ReportsService,
     ResearchKeysService,
     VectorSourceService,
+    CrawlerService,
     ChatService,
     DailyAwarenessService,
     DraftAssistantService,

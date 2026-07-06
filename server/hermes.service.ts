@@ -1030,6 +1030,7 @@ export class HermesService {
     );
     const selectedSearchQueries = this.normalizeStringArray(parsedContext?.selectedSearchQueries);
     const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
+    const crawlerPlan = this.normalizeCrawlerPlan(parsedContext?.crawlerPlan);
     const parameterValues =
       parsedContext?.parameterValues && typeof parsedContext.parameterValues === 'object' && !Array.isArray(parsedContext.parameterValues)
         ? parsedContext.parameterValues
@@ -1056,6 +1057,11 @@ export class HermesService {
       userProvidedSources,
       databaseSourceOptions,
       databaseQueryIntent,
+      crawlerPlan,
+      crawlerSourceContext: {
+        tasks: [],
+        items: [],
+      },
       selectedModules,
       parameterValues,
       supplement,
@@ -1279,6 +1285,42 @@ export class HermesService {
       .slice(0, 20);
   }
 
+  private normalizeCrawlerPlan(value: unknown): Record<string, unknown> {
+    const plan = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const enabled = plan.enabled === true;
+    const mode = ['auto', 'manual', 'hybrid'].includes(String(plan.mode)) ? String(plan.mode) : 'hybrid';
+    const directions = Array.isArray(plan.directions)
+      ? plan.directions
+          .map((item) => {
+            const direction = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {};
+            return {
+              name: this.sanitizeText(String(direction.name || ''), 120),
+              enabled: direction.enabled !== false,
+              description: this.sanitizeText(String(direction.description || ''), 300),
+              queries: this.normalizeStringArray(direction.queries, 12),
+              targetDomains: this.normalizeStringArray(direction.targetDomains, 12),
+            };
+          })
+          .filter((item) => item.name || item.queries.length || item.targetDomains.length)
+          .slice(0, 12)
+      : [];
+    return {
+      enabled,
+      mode,
+      goal: this.sanitizeText(String(plan.goal || ''), 300),
+      autoGapFilling: plan.autoGapFilling !== false,
+      directions,
+      manualUrls: this.normalizeStringArray(plan.manualUrls, 50),
+      manualDomains: this.normalizeStringArray(plan.manualDomains, 50),
+      manualKeywords: this.normalizeStringArray(plan.manualKeywords, 50),
+      maxPages: Math.max(1, Math.min(50, Number(plan.maxPages || 10) || 10)),
+      maxDepth: Math.max(0, Math.min(2, Number(plan.maxDepth ?? 1) || 0)),
+      lookbackHours: plan.lookbackHours == null ? null : Math.max(1, Math.min(720, Number(plan.lookbackHours) || 24)),
+      language: this.sanitizeText(String(plan.language || 'zh-CN'), 20),
+      executePhase: 'research',
+    };
+  }
+
   private getSkillRequirements(input: RunInput): string[] {
     if (input.skill !== 'write-hb') return [];
 
@@ -1288,6 +1330,8 @@ export class HermesService {
     const knownContext = typeof input.payload.known_context === 'string' ? input.payload.known_context : '';
     const parsedContext = this.parseJsonObject(knownContext);
     const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
+    const crawlerPlan = this.normalizeCrawlerPlan(parsedContext?.crawlerPlan);
+    const crawlerEnabled = crawlerPlan.enabled === true;
     const databaseSourceRequirements = databaseSourceOptions.enabled
       ? [
           `18. databaseSourceOptions.enabled=true 时，Research Phase 必须先读取 context.json.databaseQueryIntent 分词词包，再在公开检索前调用 MCP 工具 pg-sources__query 检索 PostgreSQL 向量信源库；配置为 summary_first、storageMode=${databaseSourceOptions.storageMode}、sourceTable=public.${databaseSourceOptions.sourceTable}、lookbackDays=${databaseSourceOptions.lookbackDays}、maxMetadataRows=${databaseSourceOptions.maxMetadataRows}、maxContentRows=${databaseSourceOptions.maxContentRows}。`,
@@ -1317,6 +1361,15 @@ export class HermesService {
       `8. Research Phase 必须执行完整 K/HB 全量流水线：先写入 reports/${jobId}/context.json；如启用数据库信源，再完成 pg-sources__query PG 向量库预召回并保存 database/database_query_plan.json、database/database_sources.json（仅在 PG 空结果/失败且已记录 fallback reason 后才可用 mysql-test__mysql_query 兜底）；随后必须调用 ${HERMES_CONTAINER_REPORT_DIR.replace(/\/reports$/, '')}/skills/web-research-firecrawl/scripts/harness_cli.py plan 生成 plan.json 和 groups/group_A.json 等分组文件；再启动 research-${jobIdShort}-{X} 调研子任务，由子任务调用 harness_cli.py run 产出 research/research_{X}.json；最后合并为 research/consolidated.json 后才能进入撰稿。`,
       '9. Research Phase 禁止把 research_cli.py brief 作为 K/HB 主调研路径；research_cli.py brief 只允许在 harness_cli.py plan/run 已失败且已记录 firecrawl_fallback_reason 时作为异常补充。PG 向量信源不能替代 Tavily、Exa、Firecrawl 三件套，不能减少 harness_cli.py run、research_*.json 或 consolidated.json 的生成要求。',
       '10. Research Phase 输出必须形成完整内部素材包：context.json、plan.json、至少一个 groups/group_*.json、至少一个 research/research_*.json、research/consolidated.json、sources、evidence_cards、key_findings、verification_needed 和信息缺口；consolidated.json 或 research_*.json 中必须能看到 Tavily、Exa、Firecrawl 调研记录，除非三件套不可用且已记录明确 fallback reason。',
+      crawlerEnabled
+        ? '10a. source-collection-agent: context.json.crawlerPlan.enabled=true 时，在 PG 向量召回后、公开检索分组前，必须启动 Research Phase 子任务 source-collection-agent。该子任务只读取 crawlerPlan、report_plan、database_sources 信息缺口，生成受控采集请求，并通过 controlled-web-collector skill 调用 NestJS 内部接口 crawler.create_task、crawler.run_task、crawler.get_items；严禁让模型自由执行 Python、shell、登录、验证码绕过、付费墙抓取或内网访问。'
+        : '10a. context.json.crawlerPlan.enabled 不是 true 时，不得调用 controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items；继续使用 PG 向量召回和公开检索流水线。',
+      crawlerEnabled
+        ? '10b. controlled-web-collector skill 只允许访问 NestJS /api/internal/crawler/*，必须携带 x-internal-skill-token；采集结果必须写入 context.json.crawlerSourceContext={tasks:[],items:[]}，每个 item 包含 title、url、publisher、publishedAt、fetchedAt、contentSummary、contentText、sourceType="crawler"、relevanceScore、credibilityScore。crawlerSourceContext 只能补充公开信源，不能覆盖 database_sources、report_plan、userPreferenceContext 或 draftAssistantContext。'
+        : '10b. context.json.crawlerSourceContext 保持 {tasks:[],items:[]}，不得伪造资料采集结果。',
+      '10c. 用户可见进度日志中，把 PG/vector 召回称为“数据库检索工具”，把 Tavily/Exa/Firecrawl 称为“互联网搜索工具”，把 controlled-web-collector 称为“资料采集工具”，如确有本地脚本则称为“本地脚本工具”；不要出现 OpenClaw 字样。',
+      '10d. Synthesis Phase 必须把 context.json.crawlerSourceContext 作为补充材料参与综合：数据库信源优先，资料采集信源作为补充；如资料采集信源与数据库信源冲突，标注“待核实”；不得编造来源。',
+      '10e. 引用资料采集信源时，必须在内部证据和文末参考资料中尽量保留 URL / publisher / fetchedAt；各方态度必须尽量标注主体、时间、媒体和来源。',
       '11. Write-HB Phase：只在 Research Phase 完成后，基于前置研究结果和用户 selectedModules，按 sectionTitle 对应的 K报/HB报一级章节逐章撰写；每章重点展开 selectedDirections，未选方向不得强行作为正文重点。',
       '11a. K报篇幅是硬约束：最终 Markdown 目标约 9000-11000 个中文字符，按 A4 常规排版约 10 页；最低不得低于 8500 个中文字符。不得通过新增一级章节、堆砌参考资料或重复空话凑篇幅，只能通过增加事实密度、分析层次、风险链条、对策可操作性和信息缺口说明扩写。低于 8500 中文字符必须视为不合格并重新扩写，禁止交付短稿。',
       `12. 必须把完整成稿 Markdown 写入 ${HERMES_CONTAINER_REPORT_DIR} 下的 .md 文件；不要只在对话中输出正文。`,

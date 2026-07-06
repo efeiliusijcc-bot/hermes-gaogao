@@ -141,6 +141,7 @@ export function useReportJobs() {
   const planSearchSelections = ref([])
   const planSourceInput = ref('')
   const planSupplement = ref('')
+  const crawlerPlan = ref(createDefaultCrawlerPlan())
   const databaseSourceEnabled = ref(true)
   const useMyPreferences = ref(false)
   const planError = ref('')
@@ -986,6 +987,7 @@ export function useReportJobs() {
     planSearchSelections.value = []
     planSourceInput.value = ''
     planSupplement.value = ''
+    crawlerPlan.value = createDefaultCrawlerPlan()
     databaseSourceEnabled.value = true
     planError.value = ''
   }
@@ -1211,6 +1213,11 @@ export function useReportJobs() {
       .split(/\r?\n|；|;/)
       .map((item) => item.trim())
       .filter(Boolean)
+    const normalizedCrawlerPlan = normalizeCrawlerPlan(crawlerPlan.value, {
+      topic: title.value.trim(),
+      selectedQueries,
+      userProvidedSources,
+    })
 
     const context = {
       version: 1,
@@ -1230,18 +1237,118 @@ export function useReportJobs() {
         storageMode: 'pgvector_single_table',
         sourceTable: vectorSourceStatus.value?.sourceTable || 'vector_materials_qwen3',
       },
+      crawlerPlan: normalizedCrawlerPlan,
       selectedModules,
       parameterValues: selectedParameterValues,
       freeTextContext: contextText.value.trim(),
       supplement: planSupplement.value.trim(),
       instructions: {
-        researchPhase: 'Use PostgreSQL pgvector source recall first when databaseSourceOptions.enabled is true, then use web-research-firecrawl for selected queries, selected source scopes, and user-provided sources. Return evidence cards, key findings, verification-needed items, and information gaps as internal material.',
+        researchPhase: 'Use PostgreSQL pgvector source recall first when databaseSourceOptions.enabled is true, then execute crawlerPlan in Research Phase when crawlerPlan.enabled is true. Use crawlerPlan only as source collection constraints and gap-filling clues; do not override report_plan, databaseSourceOptions, userPreferenceContext, or draftAssistantContext. Return evidence cards, key findings, verification-needed items, and information gaps as internal material.',
         writeHbPhase: 'Use write-hb after research to draft the final report by sectionTitle. Expand only the selectedDirections under each selected report section.',
         citationPolicy: 'Do not put raw URLs in report body paragraphs; keep full URLs only in the final references section.',
       },
     }
 
     return JSON.stringify(context, null, 2)
+  }
+
+  function createDefaultCrawlerPlan(topic = '') {
+    const subject = String(topic || title.value || '').trim()
+    const queryPrefix = subject || '本次编报主题'
+    return {
+      enabled: false,
+      mode: 'hybrid',
+      goal: subject ? `补充${subject}相关公开资料` : '补充本次编报相关公开资料',
+      autoGapFilling: true,
+      directions: [
+        {
+          name: '官方政策与公告',
+          enabled: true,
+          description: '补充政府公告、监管文件和官方表态。',
+          queries: [`${queryPrefix} 官方 公告 政策 监管`],
+          targetDomains: [],
+        },
+        {
+          name: '主流媒体报道',
+          enabled: true,
+          description: '补充权威媒体报道、事实进展和时间线。',
+          queries: [`${queryPrefix} 主流媒体 报道 时间线`],
+          targetDomains: [],
+        },
+        {
+          name: '行业组织与专家分析',
+          enabled: true,
+          description: '补充行业组织、智库和专家对影响路径的分析。',
+          queries: [`${queryPrefix} 行业组织 专家 分析`],
+          targetDomains: [],
+        },
+        {
+          name: '企业与主体动态',
+          enabled: true,
+          description: '补充相关企业、机构或关键主体的公开动态。',
+          queries: [`${queryPrefix} 企业 主体 动态`],
+          targetDomains: [],
+        },
+        {
+          name: '社交舆情与争议点',
+          enabled: false,
+          description: '补充公开舆情、争议点和传播风险线索。',
+          queries: [`${queryPrefix} 舆情 争议 风险`],
+          targetDomains: [],
+        },
+      ],
+      manualUrls: [],
+      manualDomains: [],
+      manualKeywords: [],
+      maxPages: 10,
+      maxDepth: 1,
+      lookbackHours: '',
+      language: 'zh-CN',
+      executePhase: 'research',
+    }
+  }
+
+  function normalizeStringList(value, limit = 50) {
+    const raw = Array.isArray(value) ? value : String(value || '').split(/\r?\n|；|;|,|，/)
+    return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, limit)
+  }
+
+  function normalizeCrawlerDirections(value) {
+    const fallback = createDefaultCrawlerPlan().directions
+    const list = Array.isArray(value) && value.length ? value : fallback
+    return list
+      .map((direction, index) => ({
+        name: String(direction?.name || fallback[index]?.name || `采集方向 ${index + 1}`).trim(),
+        enabled: direction?.enabled !== false,
+        description: String(direction?.description || '').trim(),
+        queries: normalizeStringList(direction?.queries, 12),
+        targetDomains: normalizeStringList(direction?.targetDomains, 12),
+      }))
+      .filter((direction) => direction.name)
+      .slice(0, 12)
+  }
+
+  function normalizeCrawlerPlan(value, context = {}) {
+    const base = createDefaultCrawlerPlan(context.topic)
+    const plan = value && typeof value === 'object' ? value : {}
+    const maxPages = Number(plan.maxPages)
+    const maxDepth = Number(plan.maxDepth)
+    const lookbackHours = Number(plan.lookbackHours)
+    return {
+      enabled: plan.enabled === true,
+      mode: ['auto', 'manual', 'hybrid'].includes(plan.mode) ? plan.mode : 'hybrid',
+      goal: String(plan.goal || base.goal).trim(),
+      autoGapFilling: plan.autoGapFilling !== false,
+      directions: normalizeCrawlerDirections(plan.directions),
+      manualUrls: normalizeStringList(plan.manualUrls),
+      manualDomains: normalizeStringList(plan.manualDomains),
+      manualKeywords: normalizeStringList(plan.manualKeywords || context.selectedQueries),
+      maxPages: Number.isFinite(maxPages) ? Math.max(1, Math.min(50, Math.floor(maxPages))) : 10,
+      maxDepth: Number.isFinite(maxDepth) ? Math.max(0, Math.min(3, Math.floor(maxDepth))) : 1,
+      lookbackHours: Number.isFinite(lookbackHours) && lookbackHours > 0 ? Math.max(1, Math.min(720, Math.floor(lookbackHours))) : null,
+      language: String(plan.language || 'zh-CN').trim() || 'zh-CN',
+      executePhase: 'research',
+    }
   }
 
   function buildPlanningFocusAreas(extraContext = '') {
@@ -1423,6 +1530,7 @@ export function useReportJobs() {
         .map((option) => option.id)
     }
     planSelections.value = selections
+    crawlerPlan.value = createDefaultCrawlerPlan(title.value.trim())
   }
 
   function togglePlanOption(stepId, optionId) {
@@ -1923,6 +2031,7 @@ export function useReportJobs() {
     planSearchSelections,
     planSourceInput,
     planSupplement,
+    crawlerPlan,
     databaseSourceEnabled,
     useMyPreferences,
     planError,

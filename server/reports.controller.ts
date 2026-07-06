@@ -81,6 +81,18 @@ export class ReportsController {
     return this.reports.applyReportEdit(jobId, user, editId);
   }
 
+  @Get(':jobId/quality-review')
+  @RequirePermissions('report:read')
+  getQualityReview(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    return this.reports.getQualityReview(jobId, user);
+  }
+
+  @Post(':jobId/quality-review/run')
+  @RequirePermissions('report:read')
+  runQualityReview(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    return this.reports.runQualityReview(jobId, user);
+  }
+
   @Post(':jobId/restore')
   async restore(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const job = await this.reports.restoreJob(jobId, user);

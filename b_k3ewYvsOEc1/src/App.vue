@@ -31,6 +31,7 @@ const {
   planSearchSelections,
   planSourceInput,
   planSupplement,
+  crawlerPlan,
   databaseSourceEnabled,
   useMyPreferences,
   databaseSources,
@@ -543,6 +544,7 @@ function jobActionLabel(status) {
         :planSearchSelections="planSearchSelections"
         v-model:planSourceInput="planSourceInput"
         v-model:planSupplement="planSupplement"
+        v-model:crawlerPlan="crawlerPlan"
         v-model:databaseSourceEnabled="databaseSourceEnabled"
         v-model:useMyPreferences="useMyPreferences"
         :planError="planError"

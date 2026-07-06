@@ -484,6 +484,16 @@ export function applyReportEdit(jobId, editId) {
   })
 }
 
+export function getReportQualityReview(jobId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/quality-review`)
+}
+
+export function runReportQualityReview(jobId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/quality-review/run`, {
+    method: 'POST',
+  })
+}
+
 export function fetchReportDatabaseSources(jobId) {
   return request(`/report-jobs/${jobId}/database-sources`)
 }

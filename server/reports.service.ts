@@ -4,6 +4,8 @@ import OpenAI from 'openai';
 import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { HERMES_RUN_MODE, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL, REPORT_AGENT_PROVIDER } from './config.js';
+import { CrawlerService } from './crawler.service.js';
+import type { CrawlerItemResponse, CrawlerTaskResponse } from './crawler.types.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
@@ -47,6 +49,31 @@ interface ReportEditResponse {
   editMode: string;
   modelUsed: string | null;
   status: string;
+  createdAt: string;
+}
+
+interface ReportQualityReviewResponse {
+  reviewId: string;
+  jobId: string;
+  ownerId: string | null;
+  status: string;
+  overallScore: number | null;
+  wordCount: number | null;
+  scores: {
+    factualClarity: number | null;
+    planAlignment: number | null;
+    sourceQuality: number | null;
+    attitudeTraceability: number | null;
+    riskReasoning: number | null;
+    writingQuality: number | null;
+  };
+  summary: string;
+  checks: unknown[];
+  issues: unknown[];
+  recommendedEdits: unknown[];
+  sourceUsage: Record<string, unknown>;
+  reviewJson: Record<string, unknown>;
+  errorMessage: string | null;
   createdAt: string;
 }
 
@@ -103,16 +130,18 @@ interface DatabaseSourcesResponse {
   vectorPlan?: VectorQueryPlanSummary;
 }
 
-type ReportSourceListType = 'all' | 'database_recall' | 'tool_search' | 'report_refs' | 'structured_sources' | 'candidate_hits' | 'extract_failed';
-type ReportSourceOrigin = 'database_recall' | 'tool_search';
-type ReportEvidenceKind = 'report_reference' | 'structured_source' | 'research_source' | 'evidence_card';
-type ReportSourceEngine = 'exa' | 'firecrawl' | 'tavily' | 'tavily_extract' | 'pg_vector' | 'database';
+type ReportSourceListType = 'all' | 'database_recall' | 'crawler' | 'tool_search' | 'report_refs' | 'structured_sources' | 'candidate_hits' | 'extract_failed';
+type ReportSourceOrigin = 'database_recall' | 'crawler' | 'tool_search';
+type ReportEvidenceKind = 'report_reference' | 'structured_source' | 'research_source' | 'evidence_card' | 'crawler_source';
+type ReportSourceEngine = 'exa' | 'firecrawl' | 'tavily' | 'tavily_extract' | 'pg_vector' | 'database' | 'crawler';
 
 const PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'>> = [
   { key: 'plan', title: '任务规划', desc: '整理编报要求、确定信源范围并拆解调研任务' },
-  { key: 'research', title: '资料采集', desc: '采集公开资料并提取关键事实' },
+  { key: 'database', title: '数据库检索', desc: '优先召回 PG 向量库和数据库信源' },
+  { key: 'research', title: '资料采集', desc: '按规划补充公开信源并提取关键事实' },
   { key: 'consolidate', title: '素材整合', desc: '汇总信源、证据和分析要点' },
   { key: 'report', title: '报告撰写', desc: '撰写报告正文并完成校验' },
+  { key: 'quality', title: '成稿自检', desc: '检查主题一致性、信源依据、风险推理和写作质量' },
 ];
 
 interface ReportSourcesOptions {
@@ -157,6 +186,7 @@ interface ReportSourcesResponse {
 
 interface ReportSourceSummary {
   databaseRecallCount: number;
+  crawlerCount: number;
   toolSearchCount: number;
   reportReferenceCount: number;
   structuredSourceCount: number;
@@ -186,6 +216,7 @@ export class ReportsService implements OnModuleDestroy {
     private readonly remoteFs: RemoteFileService,
     private readonly vectorSources: VectorSourceService,
     @Optional() @Inject(UserPreferencesService) private readonly userPreferences?: UserPreferencesService,
+    @Optional() @Inject(CrawlerService) private readonly crawler?: CrawlerService,
   ) {
     this.jobsReady = this.loadPersistedJobs();
   }
@@ -430,6 +461,55 @@ export class ReportsService implements OnModuleDestroy {
       message: '请先复制 editedText 手动替换，避免误改报告文件。',
       editId,
     });
+  }
+
+  async getQualityReview(jobId: string, user: AuthUser): Promise<ReportQualityReviewResponse | null> {
+    await this.jobsReady;
+    const job = this.assertCanAccessJob(jobId, user);
+    const dbReview = await this.readLatestQualityReviewFromDb(job.jobId);
+    if (dbReview) return dbReview;
+    const artifactReview = await this.readQualityReviewArtifact(job);
+    return artifactReview ? this.toQualityReview(artifactReview, job) : null;
+  }
+
+  async runQualityReview(jobId: string, user: AuthUser): Promise<ReportQualityReviewResponse> {
+    await this.jobsReady;
+    const job = this.assertCanAccessJob(jobId, user);
+    return this.runQualityReviewForJob(job);
+  }
+
+  async runQualityReviewForJob(job: JobRecord): Promise<ReportQualityReviewResponse> {
+    this.pushEvent(job, { type: 'stage', stage: 'quality_review', message: '成稿自检：开始检查报告质量。' });
+    try {
+      const markdown = await this.readFinalMarkdownForQualityReview(job);
+      if (!markdown.trim()) throw new Error('报告正文为空，无法完成成稿自检。');
+      const context = await this.collectQualityReviewContext(job);
+      const reviewJson = this.buildQualityReviewJson(job, markdown, context);
+      const saved = await this.saveQualityReview(job, reviewJson, 'completed', null);
+      await this.writeQualityReviewArtifact(job, saved.reviewJson);
+      this.pushEvent(job, { type: 'stage', stage: 'quality_review_done', message: `成稿自检：完成，综合评分 ${saved.overallScore ?? 0}。` });
+      return saved;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedJson = this.buildFailedQualityReviewJson(message);
+      const saved = await this.saveQualityReview(job, failedJson, 'failed', message);
+      await this.writeQualityReviewArtifact(job, saved.reviewJson).catch(() => undefined);
+      this.pushEvent(job, { type: 'stage', stage: 'quality_review_failed', message: `成稿自检失败，可稍后重试。${this.sanitizeUserVisibleText(message, 180)}` });
+      return saved;
+    }
+  }
+
+  buildReportEditPayloadFromQualityIssue(issue: Record<string, unknown>): Record<string, unknown> {
+    const targetText = String(issue.targetText || issue.evidence || '').trim();
+    const suggestion = String(issue.suggestion || issue.problem || '').trim();
+    const section = String(issue.section || '').trim();
+    return {
+      targetType: 'selected_text',
+      targetPath: section ? `quality-review:${section}` : 'quality-review',
+      originalText: targetText,
+      instruction: suggestion || '请根据成稿自检建议进行局部修改，补充依据并保持表述审慎。',
+      editMode: /来源|媒体|时间|主体|source/i.test(suggestion) ? 'add_sources' : 'polish',
+    };
   }
 
   async getJobWithRecoveredReport(jobId: string, user: AuthUser): Promise<JobRecord | undefined> {
@@ -788,6 +868,7 @@ export class ReportsService implements OnModuleDestroy {
 
     if (job.status === 'succeeded') {
       for (const stage of PROGRESS_STAGE_DEFS) {
+        if (stage.key === 'quality' && !job.artifacts?.qualityReview && !job.artifacts?.qualityReviewPath) continue;
         addEvidence(stage.key, 'done', {
           source: stage.key === 'report' ? 'report_file' : 'job_status',
           message: stage.key === 'report' ? '最终报告已确认生成。' : '任务已成功完成。',
@@ -830,7 +911,8 @@ export class ReportsService implements OnModuleDestroy {
 
     if (/waiting_final_report|gateway_fallback|hermes:|^start$|^running$|received/.test(entry.phase || '')) return null;
     if (/context_preparing|context\.json|preparing hermes/.test(haystack)) return { key: 'plan', status };
-    if (/pg向量|pg-sources|pg_sources|vector_sources|database_sources|database_query_plan|数据库信源|信源检索/.test(haystack)) return { key: 'research', status };
+    if (/资料采集工具|controlled-web-collector|crawler\.|crawler_source|crawlersourcecontext/.test(haystack)) return { key: 'research', status };
+    if (/pg向量|pg-sources|pg_sources|vector_sources|database_sources|database_query_plan|数据库信源|数据库检索|信源检索/.test(haystack)) return { key: 'database', status };
     if (/research_planning|harness_cli\.py\s+plan|plan\.json|调研计划/.test(haystack)) return { key: 'plan', status };
     if (/synthesis_dispatch|synthesis_waiting/.test(entry.phase || '')) {
       return { key: 'consolidate', status: status === 'failed' ? 'failed' : 'running' };
@@ -840,6 +922,7 @@ export class ReportsService implements OnModuleDestroy {
     if (/synthesis_writing|validate_report\.py|report_verifying|校验报告|\breport_file_recovered\b|report generation completed|report_file:\s*\/|report_file：\s*\//.test(haystack)) {
       return { key: 'report', status: status === 'failed' ? 'failed' : 'running' };
     }
+    if (/quality_review|成稿自检|quality_review\.json/.test(haystack)) return { key: 'quality', status };
     return null;
   }
 
@@ -864,9 +947,10 @@ export class ReportsService implements OnModuleDestroy {
     };
 
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'context.json'), '任务上下文文件已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
+    await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
+    await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
+    await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
+    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'crawler', 'crawler_sources.json'), '资料采集信源文件已生成。');
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'plan.json'), '调研计划文件已生成。');
     try {
       const groupEntries = await this.remoteFs.readdir(this.remoteFs.joinPath(jobDir, 'groups'));
@@ -886,6 +970,7 @@ export class ReportsService implements OnModuleDestroy {
     }
     await addIfExists('consolidate', this.remoteFs.joinPath(jobDir, 'research', 'consolidated.json'), '综合素材文件已生成。');
     await addIfExists('report', this.remoteFs.joinPath(jobDir, 'final', 'report.md'), '最终报告文件已生成。');
+    await addIfExists('quality', this.remoteFs.joinPath(jobDir, 'quality', 'quality_review.json'), '成稿自检结果已生成。');
     if (job.resultPath) await addIfExists('report', job.resultPath, '最终报告文件已登记。');
     return result;
   }
@@ -916,9 +1001,10 @@ export class ReportsService implements OnModuleDestroy {
     };
 
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'context.json'), '任务上下文文件已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
+    await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
+    await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
+    await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
+    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'crawler', 'crawler_sources.json'), '资料采集信源文件已生成。');
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'plan.json'), '调研计划文件已生成。');
     try {
       const groupEntries = await this.remoteFs.readdir(this.remoteFs.joinPath(jobDir, 'groups'));
@@ -945,6 +1031,7 @@ export class ReportsService implements OnModuleDestroy {
         'done',
       );
     }
+    await addIfExists('quality', this.remoteFs.joinPath(jobDir, 'quality', 'quality_review.json'), '成稿自检结果已生成。');
     if (job.resultPath) await addIfExists('report', job.resultPath, '最终报告文件已登记。');
     return result;
   }
@@ -1162,9 +1249,10 @@ export class ReportsService implements OnModuleDestroy {
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 10), 100);
 
-    const [reportRefs, structuredSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
+    const [reportRefs, structuredSources, crawlerSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
       this.reportReferenceSources(job),
       this.structuredReportSources(job),
+      this.crawlerReportSources(job),
       this.toolSearchSources(job),
       type === 'candidate_hits' ? this.candidateHitSources(job) : Promise.resolve({ items: [], total: 0, detailSaved: false }),
       type === 'extract_failed' ? this.extractFailedSources(job) : Promise.resolve([]),
@@ -1174,6 +1262,7 @@ export class ReportsService implements OnModuleDestroy {
     const toolSearch = this.toolSearchChannelSources(toolSearchSources, reportRefs, databaseRecall);
     const summary: ReportSourceSummary = {
       databaseRecallCount: databaseRecall.length,
+      crawlerCount: crawlerSources.length,
       toolSearchCount: toolSearch.length,
       reportReferenceCount: reportRefs.length,
       structuredSourceCount: structuredSources.length,
@@ -1181,13 +1270,14 @@ export class ReportsService implements OnModuleDestroy {
 
     const groups: Record<Exclude<ReportSourceListType, 'all'>, ReportSourceListItem[]> = {
       database_recall: databaseRecall,
+      crawler: crawlerSources,
       tool_search: toolSearch,
       report_refs: reportRefs,
       structured_sources: structuredSources,
       candidate_hits: candidateResult.items,
       extract_failed: extractFailed,
     };
-    const allItems = type === 'all' ? [...databaseRecall, ...toolSearch] : groups[type] || [];
+    const allItems = type === 'all' ? [...databaseRecall, ...crawlerSources, ...toolSearch] : groups[type] || [];
     const total = type === 'candidate_hits'
       ? (candidateResult.total || allItems.length)
       : allItems.length;
@@ -1275,6 +1365,156 @@ export class ReportsService implements OnModuleDestroy {
 
     payload.known_context = JSON.stringify(enrichedContext, null, 2);
     return payload;
+  }
+
+  private async enrichPayloadWithCrawlerSources(job: JobRecord, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (job.skill !== 'write-hb') return payload;
+    const context = this.contextObjectFromPayload(payload);
+    const crawlerPlan = this.plainObject(context.crawlerPlan);
+    const enabled = crawlerPlan.enabled === true || String(crawlerPlan.enabled || '').toLowerCase() === 'true';
+    if (!enabled) {
+      const nextContext = {
+        ...context,
+        crawlerPlan: {
+          ...crawlerPlan,
+          enabled: false,
+          mode: String(crawlerPlan.mode || 'hybrid'),
+          executePhase: 'research',
+        },
+        crawlerSourceContext: this.normalizeCrawlerSourceContext(context.crawlerSourceContext),
+      };
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'crawler_skipped',
+        message: '资料采集工具：跳过，crawlerPlan.enabled=false',
+      });
+      await this.writeCrawlerContextArtifact(job, nextContext);
+      return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
+    }
+
+    if (!this.crawler) {
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'crawler_unavailable',
+        message: '资料采集工具：跳过，后端采集模块不可用',
+      });
+      return payload;
+    }
+
+    try {
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'crawler_create',
+        message: '资料采集工具：已创建采集任务',
+      });
+      const task = await this.crawler.createTask({
+        jobId: job.jobId,
+        ownerId: job.ownerUserId || '',
+        ownerUsername: job.ownerUsername || '',
+        title: String(payload.topic || payload.title || '资料采集任务'),
+        goal: String(crawlerPlan.goal || context.topic || payload.topic || ''),
+        crawlerPlan,
+        maxPages: crawlerPlan.maxPages,
+        maxDepth: crawlerPlan.maxDepth,
+      });
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'crawler_run',
+        message: '资料采集工具：执行采集任务',
+      });
+      const result = await this.crawler.runTask(task.taskId);
+      const crawlerSourceContext = this.buildCrawlerSourceContext(result.task, result.items);
+      const nextContext = {
+        ...context,
+        crawlerPlan,
+        crawlerSourceContext,
+      };
+      job.artifacts = {
+        ...job.artifacts,
+        crawlerSourceContext,
+        crawlerTaskIds: crawlerSourceContext.tasks.map((item) => item.taskId),
+        crawlerItemCount: crawlerSourceContext.items.length,
+      };
+      await this.writeCrawlerContextArtifact(job, nextContext);
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'crawler_completed',
+        message: `资料采集工具：采集完成，获得 ${crawlerSourceContext.items.length} 条来源`,
+      });
+      this.pushEvent(job, {
+        type: 'sources',
+        sources: crawlerSourceContext.items.map((item) => ({
+          ...item,
+          sourceGroup: 'crawler',
+          sourceOrigin: 'crawler',
+          sourceType: '资料采集',
+        })),
+      });
+      return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'crawler_warning',
+        message: `资料采集工具：采集未完成，继续编报。${this.sanitizeUserVisibleText(message, 200)}`,
+      });
+      const nextContext = {
+        ...context,
+        crawlerPlan,
+        crawlerSourceContext: this.normalizeCrawlerSourceContext(context.crawlerSourceContext),
+      };
+      await this.writeCrawlerContextArtifact(job, nextContext);
+      return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
+    }
+  }
+
+  private buildCrawlerSourceContext(task: CrawlerTaskResponse, items: CrawlerItemResponse[]) {
+    return {
+      tasks: [{
+        taskId: task.taskId,
+        status: task.status,
+        goal: task.goal,
+        itemCount: items.length,
+      }],
+      items: items.map((item) => ({
+        itemId: item.itemId,
+        title: item.title,
+        url: item.url,
+        publisher: item.publisher,
+        publishedAt: item.publishedAt,
+        fetchedAt: item.fetchedAt,
+        contentSummary: item.contentSummary,
+        contentText: item.contentText,
+        sourceType: 'crawler',
+        relevanceScore: item.relevanceScore,
+        credibilityScore: item.credibilityScore,
+      })),
+    };
+  }
+
+  private normalizeCrawlerSourceContext(value: unknown): { tasks: unknown[]; items: unknown[] } {
+    const context = this.plainObject(value);
+    return {
+      tasks: Array.isArray(context.tasks) ? context.tasks : [],
+      items: Array.isArray(context.items) ? context.items : [],
+    };
+  }
+
+  private async writeCrawlerContextArtifact(job: JobRecord, context: Record<string, unknown>): Promise<void> {
+    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const crawlerDir = this.remoteFs.joinPath(jobDir, 'crawler');
+    const crawlerSourceContext = this.normalizeCrawlerSourceContext(context.crawlerSourceContext);
+    await this.remoteFs.mkdir(crawlerDir);
+    await Promise.all([
+      this.remoteFs.writeFile(this.remoteFs.joinPath(jobDir, 'context.json'), `${JSON.stringify(context, null, 2)}\n`),
+      this.remoteFs.writeFile(this.remoteFs.joinPath(crawlerDir, 'crawler_sources.json'), `${JSON.stringify(crawlerSourceContext, null, 2)}\n`),
+    ]);
+    job.artifacts = {
+      ...job.artifacts,
+      hermesJobDir: jobDir,
+      crawlerSourcesPath: this.remoteFs.joinPath(crawlerDir, 'crawler_sources.json'),
+    };
+    await this.writeJobState(job);
   }
 
   private async enrichPayloadWithDraftAssistantContext(
@@ -1556,6 +1796,356 @@ export class ReportsService implements OnModuleDestroy {
     };
   }
 
+  private async readLatestQualityReviewFromDb(jobId: string): Promise<ReportQualityReviewResponse | null> {
+    try {
+      const result = await (await this.getPool()).query(
+        `SELECT review_id, job_id, owner_id, status, overall_score, factual_clarity_score,
+                plan_alignment_score, source_quality_score, attitude_traceability_score,
+                risk_reasoning_score, writing_quality_score, word_count, review_json,
+                error_message, created_at
+           FROM report_quality_reviews
+          WHERE job_id = $1
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        [jobId],
+      );
+      return result.rows[0] ? this.toQualityReview(result.rows[0]) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readQualityReviewArtifact(job: JobRecord): Promise<Record<string, unknown> | null> {
+    const dir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const raw = await this.readJsonFile(this.remoteFs.joinPath(dir, 'quality', 'quality_review.json'));
+    return raw && !Array.isArray(raw) ? raw : null;
+  }
+
+  private async readFinalMarkdownForQualityReview(job: JobRecord): Promise<string> {
+    if (job.markdown && job.markdown.trim()) return job.markdown;
+    if (job.resultPath) {
+      try {
+        const markdown = await this.remoteFs.readFile(job.resultPath);
+        if (markdown.trim()) return markdown;
+      } catch {
+        // Continue to the conventional final report path.
+      }
+    }
+    const dir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    return this.remoteFs.readFile(this.remoteFs.joinPath(dir, 'final', 'report.md'));
+  }
+
+  private async collectQualityReviewContext(job: JobRecord): Promise<Record<string, unknown>> {
+    const payloadContext = this.contextObjectFromPayload(this.plainObject(job.payload));
+    const dir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
+    const databaseSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'database_sources.json'));
+    const vectorSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'vector_sources.json'));
+    const crawlerSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources.json'));
+    return {
+      ...payloadContext,
+      ...(contextJson && !Array.isArray(contextJson) ? contextJson : {}),
+      database_sources: Array.isArray(databaseSources) ? databaseSources : payloadContext.database_sources,
+      vector_sources: Array.isArray(vectorSources) ? vectorSources : payloadContext.vector_sources,
+      crawlerSourceContext: crawlerSources && !Array.isArray(crawlerSources)
+        ? crawlerSources
+        : payloadContext.crawlerSourceContext,
+    };
+  }
+
+  private buildQualityReviewJson(job: JobRecord, markdown: string, context: Record<string, unknown>): Record<string, unknown> {
+    const wordCount = this.countChineseReportCharacters(markdown);
+    const sourceUsage = this.estimateQualitySourceUsage(markdown, context);
+    const checks = this.buildQualityChecks(job, markdown, context, wordCount, sourceUsage);
+    const issues = this.buildQualityIssues(markdown, checks, wordCount, sourceUsage);
+    const scores = this.buildQualityScores(checks, wordCount, sourceUsage);
+    const overallScore = this.clampScore(Math.round(
+      scores.factualClarity * 0.18 +
+      scores.planAlignment * 0.18 +
+      scores.sourceQuality * 0.18 +
+      scores.attitudeTraceability * 0.14 +
+      scores.riskReasoning * 0.16 +
+      scores.writingQuality * 0.16,
+    ));
+    return {
+      overallScore,
+      summary: overallScore >= 80
+        ? '报告整体围绕主题展开，结构和信源使用较完整，仍建议复核各方态度、涉我风险和来源标注。'
+        : '报告已生成，但在主题贴合、信源引用或风险依据方面存在需要人工复核的问题。',
+      wordCount,
+      scores,
+      checks,
+      issues,
+      recommendedEdits: issues.slice(0, 5).map((issue) => ({
+        section: this.firstString(this.plainObject(issue), ['section']) || '报告正文',
+        editMode: /来源|态度|媒体|时间/.test(String((issue as Record<string, unknown>).suggestion || '')) ? 'add_sources' : 'polish',
+        instruction: String((issue as Record<string, unknown>).suggestion || '请根据自检意见补充事实依据并压实表述。'),
+      })),
+      sourceUsage,
+    };
+  }
+
+  private buildFailedQualityReviewJson(message: string): Record<string, unknown> {
+    return {
+      overallScore: null,
+      summary: '成稿自检失败，可稍后重试。',
+      wordCount: 0,
+      scores: {
+        factualClarity: null,
+        planAlignment: null,
+        sourceQuality: null,
+        attitudeTraceability: null,
+        riskReasoning: null,
+        writingQuality: null,
+      },
+      checks: [],
+      issues: [],
+      recommendedEdits: [],
+      sourceUsage: { databaseSourcesUsed: 0, crawlerSourcesUsed: 0, internetSourcesUsed: 0, unverifiedClaims: 0 },
+      error: this.sanitizeUserVisibleText(message, 300),
+    };
+  }
+
+  private buildQualityChecks(
+    job: JobRecord,
+    markdown: string,
+    context: Record<string, unknown>,
+    wordCount: number,
+    sourceUsage: Record<string, number>,
+  ): Array<Record<string, unknown>> {
+    const payload = this.plainObject(job.payload);
+    const topic = String(payload.topic || payload.title || payload.target_country || context.topic || '').trim();
+    const lower = markdown.toLowerCase();
+    const hasTopic = !topic || markdown.includes(topic) || topic.split(/\s+/).some((part) => part && markdown.includes(part));
+    const hasMainContent = /基本情况|主要内容|事件概述|背景/.test(markdown) && /发生|推动|宣布|涉及|影响|进展/.test(markdown);
+    const hasAttitudeTrace = /各方态度|立场|表态|回应|认为|表示/.test(markdown) && /年|月|日|媒体|公告|声明|报道|发布/.test(markdown);
+    const hasRiskBasis = /涉我风险|风险/.test(markdown) && /基于|依据|显示|来源|监管|数据|报道|文件|逻辑/.test(markdown);
+    const hasSourceClarity = (sourceUsage.databaseSourcesUsed + sourceUsage.crawlerSourcesUsed + sourceUsage.internetSourcesUsed) > 0 || /\[\d+\]|参考资料|来源/.test(markdown);
+    const plan = this.plainObject(context.report_plan);
+    const planText = JSON.stringify(plan || {});
+    const hasPlan = !planText || planText === '{}' || ['基本情况', '涉我风险', '对策建议', '事件概述'].some((section) => markdown.includes(section));
+    const aiTrace = /作为ai|以下是|样式说明|本文将|下面是|我将为您/i.test(markdown);
+    return [
+      this.qualityCheck('topic_alignment', '主题一致性', hasTopic, hasTopic ? '报告主题与用户标题基本一致。' : '报告未明显围绕用户标题展开。'),
+      this.qualityCheck('main_content_clarity', '事件描述清楚度', hasMainContent, hasMainContent ? '主要内容基本交代事件背景、经过或影响。' : '主要内容对事件要素交代不足。'),
+      this.qualityCheck('attitude_traceability', '各方态度可追溯性', hasAttitudeTrace, hasAttitudeTrace ? '各方态度包含一定主体、时间或来源线索。' : '各方态度缺少主体、时间、媒体或来源。'),
+      this.qualityCheck('risk_reasoning_basis', '涉我风险依据', hasRiskBasis, hasRiskBasis ? '涉我风险包含一定事实或逻辑依据。' : '涉我风险判断可能偏空泛。'),
+      this.qualityCheck('source_reference_clarity', '信源引用清晰度', hasSourceClarity, hasSourceClarity ? '报告包含来源或参考资料线索。' : '报告未清楚呈现信源引用。'),
+      this.qualityCheck('plan_coverage', '编报规划体现度', hasPlan, hasPlan ? '报告结构基本体现编报规划。' : '用户确认的规划重点未充分体现。'),
+      this.qualityCheck('ai_boilerplate', '无用 AI 痕迹', !aiTrace, aiTrace ? '报告存在“以下是”等无用 AI 描述。' : '未发现明显无用 AI 描述。'),
+      this.qualityCheck('word_count', '字数充足度', wordCount >= 2500, wordCount >= 2500 ? '成稿字数达到基础检查阈值。' : '成稿字数明显偏少，建议扩充事实和分析密度。'),
+    ];
+  }
+
+  private qualityCheck(key: string, label: string, passed: boolean, comment: string): Record<string, unknown> {
+    return { key, label, status: passed ? 'pass' : 'warning', comment };
+  }
+
+  private buildQualityIssues(
+    markdown: string,
+    checks: Array<Record<string, unknown>>,
+    wordCount: number,
+    sourceUsage: Record<string, number>,
+  ): Array<Record<string, unknown>> {
+    const issues = checks
+      .filter((check) => check.status !== 'pass')
+      .map((check) => ({
+        severity: check.key === 'ai_boilerplate' ? 'warning' : 'warning',
+        section: this.issueSectionForCheck(String(check.key)),
+        problem: String(check.comment || ''),
+        evidence: this.findIssueEvidence(markdown, String(check.key)),
+        suggestion: this.issueSuggestionForCheck(String(check.key)),
+        targetText: this.findIssueEvidence(markdown, String(check.key)),
+      }));
+    if ((sourceUsage.unverifiedClaims || 0) > 0) {
+      issues.push({
+        severity: 'warning',
+        section: '信源引用',
+        problem: '报告中可能存在未充分标注依据的判断。',
+        evidence: '检测到“可能、预计、或将”等判断性表述。',
+        suggestion: '请补充对应信源、事实依据或明确不确定性。',
+        targetText: '可能/预计/或将相关判断。',
+      });
+    }
+    if (wordCount < 2500 && !issues.some((item) => item.section === '字数')) {
+      issues.push({
+        severity: 'warning',
+        section: '字数',
+        problem: '成稿字数明显偏少。',
+        evidence: `当前估算字数 ${wordCount}。`,
+        suggestion: '请补充事件经过、各方态度、事实依据、风险链条和对策可操作性。',
+        targetText: '',
+      });
+    }
+    return issues.slice(0, 12);
+  }
+
+  private buildQualityScores(checks: Array<Record<string, unknown>>, wordCount: number, sourceUsage: Record<string, number>) {
+    const passed = (key: string) => checks.find((item) => item.key === key)?.status === 'pass';
+    return {
+      factualClarity: this.clampScore((passed('main_content_clarity') ? 82 : 62) + (wordCount > 4000 ? 8 : 0)),
+      planAlignment: this.clampScore(passed('topic_alignment') && passed('plan_coverage') ? 84 : 65),
+      sourceQuality: this.clampScore((passed('source_reference_clarity') ? 78 : 58) + Math.min(12, (sourceUsage.databaseSourcesUsed + sourceUsage.crawlerSourcesUsed + sourceUsage.internetSourcesUsed) * 2)),
+      attitudeTraceability: this.clampScore(passed('attitude_traceability') ? 78 : 60),
+      riskReasoning: this.clampScore(passed('risk_reasoning_basis') ? 80 : 62),
+      writingQuality: this.clampScore((passed('ai_boilerplate') ? 84 : 62) + (wordCount >= 2500 ? 4 : -8)),
+    };
+  }
+
+  private issueSectionForCheck(key: string): string {
+    const map: Record<string, string> = {
+      topic_alignment: '主题',
+      main_content_clarity: '主要内容',
+      attitude_traceability: '各方态度',
+      risk_reasoning_basis: '涉我风险',
+      source_reference_clarity: '信源引用',
+      plan_coverage: '规划体现',
+      ai_boilerplate: '正文表述',
+      word_count: '字数',
+    };
+    return map[key] || '报告正文';
+  }
+
+  private issueSuggestionForCheck(key: string): string {
+    const map: Record<string, string> = {
+      topic_alignment: '请回到用户标题和编报规划，删减跑题内容并补充直接相关事实。',
+      main_content_clarity: '请补充事件是什么、主体、时间、地点、进展和影响。',
+      attitude_traceability: '请补充表态主体、表态时间、媒体或发布渠道和来源链接。',
+      risk_reasoning_basis: '请用已有信源补充风险判断的事实依据、传导路径和不确定性。',
+      source_reference_clarity: '请区分数据库信源、资料采集信源和互联网搜索信源，并补充参考资料编号。',
+      plan_coverage: '请对照 report_plan 补齐未体现的章节重点。',
+      ai_boilerplate: '请删除“以下是”“作为AI”等无用描述，改为正式编报表述。',
+      word_count: '请扩充事实密度、分析层次、风险链条和对策建议。',
+    };
+    return map[key] || '请根据成稿自检意见进行局部修改。';
+  }
+
+  private findIssueEvidence(markdown: string, key: string): string {
+    if (key === 'ai_boilerplate') {
+      const match = markdown.match(/.{0,20}(作为AI|以下是|样式说明|本文将|下面是|我将为您).{0,40}/i);
+      if (match) return match[0];
+    }
+    const lines = markdown.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    return (lines.find((line) => line.length > 20 && !line.startsWith('#')) || lines[0] || '').slice(0, 220);
+  }
+
+  private estimateQualitySourceUsage(markdown: string, context: Record<string, unknown>): Record<string, number> {
+    const databaseSources = [
+      ...(Array.isArray(context.database_sources) ? context.database_sources : []),
+      ...(Array.isArray(context.vector_sources) ? context.vector_sources : []),
+      ...(Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : []),
+    ];
+    const crawlerContext = this.plainObject(context.crawlerSourceContext);
+    const crawlerSources = Array.isArray(crawlerContext.items) ? crawlerContext.items : [];
+    const draftContext = this.plainObject(context.draftAssistantContext);
+    const draftSources = Array.isArray(draftContext.sources) ? draftContext.sources : [];
+    const referenceCount = (markdown.match(/\[\d+\]/g) || []).length;
+    const judgementCount = (markdown.match(/可能|预计|或将|风险|影响|认为/g) || []).length;
+    return {
+      databaseSourcesUsed: Math.min(databaseSources.length, referenceCount || databaseSources.length),
+      crawlerSourcesUsed: Math.min(crawlerSources.length, referenceCount || crawlerSources.length),
+      internetSourcesUsed: Math.max(0, referenceCount - databaseSources.length - crawlerSources.length),
+      draftAssistantSourcesUsed: draftSources.length,
+      userProvidedSourcesUsed: Array.isArray(context.userProvidedSources) ? context.userProvidedSources.length : 0,
+      unverifiedClaims: Math.max(0, judgementCount - referenceCount - databaseSources.length - crawlerSources.length),
+    };
+  }
+
+  private countChineseReportCharacters(markdown: string): number {
+    return markdown.replace(/```[\s\S]*?```/g, '').replace(/[#*_>`\-\s\[\]\(\)0-9a-zA-Z.,;:!?，。；：！？、（）]/g, '').length;
+  }
+
+  private clampScore(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(100, Math.round(value)));
+  }
+
+  private async saveQualityReview(
+    job: JobRecord,
+    reviewJson: Record<string, unknown>,
+    status: string,
+    errorMessage: string | null,
+  ): Promise<ReportQualityReviewResponse> {
+    const scores = this.plainObject(reviewJson.scores);
+    const result = await (await this.getPool()).query(
+      `INSERT INTO report_quality_reviews (
+         job_id, owner_id, status, overall_score, factual_clarity_score,
+         plan_alignment_score, source_quality_score, attitude_traceability_score,
+         risk_reasoning_score, writing_quality_score, review_json, error_message, word_count
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+       RETURNING review_id, job_id, owner_id, status, overall_score, factual_clarity_score,
+                 plan_alignment_score, source_quality_score, attitude_traceability_score,
+                 risk_reasoning_score, writing_quality_score, word_count, review_json,
+                 error_message, created_at`,
+      [
+        job.jobId,
+        job.ownerUserId || null,
+        status,
+        this.optionalScore(reviewJson.overallScore),
+        this.optionalScore(scores.factualClarity),
+        this.optionalScore(scores.planAlignment),
+        this.optionalScore(scores.sourceQuality),
+        this.optionalScore(scores.attitudeTraceability),
+        this.optionalScore(scores.riskReasoning),
+        this.optionalScore(scores.writingQuality),
+        JSON.stringify(reviewJson),
+        errorMessage,
+        this.firstNumber(reviewJson, ['wordCount']) || 0,
+      ],
+    );
+    const review = this.toQualityReview(result.rows[0]);
+    job.artifacts = { ...job.artifacts, qualityReview: review.reviewJson, qualityReviewId: review.reviewId };
+    await this.writeJobState(job);
+    return review;
+  }
+
+  private optionalScore(value: unknown): number | null {
+    const score = Number(value);
+    return Number.isFinite(score) ? this.clampScore(score) : null;
+  }
+
+  private async writeQualityReviewArtifact(job: JobRecord, reviewJson: Record<string, unknown>): Promise<void> {
+    const jobDir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const qualityDir = this.remoteFs.joinPath(jobDir, 'quality');
+    await this.remoteFs.mkdir(qualityDir);
+    const path = this.remoteFs.joinPath(qualityDir, 'quality_review.json');
+    await this.remoteFs.writeFile(path, `${JSON.stringify(reviewJson, null, 2)}\n`);
+    job.artifacts = { ...job.artifacts, qualityReviewPath: path };
+    await this.writeJobState(job);
+  }
+
+  private toQualityReview(row: Record<string, unknown>, job?: JobRecord): ReportQualityReviewResponse {
+    const reviewJson = typeof row.review_json === 'string'
+      ? this.parseJsonObject(row.review_json) || {}
+      : this.plainObject(row.review_json || row);
+    const scores = this.plainObject(reviewJson.scores);
+    return {
+      reviewId: String(row.review_id || reviewJson.reviewId || ''),
+      jobId: String(row.job_id || job?.jobId || ''),
+      ownerId: row.owner_id ? String(row.owner_id) : (job?.ownerUserId || null),
+      status: String(row.status || reviewJson.status || 'completed'),
+      overallScore: this.optionalScore(row.overall_score ?? reviewJson.overallScore),
+      wordCount: this.firstNumber(row, ['word_count']) ?? this.firstNumber(reviewJson, ['wordCount']) ?? null,
+      scores: {
+        factualClarity: this.optionalScore(row.factual_clarity_score ?? scores.factualClarity),
+        planAlignment: this.optionalScore(row.plan_alignment_score ?? scores.planAlignment),
+        sourceQuality: this.optionalScore(row.source_quality_score ?? scores.sourceQuality),
+        attitudeTraceability: this.optionalScore(row.attitude_traceability_score ?? scores.attitudeTraceability),
+        riskReasoning: this.optionalScore(row.risk_reasoning_score ?? scores.riskReasoning),
+        writingQuality: this.optionalScore(row.writing_quality_score ?? scores.writingQuality),
+      },
+      summary: String(reviewJson.summary || ''),
+      checks: Array.isArray(reviewJson.checks) ? reviewJson.checks : [],
+      issues: Array.isArray(reviewJson.issues) ? reviewJson.issues : [],
+      recommendedEdits: Array.isArray(reviewJson.recommendedEdits) ? reviewJson.recommendedEdits : [],
+      sourceUsage: this.plainObject(reviewJson.sourceUsage),
+      reviewJson,
+      errorMessage: row.error_message ? String(row.error_message) : null,
+      createdAt: this.isoString(row.created_at),
+    };
+  }
+
   private async writeBackendDatabaseRecallArtifacts(
     job: JobRecord,
     context: Record<string, unknown>,
@@ -1714,7 +2304,8 @@ export class ReportsService implements OnModuleDestroy {
     try {
       const requestUser = this.buildRequestUser(job);
       const enrichedPayload = await this.enrichPayloadWithVectorSources(job);
-      const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, enrichedPayload, {
+      const crawlerPayload = await this.enrichPayloadWithCrawlerSources(job, enrichedPayload);
+      const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, crawlerPayload, {
         id: job.ownerUserId || '',
         username: job.ownerUsername || '',
         displayName: job.ownerUsername || '',
@@ -1843,6 +2434,14 @@ export class ReportsService implements OnModuleDestroy {
       await this.writeReportReferencesArtifact(job, usableMarkdown);
       job.updatedAt = new Date().toISOString();
       await this.writeJobState(job);
+      void this.runQualityReviewForJob(job).catch((reviewError) => {
+        const message = reviewError instanceof Error ? reviewError.message : String(reviewError);
+        this.pushEvent(job, {
+          type: 'stage',
+          stage: 'quality_review_failed',
+          message: `成稿自检失败，可稍后重试。${this.sanitizeUserVisibleText(message, 180)}`,
+        });
+      });
       this.pushEvent(job, { type: 'stage', stage: 'done', message: 'Report generation completed and saved to disk.' });
       this.pushEvent(job, { type: 'done', jobId: job.jobId });
       this.streams.get(job.jobId)?.complete();
@@ -2746,6 +3345,7 @@ export class ReportsService implements OnModuleDestroy {
     const normalized = String(type || '').trim();
     if (
       normalized === 'database_recall' ||
+      normalized === 'crawler' ||
       normalized === 'tool_search' ||
       normalized === 'report_refs' ||
       normalized === 'structured_sources' ||
@@ -3080,6 +3680,54 @@ export class ReportsService implements OnModuleDestroy {
       status: 'structured',
       method: data?.retrievalMode === 'vector' ? '向量透明展示' : data?.retrievalMode === 'hybrid' ? '数据库/向量透明展示' : '数据库透明展示',
     }));
+  }
+
+  private async crawlerReportSources(job: JobRecord): Promise<ReportSourceListItem[]> {
+    const contexts: unknown[] = [];
+    const payloadContext = this.contextObjectFromPayload(this.plainObject(job.payload));
+    contexts.push(payloadContext.crawlerSourceContext);
+    contexts.push(job.artifacts?.crawlerSourceContext);
+    const dir = await this.resolveHermesJobDir(job);
+    if (dir) {
+      const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
+      if (contextJson && !Array.isArray(contextJson)) contexts.push(contextJson.crawlerSourceContext);
+      const crawlerJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources.json'));
+      contexts.push(crawlerJson);
+    }
+
+    const items: unknown[] = [];
+    for (const context of contexts) {
+      const object = this.plainObject(context);
+      if (Array.isArray(object.items)) items.push(...object.items);
+      if (Array.isArray(context)) items.push(...context);
+    }
+
+    return items
+      .map((item, index) => this.normalizeCrawlerSourceItem(item, index))
+      .filter((item): item is ReportSourceListItem => Boolean(item));
+  }
+
+  private normalizeCrawlerSourceItem(item: unknown, index: number): ReportSourceListItem | null {
+    if (!item || typeof item !== 'object') return null;
+    const source = item as Record<string, unknown>;
+    const normalized = this.normalizeSourceRecord(source, index, 'crawler');
+    return {
+      ...normalized,
+      id: normalized.id || `crawler-${index + 1}`,
+      sourceGroup: 'crawler',
+      sourceOrigin: 'crawler',
+      evidenceKind: 'crawler_source',
+      engine: 'crawler',
+      title: normalized.title || this.firstString(source, ['title']) || `资料采集来源 ${index + 1}`,
+      sourceName: normalized.sourceName || this.firstString(source, ['publisher', 'sourceName']) || '',
+      publishTime: normalized.publishTime || this.firstString(source, ['publishedAt', 'published_at', 'fetchedAt']),
+      summary: normalized.summary || this.firstString(source, ['contentSummary', 'content_summary', 'summary']),
+      excerpt: normalized.excerpt || this.firstString(source, ['contentText', 'content_text']).slice(0, 1200),
+      sourceType: '资料采集',
+      relevanceScore: normalized.relevanceScore ?? this.firstNumber(source, ['relevanceScore', 'relevance_score']) ?? undefined,
+      status: normalized.status || 'collected',
+      method: normalized.method || '资料采集工具',
+    };
   }
 
   private async candidateHitSources(job: JobRecord): Promise<{ items: ReportSourceListItem[]; total: number; detailSaved: boolean }> {

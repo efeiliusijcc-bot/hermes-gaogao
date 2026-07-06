@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
-import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits } from '../lib/api.js'
+import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -58,6 +58,10 @@ const props = defineProps({
   planSupplement: {
     type: String,
     default: '',
+  },
+  crawlerPlan: {
+    type: Object,
+    default: () => ({}),
   },
   databaseSourceEnabled: {
     type: Boolean,
@@ -127,6 +131,7 @@ const emit = defineEmits([
   'update:activeParameters',
   'update:planSourceInput',
   'update:planSupplement',
+  'update:crawlerPlan',
   'update:databaseSourceEnabled',
   'update:useMyPreferences',
   'update:homeMode',
@@ -167,6 +172,11 @@ const reportEditForm = ref({
   editMode: 'polish',
   instruction: '',
 })
+const qualityReview = ref(null)
+const qualityReviewLoading = ref(false)
+const qualityReviewRunning = ref(false)
+const qualityReviewError = ref('')
+const qualityReviewNotice = ref('')
 const activeSourceType = ref('database_recall')
 const sourceSearchQuery = ref('')
 const sourceKindFilter = ref('全部')
@@ -247,6 +257,7 @@ const verifiedPlanSourceOptions = computed(() => (currentPlanStep.value?.options
 const networkPlanSourceOptions = computed(() => (currentPlanStep.value?.options || []).filter((option) => option.sourceGroup !== 'verified' && option.id !== 'database-source'))
 const isSupplementPlanStep = computed(() => currentPlanStep.value?.type === 'supplement')
 const manualPlanSources = computed(() => parseManualPlanSources(props.planSourceInput))
+const crawlerPlanView = computed(() => normalizeCrawlerPlanForView(props.crawlerPlan))
 const reportTypeLabel = computed(() => {
   if (effectiveReportType.value === 'person-intelligence-report') return '人物报'
   if (effectiveReportType.value === 'risk-assessment-reports') return '风险报'
@@ -306,6 +317,24 @@ async function openReportEditPanel() {
   await loadReportEditHistory()
 }
 
+async function openReportEditFromQualityIssue(issue) {
+  const targetText = String(issue?.targetText || issue?.evidence || '').trim()
+  const suggestion = String(issue?.suggestion || issue?.problem || '').trim()
+  activeResultTab.value = 'report'
+  reportEditError.value = ''
+  reportEditNotice.value = '已从成稿自检问题带入局部修改。'
+  reportEditResult.value = null
+  reportEditForm.value = {
+    targetType: 'selected_text',
+    targetPath: issue?.section ? `quality-review:${issue.section}` : 'quality-review',
+    originalText: targetText,
+    editMode: /来源|媒体|时间|主体|态度/.test(suggestion) ? 'add_sources' : 'polish',
+    instruction: suggestion || '请根据成稿自检建议进行局部修改，补充依据并保持表述审慎。',
+  }
+  reportEditOpen.value = true
+  await loadReportEditHistory()
+}
+
 async function loadReportEditHistory() {
   if (!props.job?.jobId) return
   reportEditHistoryLoading.value = true
@@ -348,6 +377,59 @@ async function copyReportEditResult(text) {
     reportEditError.value = '复制失败，请手动选择文本复制。'
   }
 }
+
+async function loadQualityReview() {
+  if (!props.job?.jobId) return
+  qualityReviewLoading.value = true
+  qualityReviewError.value = ''
+  try {
+    qualityReview.value = await getReportQualityReview(props.job.jobId)
+  } catch (error) {
+    qualityReviewError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    qualityReviewLoading.value = false
+  }
+}
+
+async function rerunQualityReview() {
+  if (!props.job?.jobId || qualityReviewRunning.value) return
+  qualityReviewRunning.value = true
+  qualityReviewError.value = ''
+  qualityReviewNotice.value = ''
+  try {
+    qualityReview.value = await runReportQualityReview(props.job.jobId)
+    qualityReviewNotice.value = qualityReview.value?.status === 'failed' ? '成稿自检失败，可稍后重试。' : '成稿自检已更新。'
+  } catch (error) {
+    qualityReviewError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    qualityReviewRunning.value = false
+  }
+}
+
+function qualityScoreLabel(value) {
+  if (value === null || value === undefined || value === '') return '--'
+  const score = Number(value)
+  return Number.isFinite(score) ? `${Math.round(score)}` : '--'
+}
+
+function qualityStatusLabel(status) {
+  if (status === 'pass') return '通过'
+  if (status === 'fail') return '需处理'
+  if (status === 'warning') return '提醒'
+  return status || '待检查'
+}
+
+const qualityDimensionCards = computed(() => {
+  const scores = qualityReview.value?.scores || {}
+  return [
+    ['事件描述', scores.factualClarity],
+    ['规划一致', scores.planAlignment],
+    ['信源质量', scores.sourceQuality],
+    ['态度可追溯', scores.attitudeTraceability],
+    ['风险依据', scores.riskReasoning],
+    ['写作质量', scores.writingQuality],
+  ].map(([label, score]) => ({ label, score }))
+})
 
 function escapeHtml(value) {
   return String(value || '')
@@ -492,6 +574,7 @@ const resultTabs = [
   { key: 'planning', label: '规划选择' },
   { key: 'citations', label: '引用依据' },
   { key: 'progress', label: '任务进度' },
+  { key: 'quality', label: '成稿自检' },
 ]
 
 function parseStructuredPlanningContext(value) {
@@ -1891,6 +1974,113 @@ function parseManualPlanSources(value) {
     })
 }
 
+function parseCrawlerList(value) {
+  const seen = new Set()
+  const source = Array.isArray(value) ? value : String(value || '').split(/\r?\n|[；;,，]/)
+  return source
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function defaultCrawlerDirections() {
+  const topic = String(props.title || '').trim() || '本次编报主题'
+  return [
+    {
+      name: '官方政策与公告',
+      enabled: true,
+      description: '补充政府公告、监管文件和官方表态。',
+      queries: [`${topic} 官方 公告 政策 监管`],
+      targetDomains: [],
+    },
+    {
+      name: '主流媒体报道',
+      enabled: true,
+      description: '补充权威媒体报道、事实进展和时间线。',
+      queries: [`${topic} 主流媒体 报道 时间线`],
+      targetDomains: [],
+    },
+    {
+      name: '行业组织与专家分析',
+      enabled: true,
+      description: '补充行业组织、智库和专家对影响路径的分析。',
+      queries: [`${topic} 行业组织 专家 分析`],
+      targetDomains: [],
+    },
+    {
+      name: '企业与主体动态',
+      enabled: true,
+      description: '补充相关企业、机构或关键主体的公开动态。',
+      queries: [`${topic} 企业 主体 动态`],
+      targetDomains: [],
+    },
+    {
+      name: '社交舆情与争议点',
+      enabled: false,
+      description: '补充公开舆情、争议点和传播风险线索。',
+      queries: [`${topic} 舆情 争议 风险`],
+      targetDomains: [],
+    },
+  ]
+}
+
+function normalizeCrawlerPlanForView(plan = {}) {
+  const directions = Array.isArray(plan.directions) && plan.directions.length ? plan.directions : defaultCrawlerDirections()
+  return {
+    enabled: plan.enabled === true,
+    mode: ['auto', 'manual', 'hybrid'].includes(plan.mode) ? plan.mode : 'hybrid',
+    goal: String(plan.goal || `补充${props.title || '本次编报主题'}相关公开资料`).trim(),
+    autoGapFilling: plan.autoGapFilling !== false,
+    directions: directions.map((direction, index) => ({
+      name: String(direction?.name || `采集方向 ${index + 1}`).trim(),
+      enabled: direction?.enabled !== false,
+      description: String(direction?.description || '').trim(),
+      queries: parseCrawlerList(direction?.queries),
+      targetDomains: parseCrawlerList(direction?.targetDomains),
+    })),
+    manualUrls: parseCrawlerList(plan.manualUrls),
+    manualDomains: parseCrawlerList(plan.manualDomains),
+    manualKeywords: parseCrawlerList(plan.manualKeywords),
+    maxPages: Number(plan.maxPages || 10),
+    maxDepth: Number(plan.maxDepth ?? 1),
+    lookbackHours: plan.lookbackHours ?? '',
+    language: String(plan.language || 'zh-CN'),
+    executePhase: 'research',
+  }
+}
+
+function updateCrawlerPlan(patch) {
+  emit('update:crawlerPlan', {
+    ...crawlerPlanView.value,
+    ...patch,
+    executePhase: 'research',
+  })
+}
+
+function updateCrawlerList(key, value) {
+  updateCrawlerPlan({ [key]: parseCrawlerList(value) })
+}
+
+function crawlerListText(value) {
+  return parseCrawlerList(value).join('\n')
+}
+
+function updateCrawlerDirection(index, patch) {
+  const directions = crawlerPlanView.value.directions.map((direction, directionIndex) => (
+    directionIndex === index ? { ...direction, ...patch } : direction
+  ))
+  updateCrawlerPlan({ directions })
+}
+
+function updateCrawlerDirectionList(index, key, value) {
+  updateCrawlerDirection(index, { [key]: parseCrawlerList(value) })
+}
+
 function commitManualPlanSources(items) {
   emit('update:planSourceInput', parseManualPlanSources(items.join('\n')).join('\n'))
 }
@@ -1990,6 +2180,10 @@ function classifyToolDisplayName(rawValue) {
   const raw = String(rawValue || '').toLowerCase()
   if (!raw.trim()) return ''
 
+  if (/资料采集工具|controlled-web-collector|crawler\.|crawler_sources|crawlersourcecontext/.test(raw)) {
+    return '资料采集工具'
+  }
+
   if (
     /pg-sources__query|mysql-test__mysql_query|database_sources\.json|database_query_plan\.json|vector_sources\.json/.test(raw) ||
     /\b(pg|postgres|postgresql|mysql|sql|vector|embedding|database|db)\b/.test(raw) ||
@@ -2051,6 +2245,7 @@ function workflowLogView(phase, rawLog, status) {
     waiting_final_report: ['WAITING_CONFIRM', '等待报告文件确认', '系统正在等待最终报告文件确认。'],
     context_preparing: ['PREPARING', '任务规划', '系统正在整理编报要求、确定信源范围并拆解调研任务。'],
     research_planning: ['PLANNING', '任务规划', '系统正在整理编报要求、确定信源范围并拆解调研任务。'],
+    database_recall: ['PG_RECALL', '数据库检索', '系统正在优先召回 PG 向量库和数据库信源。'],
     research_dispatch: ['RESEARCH_TASK', '资料采集', '系统正在采集公开资料并提取关键事实。'],
     research_waiting: ['WAITING_RESEARCH', '资料采集', '系统正在采集公开资料并提取关键事实。'],
     research_collecting: ['RESEARCHING', '资料采集', '系统正在采集公开资料并提取关键事实。'],
@@ -2060,6 +2255,9 @@ function workflowLogView(phase, rawLog, status) {
     synthesis_writing: ['WRITING', '报告撰写', '系统正在撰写报告正文并完成校验。'],
     report_verifying: ['VERIFYING', '报告撰写', '系统正在撰写报告正文并完成校验。'],
     report_saving: ['SAVING', '报告撰写', '系统正在撰写报告正文并完成校验。'],
+    quality_review: ['QUALITY_REVIEW', '成稿自检', '系统正在检查主题一致性、信源依据、风险推理和写作质量。'],
+    quality_review_done: ['QUALITY_REVIEW', '成稿自检', '成稿自检已完成，可查看评分和建议。'],
+    quality_review_failed: ['QUALITY_REVIEW', '成稿自检', '成稿自检失败，可稍后重试。'],
     technical_detail: ['DETAIL', '处理技术细节', '系统正在读取配置或中间文件；可展开查看原始记录。'],
     done: ['COMPLETED', '编报任务已完成', '报告已生成，可以查看或导出。'],
     error: ['ERROR', '任务执行出现异常', '系统执行过程中出现异常，请查看技术详情或重试。'],
@@ -2073,7 +2271,9 @@ function workflowLogView(phase, rawLog, status) {
   if (lower.includes('sessions_spawn') && lower.includes('synthesis')) return { stage: 'SYNTHESIS_TASK', title: views.synthesis_dispatch[1], description: views.synthesis_dispatch[2], status }
   if (lower.includes('sessions_yield') && lower.includes('synthesis')) return { stage: 'WAITING_SYNTHESIS', title: views.synthesis_waiting[1], description: views.synthesis_waiting[2], status }
   if (lower.includes('sessions_yield')) return { stage: 'WAITING_RESEARCH', title: views.research_waiting[1], description: views.research_waiting[2], status }
-  if (lower.includes('pg-sources__query') || lower.includes('vector_sources.json') || lower.includes('database_sources.json') || lower.includes('database_query_plan.json')) return { stage: 'PG_RECALL', title: '资料采集', description: '系统正在采集公开资料并提取关键事实。', status }
+  if (lower.includes('成稿自检') || lower.includes('quality_review')) return { stage: 'QUALITY_REVIEW', title: '成稿自检', description: '系统正在检查成稿质量并生成建议。', status }
+  if (lower.includes('资料采集工具') || lower.includes('controlled-web-collector') || lower.includes('crawler.')) return { stage: 'CRAWLER', title: '资料采集', description: '系统正在按规划补充公开信源。', status }
+  if (lower.includes('pg-sources__query') || lower.includes('vector_sources.json') || lower.includes('database_sources.json') || lower.includes('database_query_plan.json')) return { stage: 'PG_RECALL', title: '数据库检索', description: '系统正在优先召回 PG 向量库和数据库信源。', status }
   if (lower.includes('harness_cli.py plan') || lower.includes('plan.json')) return { stage: 'HARNESS_PLAN', title: '任务规划', description: '系统正在整理编报要求、确定信源范围并拆解调研任务。', status }
   if (lower.includes('harness_cli.py run') || lower.includes('research_') || lower.includes('research/research')) return { stage: 'RESEARCH_RUN', title: '资料采集', description: '系统正在采集公开资料并提取关键事实。', status }
   if (lower.includes('consolidated.json')) return { stage: 'CONSOLIDATE', title: '素材整合', description: '系统正在汇总信源、证据和分析要点。', status }
@@ -2176,8 +2376,8 @@ function translateHermesLog(log) {
     return {
       ...base,
       stage: 'PG_RECALL',
-      title: '资料采集',
-      description: '系统正在采集公开资料并提取关键事实。',
+      title: '数据库检索',
+      description: '系统正在优先召回 PG 向量库和数据库信源。',
     }
   }
 
@@ -2593,6 +2793,10 @@ const sourceOverviewStats = computed(() => {
     summary.toolSearchCount,
     loadedSourceCountFor('tool_search'),
   )
+  const crawler = firstAvailableCount(
+    summary.crawlerCount,
+    loadedSourceCountFor('crawler'),
+  )
   const structuredSources = firstPositiveCount(summary.structuredSourceCount, normalizedSources.value.length)
   const reportCitations = firstPositiveCount(summary.reportReferenceCount, reportCitationNumbers.value.length)
   const failed = normalizedSources.value.filter((item) => item.status === 'failed').length
@@ -2604,6 +2808,7 @@ const sourceOverviewStats = computed(() => {
     : normalizedSources.value.filter((item) => item.status === 'snippet_only' || item.status === 'used').length
   return {
     databaseRecall,
+    crawler,
     toolSearch,
     reportCitations,
     structuredSources,
@@ -2616,10 +2821,11 @@ const sourceOverviewStats = computed(() => {
 const sourceTypeOptions = [
   { key: 'all', label: '全部' },
   { key: 'database_recall', label: '数据库检索工具' },
+  { key: 'crawler', label: '资料采集工具' },
   { key: 'tool_search', label: '互联网搜索工具' },
 ]
 
-const sourceKindOptions = ['全部', '官方文件', '媒体报道', '研究报告', '数据库记录', '数据库检索工具', '互联网搜索工具', '其他']
+const sourceKindOptions = ['全部', '官方文件', '媒体报道', '研究报告', '数据库记录', '数据库检索工具', '资料采集', '互联网搜索工具', '其他']
 const sourceTimeOptions = [
   { key: 'all', label: '全部时间' },
   { key: '7d', label: '近 7 天', days: 7 },
@@ -2643,6 +2849,14 @@ const sourceCardConfigs = computed(() => [
     tone: 'blue',
   },
   {
+    key: 'crawler',
+    title: '资料采集工具',
+    value: sourceOverviewStats.value.crawler ?? '--',
+    desc: '来自 crawlerPlan 的受控公开采集',
+    icon: '◇',
+    tone: 'cyan',
+  },
+  {
     key: 'tool_search',
     title: '互联网搜索工具',
     value: sourceOverviewStats.value.toolSearch ?? '--',
@@ -2664,7 +2878,8 @@ const activeSourceConfig = computed(() => {
   }
   const base = sourceCardConfigs.value.find((item) => item.key === activeSourceType.value) || sourceCardConfigs.value[0]
   const descriptions = {
-    database_recall: ['数据库检索工具信源', '以下信源来自 PG 向量库或数据库检索，并已保留引用编号和结构化整理状态。', '暂无数据库检索工具信源', '当前报告没有数据库检索工具信源记录，您可以切换互联网搜索工具查看。'],
+    database_recall: ['数据库检索工具信源', '以下信源来自 PG 向量库或数据库检索，并已保留引用编号和结构化整理状态。', '暂无数据库检索工具信源', '当前报告没有数据库检索工具信源记录，您可以切换资料采集工具或互联网搜索工具查看。'],
+    crawler: ['资料采集工具信源', '以下信源来自规划阶段 crawlerPlan 触发的受控公开资料采集。', '暂无资料采集工具信源', '当前报告没有资料采集工具信源记录，您可以切换数据库检索工具或互联网搜索工具查看。'],
     tool_search: ['互联网搜索工具信源', '以下信源来自联网检索或正文抽取结果。', '暂无互联网搜索工具信源', '当前报告没有互联网搜索工具信源记录，您可以切换数据库检索工具查看。'],
     report_refs: ['报告引用信源', '以下信源来自报告正文中的参考编号和引用依据。', '暂无对应信源', '当前报告没有该类型的信源记录，您可以切换其他类型查看。'],
     structured_sources: ['结构化信源', '以下信源来自数据库或向量召回结果，已完成结构化整理。', '暂无对应信源', '当前报告没有该类型的信源记录，您可以切换其他类型查看。'],
@@ -2703,9 +2918,11 @@ const technicalLogs = computed(() => {
 
 const userProgressStages = [
   { key: 'plan', number: '1', icon: '01', title: '任务规划', desc: '整理编报要求、确定信源范围并拆解调研任务' },
-  { key: 'research', number: '2', icon: '02', title: '资料采集', desc: '采集公开资料并提取关键事实' },
-  { key: 'consolidate', number: '3', icon: '03', title: '素材整合', desc: '汇总信源、证据和分析要点' },
-  { key: 'report', number: '4', icon: '04', title: '报告撰写', desc: '撰写报告正文并完成校验' },
+  { key: 'database', number: '2', icon: '02', title: '数据库检索', desc: '优先召回 PG 向量库和数据库信源' },
+  { key: 'research', number: '3', icon: '03', title: '资料采集', desc: '按规划补充公开信源并提取关键事实' },
+  { key: 'consolidate', number: '4', icon: '04', title: '素材整合', desc: '汇总信源、证据和分析要点' },
+  { key: 'report', number: '5', icon: '05', title: '报告撰写', desc: '撰写报告正文并完成校验' },
+  { key: 'quality', number: '6', icon: '06', title: '成稿自检', desc: '检查主题一致性、信源依据、风险推理和写作质量' },
 ]
 
 function displayProgressStatus(status) {
@@ -2739,35 +2956,39 @@ const progressStageOrder = {
   AGENT_START: 0,
   PREPARING: 0,
   PG_RECALL: 1,
+  CRAWLER: 2,
   PLANNING: 0,
   HARNESS_PLAN: 0,
-  RESEARCH_TASK: 1,
-  WAITING_RESEARCH: 1,
-  RESEARCHING: 1,
-  RESEARCH_RUN: 1,
-  RESEARCH_DONE: 1,
-  SEARCHING: 1,
-  EXTRACTING: 1,
-  CONSOLIDATE: 2,
-  ANALYZING: 2,
-  SYNTHESIS_TASK: 2,
-  WAITING_SYNTHESIS: 2,
-  SYNTHESIS: 2,
-  WRITING: 3,
-  VERIFYING: 3,
-  VALIDATE_SAVE: 3,
-  SAVING: 3,
-  COMPLETED: 3,
+  RESEARCH_TASK: 2,
+  WAITING_RESEARCH: 2,
+  RESEARCHING: 2,
+  RESEARCH_RUN: 2,
+  RESEARCH_DONE: 2,
+  SEARCHING: 2,
+  EXTRACTING: 2,
+  CONSOLIDATE: 3,
+  ANALYZING: 3,
+  SYNTHESIS_TASK: 3,
+  WAITING_SYNTHESIS: 3,
+  SYNTHESIS: 3,
+  WRITING: 4,
+  VERIFYING: 4,
+  VALIDATE_SAVE: 4,
+  SAVING: 4,
+  QUALITY_REVIEW: 5,
+  COMPLETED: 5,
 }
 
 function rawProgressStageIndex(rawLog) {
   const lower = String(rawLog || '').toLowerCase()
   if (!lower) return -1
-  if (lower.includes('report_file: /') || lower.includes('validate_report.py') || lower.includes('report_file_recovered')) return 3
-  if (lower.includes('synthesis_writing')) return 3
-  if (lower.includes('synthesis')) return 2
-  if (lower.includes('consolidated.json')) return 2
-  if (lower.includes('harness_cli.py run') || lower.includes('research_') || lower.includes('research/research') || lower.includes('sessions_yield')) return 1
+  if (lower.includes('成稿自检') || lower.includes('quality_review')) return 5
+  if (lower.includes('report_file: /') || lower.includes('validate_report.py') || lower.includes('report_file_recovered')) return 4
+  if (lower.includes('synthesis_writing')) return 4
+  if (lower.includes('synthesis')) return 3
+  if (lower.includes('consolidated.json')) return 3
+  if (lower.includes('资料采集工具') || lower.includes('controlled-web-collector') || lower.includes('crawler.')) return 2
+  if (lower.includes('harness_cli.py run') || lower.includes('research_') || lower.includes('research/research') || lower.includes('sessions_yield')) return 2
   if (lower.includes('harness_cli.py plan') || lower.includes('plan.json') || lower.includes('group_')) return 0
   if (lower.includes('pg-sources__query') || lower.includes('vector_sources.json') || lower.includes('database_sources.json') || lower.includes('database_query_plan.json')) return 1
   if (lower.includes('context.json') || lower.includes('preparing hermes gateway') || lower.includes('running hermes report-agent')) return 0
@@ -2892,10 +3113,11 @@ function scrubSourceDisplayText(value) {
 
 function inferSourceGroup(source, fallbackGroup = activeSourceType.value) {
   const origin = source?.sourceOrigin || source?.source_origin
-  if (origin === 'database_recall' || origin === 'tool_search') return origin
+  if (origin === 'database_recall' || origin === 'crawler' || origin === 'tool_search') return origin
   const explicit = source?.sourceGroup || source?.source_group || source?.group || source?.category
-  if (explicit === 'database_recall' || explicit === 'tool_search') return explicit
+  if (explicit === 'database_recall' || explicit === 'crawler' || explicit === 'tool_search') return explicit
   const text = `${explicit || ''} ${source?.type || ''} ${source?.source_type || ''} ${source?.sourceType || ''} ${source?.tag || ''} ${source?.designated_tag || ''} ${source?.status || ''} ${source?.extract_status || ''} ${source?.method || ''} ${source?.engine || ''}`.toLowerCase()
+  if (/crawler|资料采集/.test(text)) return 'crawler'
   if (/database_recall|pg_vector|pgvector|database|vector|结构化|数据库|向量/.test(text)) return 'database_recall'
   if (/tool_search|exa|firecrawl|tavily|工具调用|公开搜索/.test(text)) return 'tool_search'
   if (/report_refs|report_ref|citation|reference|引用|参考/.test(text)) return 'report_refs'
@@ -2915,7 +3137,9 @@ function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType
   const sourceGroup = inferSourceGroup(source, fallbackGroup)
   const sourceType = sourceGroup === 'tool_search'
     ? '互联网搜索工具'
-    : normalizeSourceKind(firstText(source, ['source_type', 'type', 'tag', 'designated_tag', 'sourceType'], '其他'), source)
+    : sourceGroup === 'crawler'
+      ? '资料采集'
+      : normalizeSourceKind(firstText(source, ['source_type', 'type', 'tag', 'designated_tag', 'sourceType'], '其他'), source)
   const status = scrubSourceDisplayText(firstText(source, ['status', 'extract_status', 'source_status'], ''))
   const method = scrubSourceDisplayText(firstText(source, ['method', 'retrievalMode', 'collection_method'], ''))
   const failedReason = scrubSourceDisplayText(firstText(source, ['failedReason', 'failure_reason', 'error', 'message', 'note'], ''))
@@ -2947,6 +3171,7 @@ function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType
 function normalizeSourceKind(value, source = null) {
   const engine = String(source?.engine || source?.search_engine || source?.provider || '').trim().toLowerCase()
   const origin = String(source?.sourceOrigin || source?.source_origin || source?.sourceGroup || '').trim().toLowerCase()
+  if (engine === 'crawler' || /crawler/.test(origin)) return '资料采集'
   if (engine === 'exa') return '互联网搜索工具'
   if (engine === 'firecrawl') return '互联网搜索工具'
   if (engine === 'tavily_extract') return '互联网搜索工具'
@@ -2954,6 +3179,7 @@ function normalizeSourceKind(value, source = null) {
   if (engine === 'pg_vector' || /database_recall|pg_vector|vector/.test(origin)) return '数据库检索工具'
   const text = String(value || '').trim()
   if (!text) return '其他'
+  if (/crawler|资料采集/i.test(text)) return '资料采集'
   if (/exa|firecrawl|tavily/i.test(text)) return '互联网搜索工具'
   if (/pg|向量|vector/i.test(text)) return '数据库检索工具'
   if (/官方|政府|公告|声明|文件|policy|gov/i.test(text)) return '官方文件'
@@ -3419,11 +3645,17 @@ watch(() => [props.phase, props.isHistoryMode], () => {
 watch(() => [props.phase, props.job?.jobId], () => {
   if (props.phase === 'done') activeResultTab.value = 'report'
   activeSourceType.value = 'database_recall'
+  qualityReview.value = null
+  qualityReviewError.value = ''
+  qualityReviewNotice.value = ''
   resetSourceListState()
 })
 watch(() => activeResultTab.value, (tab) => {
   if (tab === 'sources' && props.job?.jobId && !sourceListItems.value.length && !sourceListLoading.value) {
     selectSourceType(activeSourceType.value || 'database_recall')
+  }
+  if (tab === 'quality' && props.job?.jobId && !qualityReview.value && !qualityReviewLoading.value) {
+    loadQualityReview()
   }
 })
 watch([sourceSearchQuery, sourceKindFilter, sourceTimeFilter, sourceSortMode], handleSourceFiltersChanged)
@@ -4013,12 +4245,191 @@ function exportPdf() {
                   </button>
                 </div>
               </section>
-              <section class="plan-source-section">
+              <section class="plan-source-section crawler-plan-section">
                 <div class="plan-source-section-head">
-                  <strong>补充信源</strong>
-                  <span>URL / 机构 / 媒体 / 数据库说明</span>
+                  <strong>资料采集与补充信源</strong>
+                  <span>仅生成计划，资料采集阶段执行</span>
                 </div>
-                <p class="manual-source-hint">可在信源确认环节补充需要优先尝试检索的来源，最终以实际采集结果为准。</p>
+                <p class="crawler-plan-notice">
+                  当前仅生成资料采集计划。提交正式编报任务后，智能体将在资料采集阶段按上述计划补充公开信源。
+                </p>
+
+                <div class="crawler-plan-controls">
+                  <label class="crawler-plan-toggle">
+                    <input
+                      type="checkbox"
+                      :checked="crawlerPlanView.enabled"
+                      @change="updateCrawlerPlan({ enabled: $event.target.checked })"
+                    />
+                    <span>启用资料采集</span>
+                  </label>
+                  <label class="crawler-plan-toggle">
+                    <input
+                      type="checkbox"
+                      :checked="crawlerPlanView.autoGapFilling"
+                      @change="updateCrawlerPlan({ autoGapFilling: $event.target.checked })"
+                    />
+                    <span>根据缺口自动补采</span>
+                  </label>
+                  <label>
+                    <span>采集模式</span>
+                    <select
+                      class="sci-input text-sm bg-black/15"
+                      :value="crawlerPlanView.mode"
+                      @change="updateCrawlerPlan({ mode: $event.target.value })"
+                    >
+                      <option value="auto">auto：智能体根据材料缺口自动补采</option>
+                      <option value="manual">manual：仅使用人工指定线索</option>
+                      <option value="hybrid">hybrid：自动补采 + 人工线索</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>采集目标</span>
+                    <input
+                      class="sci-input text-sm bg-black/15"
+                      :value="crawlerPlanView.goal"
+                      placeholder="例如：补充英国未成年人社交媒体禁令相关公开资料"
+                      @input="updateCrawlerPlan({ goal: $event.target.value })"
+                    />
+                  </label>
+                </div>
+
+                <div class="crawler-direction-list">
+                  <article
+                    v-for="(direction, index) in crawlerPlanView.directions"
+                    :key="`${direction.name}-${index}`"
+                    class="crawler-direction-card"
+                  >
+                    <div class="crawler-direction-head">
+                      <label>
+                        <input
+                          type="checkbox"
+                          :checked="direction.enabled"
+                          @change="updateCrawlerDirection(index, { enabled: $event.target.checked })"
+                        />
+                        <span>启用</span>
+                      </label>
+                      <input
+                        class="sci-input text-sm bg-black/15"
+                        :value="direction.name"
+                        @input="updateCrawlerDirection(index, { name: $event.target.value })"
+                      />
+                    </div>
+                    <textarea
+                      class="sci-textarea text-sm bg-black/15"
+                      rows="2"
+                      :value="direction.description"
+                      placeholder="方向说明"
+                      @input="updateCrawlerDirection(index, { description: $event.target.value })"
+                    ></textarea>
+                    <div class="crawler-direction-fields">
+                      <label>
+                        <span>queries</span>
+                        <textarea
+                          class="sci-textarea text-sm bg-black/15"
+                          rows="2"
+                          :value="crawlerListText(direction.queries)"
+                          placeholder="一行一个检索词"
+                          @input="updateCrawlerDirectionList(index, 'queries', $event.target.value)"
+                        ></textarea>
+                      </label>
+                      <label>
+                        <span>targetDomains</span>
+                        <textarea
+                          class="sci-textarea text-sm bg-black/15"
+                          rows="2"
+                          :value="crawlerListText(direction.targetDomains)"
+                          placeholder="一行一个域名，例如 gov.uk"
+                          @input="updateCrawlerDirectionList(index, 'targetDomains', $event.target.value)"
+                        ></textarea>
+                      </label>
+                    </div>
+                  </article>
+                </div>
+
+                <div class="crawler-manual-grid">
+                  <label>
+                    <span>manualUrls</span>
+                    <textarea
+                      class="sci-textarea text-sm bg-black/15"
+                      rows="3"
+                      :value="crawlerListText(crawlerPlanView.manualUrls)"
+                      placeholder="一行一个 URL"
+                      @input="updateCrawlerList('manualUrls', $event.target.value)"
+                    ></textarea>
+                  </label>
+                  <label>
+                    <span>manualDomains</span>
+                    <textarea
+                      class="sci-textarea text-sm bg-black/15"
+                      rows="3"
+                      :value="crawlerListText(crawlerPlanView.manualDomains)"
+                      placeholder="一行一个域名"
+                      @input="updateCrawlerList('manualDomains', $event.target.value)"
+                    ></textarea>
+                  </label>
+                  <label>
+                    <span>manualKeywords</span>
+                    <textarea
+                      class="sci-textarea text-sm bg-black/15"
+                      rows="3"
+                      :value="crawlerListText(crawlerPlanView.manualKeywords)"
+                      placeholder="一行一个关键词"
+                      @input="updateCrawlerList('manualKeywords', $event.target.value)"
+                    ></textarea>
+                  </label>
+                </div>
+
+                <div class="crawler-limit-grid">
+                  <label>
+                    <span>maxPages</span>
+                    <input
+                      class="sci-input text-sm bg-black/15"
+                      type="number"
+                      min="1"
+                      max="50"
+                      :value="crawlerPlanView.maxPages"
+                      @input="updateCrawlerPlan({ maxPages: Number($event.target.value) || 10 })"
+                    />
+                  </label>
+                  <label>
+                    <span>maxDepth</span>
+                    <input
+                      class="sci-input text-sm bg-black/15"
+                      type="number"
+                      min="0"
+                      max="3"
+                      :value="crawlerPlanView.maxDepth"
+                      @input="updateCrawlerPlan({ maxDepth: Number($event.target.value) || 0 })"
+                    />
+                  </label>
+                  <label>
+                    <span>lookbackHours</span>
+                    <input
+                      class="sci-input text-sm bg-black/15"
+                      type="number"
+                      min="1"
+                      max="720"
+                      :value="crawlerPlanView.lookbackHours || ''"
+                      placeholder="可选"
+                      @input="updateCrawlerPlan({ lookbackHours: $event.target.value })"
+                    />
+                  </label>
+                  <label>
+                    <span>language</span>
+                    <input
+                      class="sci-input text-sm bg-black/15"
+                      :value="crawlerPlanView.language"
+                      placeholder="zh-CN"
+                      @input="updateCrawlerPlan({ language: $event.target.value })"
+                    />
+                  </label>
+                </div>
+
+                <div class="manual-source-compat">
+                  <strong>兼容补充信源</strong>
+                  <p class="manual-source-hint">保留原有规划信源字段，作为资料采集阶段的人工线索，不会立即执行采集。</p>
+                </div>
                 <div class="manual-source-entry">
                   <textarea
                     class="sci-textarea text-sm bg-black/15"
@@ -5030,7 +5441,7 @@ function exportPdf() {
             </div>
 
             <div class="source-count-note">
-              口径说明：数据库检索工具来自 PG 向量库/数据库；互联网搜索工具来自联网检索服务。报告引用编号和结构化整理状态作为信源属性展示，不作为主分类混算。
+              口径说明：数据库检索工具来自 PG 向量库/数据库；资料采集工具来自 crawlerPlan 触发的受控公开采集；互联网搜索工具来自联网检索服务。报告引用编号和结构化整理状态作为信源属性展示，不作为主分类混算。
             </div>
 
             <div class="source-sub-filter" aria-label="信源类型筛选">
@@ -5321,6 +5732,95 @@ function exportPdf() {
                 <p>{{ item.summary }}</p>
               </div>
             </article>
+          </div>
+        </section>
+
+        <section v-else-if="activeResultTab === 'quality'" class="result-tab-panel">
+          <div class="quality-review-panel">
+            <header class="quality-review-header">
+              <div>
+                <span class="quality-eyebrow">QUALITY REVIEW</span>
+                <h2>成稿自检</h2>
+                <p>检查报告是否围绕规划展开、信源是否清楚、风险判断是否有依据。</p>
+              </div>
+              <button type="button" class="result-action-btn result-action-primary" :disabled="qualityReviewRunning" @click="rerunQualityReview">
+                {{ qualityReviewRunning ? '自检中...' : '重新自检' }}
+              </button>
+            </header>
+
+            <div v-if="qualityReviewLoading" class="source-empty-state">正在读取成稿自检结果...</div>
+            <div v-else-if="qualityReviewError" class="report-edit-alert error">{{ qualityReviewError }}</div>
+            <div v-else-if="!qualityReview" class="source-empty-state">
+              暂无成稿自检结果。可点击“重新自检”生成检查建议。
+            </div>
+            <div v-else class="quality-review-content">
+              <div v-if="qualityReviewNotice" class="report-edit-alert notice">{{ qualityReviewNotice }}</div>
+              <div v-if="qualityReview.status === 'failed'" class="report-edit-alert error">
+                {{ qualityReview.errorMessage || '成稿自检失败，可稍后重试。' }}
+              </div>
+
+              <div class="quality-score-grid">
+                <article class="quality-overall-card">
+                  <span>总体评分</span>
+                  <strong>{{ qualityScoreLabel(qualityReview.overallScore) }}</strong>
+                  <p>{{ qualityReview.summary || '暂无摘要。' }}</p>
+                  <em>字数估算：{{ qualityReview.wordCount || '--' }}</em>
+                </article>
+                <article v-for="item in qualityDimensionCards" :key="item.label" class="quality-dimension-card">
+                  <span>{{ item.label }}</span>
+                  <strong>{{ qualityScoreLabel(item.score) }}</strong>
+                </article>
+              </div>
+
+              <div class="quality-section">
+                <h3>检查项</h3>
+                <div class="quality-check-grid">
+                  <article v-for="check in qualityReview.checks || []" :key="check.key || check.label" class="quality-check-card" :class="`quality-check-${check.status || 'unknown'}`">
+                    <strong>{{ check.label || check.key }}</strong>
+                    <span>{{ qualityStatusLabel(check.status) }}</span>
+                    <p>{{ check.comment }}</p>
+                  </article>
+                </div>
+              </div>
+
+              <div class="quality-section">
+                <h3>问题清单</h3>
+                <div v-if="!(qualityReview.issues || []).length" class="source-empty-state">未发现需要优先处理的问题。</div>
+                <article v-for="issue in qualityReview.issues || []" v-else :key="`${issue.section}-${issue.problem}-${issue.targetText}`" class="quality-issue-card">
+                  <div class="quality-issue-head">
+                    <span>{{ issue.severity || 'warning' }}</span>
+                    <strong>{{ issue.section || '报告正文' }}</strong>
+                  </div>
+                  <p><b>问题：</b>{{ issue.problem }}</p>
+                  <p v-if="issue.evidence"><b>证据：</b>{{ issue.evidence }}</p>
+                  <p><b>建议：</b>{{ issue.suggestion }}</p>
+                  <button type="button" class="result-action-btn" @click="openReportEditFromQualityIssue(issue)">
+                    发起局部修改
+                  </button>
+                </article>
+              </div>
+
+              <div class="quality-section quality-bottom-grid">
+                <div>
+                  <h3>推荐修改</h3>
+                  <article v-for="item in qualityReview.recommendedEdits || []" :key="`${item.section}-${item.instruction}`" class="quality-edit-card">
+                    <strong>{{ item.section || '报告正文' }}</strong>
+                    <span>{{ item.editMode || 'polish' }}</span>
+                    <p>{{ item.instruction }}</p>
+                  </article>
+                  <div v-if="!(qualityReview.recommendedEdits || []).length" class="source-empty-state">暂无推荐修改。</div>
+                </div>
+                <div>
+                  <h3>信源使用情况</h3>
+                  <div class="quality-source-usage">
+                    <span>数据库信源 <b>{{ qualityReview.sourceUsage?.databaseSourcesUsed ?? 0 }}</b></span>
+                    <span>资料采集 <b>{{ qualityReview.sourceUsage?.crawlerSourcesUsed ?? 0 }}</b></span>
+                    <span>互联网搜索 <b>{{ qualityReview.sourceUsage?.internetSourcesUsed ?? 0 }}</b></span>
+                    <span>未核实判断 <b>{{ qualityReview.sourceUsage?.unverifiedClaims ?? 0 }}</b></span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 

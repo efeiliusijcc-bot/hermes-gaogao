@@ -63,7 +63,10 @@ VALUES
   ('template', 'create', 'Create own report templates and prompt snippets'),
   ('template', 'read', 'Read own report templates and prompt snippets'),
   ('template', 'update', 'Update own report templates and prompt snippets'),
-  ('template', 'delete', 'Delete own report templates and prompt snippets')
+  ('template', 'delete', 'Delete own report templates and prompt snippets'),
+  ('crawler', 'create', 'Create controlled crawler tasks'),
+  ('crawler', 'read', 'Read controlled crawler tasks and collected items'),
+  ('crawler', 'delete', 'Delete controlled crawler tasks')
 ON CONFLICT (resource, action) DO UPDATE
 SET description = EXCLUDED.description;
 
@@ -98,7 +101,10 @@ WITH operator_permissions(permission_key) AS (
     ('template:create'),
     ('template:read'),
     ('template:update'),
-    ('template:delete')
+    ('template:delete'),
+    ('crawler:create'),
+    ('crawler:read'),
+    ('crawler:delete')
 ),
 resolved AS (
   SELECT r.id AS role_id, p.id AS permission_id
@@ -128,7 +134,8 @@ WITH viewer_permissions(permission_key) AS (
     ('template:create'),
     ('template:read'),
     ('template:update'),
-    ('template:delete')
+    ('template:delete'),
+    ('crawler:read')
 ),
 resolved AS (
   SELECT r.id AS role_id, p.id AS permission_id
