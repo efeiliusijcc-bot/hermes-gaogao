@@ -36,6 +36,12 @@ export class CrawlerController {
     return this.crawler.listItems(taskId, user);
   }
 
+  @Post('tasks/:taskId/run')
+  @RequirePermissions('crawler:execute')
+  runTask(@Param('taskId') taskId: string, @CurrentUser() user: AuthUser) {
+    return this.crawler.runTaskForUser(taskId, user);
+  }
+
   @Delete('tasks/:taskId')
   @RequirePermissions('crawler:delete')
   deleteTask(@Param('taskId') taskId: string, @CurrentUser() user: AuthUser) {

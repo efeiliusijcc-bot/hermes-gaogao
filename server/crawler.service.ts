@@ -91,6 +91,12 @@ export class CrawlerService implements OnModuleDestroy {
     return { items: result.rows.map((row) => this.toItem(row)) };
   }
 
+  async runTaskForUser(taskId: string, user: AuthUser): Promise<{ task: CrawlerTaskResponse; items: CrawlerItemResponse[] }> {
+    const task = await this.findTask(taskId);
+    this.assertTaskAccess(task, user);
+    return this.runTask(taskId);
+  }
+
   async runTask(taskId: string): Promise<{ task: CrawlerTaskResponse; items: CrawlerItemResponse[] }> {
     const task = await this.findTask(taskId);
     const pool = await this.getPool();
@@ -153,11 +159,21 @@ export class CrawlerService implements OnModuleDestroy {
   }
 
   private normalizeTaskInput(input: CreateCrawlerTaskInput) {
-    const jobId = String(input.jobId || '').trim();
+    const planningSessionId = String(input.planningSessionId || '').trim();
+    const sourcePhase = String(input.sourcePhase || '').trim() === 'planning' ? 'planning' : undefined;
+    const jobId = String(input.jobId || (sourcePhase === 'planning' ? `planning:${planningSessionId || Date.now()}` : '')).trim();
     const ownerId = String(input.ownerId || '').trim();
     if (!jobId) throw new BadRequestException({ error: 'jobId is required' });
     if (!ownerId) throw new BadRequestException({ error: 'ownerId is required' });
     const crawlerPlan = this.normalizeCrawlerPlan(input.crawlerPlan);
+    if (sourcePhase === 'planning') {
+      crawlerPlan.executePhase = 'planning';
+      crawlerPlan.sourcePhase = 'planning';
+      crawlerPlan.planningSessionId = planningSessionId;
+      crawlerPlan.reportTitle = String(input.reportTitle || input.title || '').trim();
+      crawlerPlan.alreadyExecuted = false;
+      crawlerPlan.allowFurtherCollectionInResearch = false;
+    }
     const maxPages = this.boundInt(input.maxPages ?? crawlerPlan.maxPages, 10, 1, MAX_PAGES_LIMIT);
     const maxDepth = this.boundInt(input.maxDepth ?? crawlerPlan.maxDepth, 1, 0, MAX_DEPTH_LIMIT);
     crawlerPlan.maxPages = maxPages;
@@ -200,7 +216,12 @@ export class CrawlerService implements OnModuleDestroy {
       maxDepth: this.boundInt(plan.maxDepth, 1, 0, MAX_DEPTH_LIMIT),
       lookbackHours: this.optionalBoundInt(plan.lookbackHours, 1, 720),
       language: String(plan.language || 'zh-CN').trim() || 'zh-CN',
-      executePhase: 'research',
+      executePhase: String(plan.executePhase || '') === 'planning' ? 'planning' : 'research',
+      alreadyExecuted: plan.alreadyExecuted === true,
+      allowFurtherCollectionInResearch: plan.allowFurtherCollectionInResearch === true,
+      planningSessionId: String(plan.planningSessionId || '').trim(),
+      sourcePhase: String(plan.sourcePhase || '') === 'planning' ? 'planning' : 'research',
+      reportTitle: String(plan.reportTitle || '').trim(),
     };
   }
 
@@ -321,7 +342,24 @@ export class CrawlerService implements OnModuleDestroy {
         (task_id, owner_id, job_id, url, title, publisher, published_at, content_text, content_summary, metadata, relevance_score, credibility_score)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
        RETURNING *`,
-      [task.taskId, task.ownerId, task.jobId, item.url, item.title, item.publisher, item.publishedAt, item.contentText, item.contentSummary, JSON.stringify(item.metadata), 50, 50],
+      [
+        task.taskId,
+        task.ownerId,
+        task.jobId,
+        item.url,
+        item.title,
+        item.publisher,
+        item.publishedAt,
+        item.contentText,
+        item.contentSummary,
+        JSON.stringify({
+          ...item.metadata,
+          sourcePhase: task.crawlerPlan.sourcePhase || task.crawlerPlan.executePhase || 'research',
+          planningSessionId: task.crawlerPlan.planningSessionId || '',
+        }),
+        50,
+        50,
+      ],
     );
     return this.toItem(result.rows[0]);
   }

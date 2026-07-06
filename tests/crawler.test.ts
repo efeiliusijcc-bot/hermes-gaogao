@@ -1,10 +1,13 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { Module } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
+import { AuthGuard } from '../server/auth.guard.js';
+import { AuthService } from '../server/auth.service.js';
 import { CrawlerController, InternalCrawlerController } from '../server/crawler.controller.js';
 import { CrawlerService } from '../server/crawler.service.js';
 import { HermesService } from '../server/hermes.service.js';
+import { PermissionsGuard } from '../server/permissions.guard.js';
 import type { AuthUser } from '../server/auth-user.interface.js';
 
 type Query = { text: string; params?: unknown[] };
@@ -228,6 +231,53 @@ async function testRunTaskWritesItems() {
   assert.ok(state.logs.some((log) => String(log.message).includes('资料采集工具')));
 }
 
+async function testUserRunTaskEndpointPermissions() {
+  const usersByToken: Record<string, AuthUser> = {
+    operator: user('user-1', 'operator', ['crawler:create', 'crawler:execute', 'crawler:read']),
+    viewer: user('viewer-1', 'viewer', ['crawler:read']),
+  };
+  const service = {
+    runTaskForUser: async (_taskId: string, currentUser: AuthUser) => {
+      if (!currentUser.permissions.includes('crawler:execute')) throw new Error('should be blocked by guard');
+      return { task: { taskId: 'task-1', status: 'completed' }, items: [makeItem()] };
+    },
+  };
+
+  @Module({
+    controllers: [CrawlerController],
+    providers: [
+      Reflector,
+      {
+        provide: AuthService,
+        useValue: {
+          verifyAccessToken: async (token: string) => {
+            const found = usersByToken[token];
+            if (!found) throw new Error('invalid token');
+            return found;
+          },
+        },
+      },
+      { provide: AuthGuard, useFactory: (auth: AuthService) => new AuthGuard(auth), inject: [AuthService] },
+      { provide: PermissionsGuard, useFactory: (reflector: Reflector) => new PermissionsGuard(reflector), inject: [Reflector] },
+      { provide: CrawlerService, useValue: service },
+    ],
+  })
+  class TestModule {}
+
+  const app = await NestFactory.create(TestModule, { logger: ['error'] });
+  await app.listen(0);
+  const address = app.getHttpServer().address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  const url = `http://127.0.0.1:${port}/api/crawler/tasks/task-1/run`;
+  try {
+    await assertStatus(await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer viewer' } }), 403);
+    const result = await assertStatus(await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer operator' } }), 201);
+    assert.equal(result.task.status, 'completed');
+  } finally {
+    await app.close();
+  }
+}
+
 async function testOwnerIsolation() {
   const { service } = createCrawlerService();
   const owner = await service.getTask('11111111-1111-4111-8111-111111111111', user('user-1', 'operator', ['crawler:read']));
@@ -278,6 +328,7 @@ function testHermesCrawlerPlanRequirements() {
 await testInternalSkillToken();
 await testCreateTaskAndSafety();
 await testRunTaskWritesItems();
+await testUserRunTaskEndpointPermissions();
 await testOwnerIsolation();
 testHermesCrawlerPlanRequirements();
 

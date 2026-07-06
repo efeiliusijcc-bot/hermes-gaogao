@@ -1317,7 +1317,9 @@ export class HermesService {
       maxDepth: Math.max(0, Math.min(2, Number(plan.maxDepth ?? 1) || 0)),
       lookbackHours: plan.lookbackHours == null ? null : Math.max(1, Math.min(720, Number(plan.lookbackHours) || 24)),
       language: this.sanitizeText(String(plan.language || 'zh-CN'), 20),
-      executePhase: 'research',
+      executePhase: String(plan.executePhase || '') === 'planning' ? 'planning' : 'research',
+      alreadyExecuted: plan.alreadyExecuted === true,
+      allowFurtherCollectionInResearch: plan.allowFurtherCollectionInResearch === true,
     };
   }
 
@@ -1332,6 +1334,10 @@ export class HermesService {
     const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
     const crawlerPlan = this.normalizeCrawlerPlan(parsedContext?.crawlerPlan);
     const crawlerEnabled = crawlerPlan.enabled === true;
+    const planningCrawlerAlreadyExecuted =
+      crawlerPlan.executePhase === 'planning' &&
+      crawlerPlan.alreadyExecuted === true;
+    const allowFurtherCrawlerCollection = crawlerPlan.allowFurtherCollectionInResearch === true;
     const databaseSourceRequirements = databaseSourceOptions.enabled
       ? [
           `18. databaseSourceOptions.enabled=true 时，Research Phase 必须先读取 context.json.databaseQueryIntent 分词词包，再在公开检索前调用 MCP 工具 pg-sources__query 检索 PostgreSQL 向量信源库；配置为 summary_first、storageMode=${databaseSourceOptions.storageMode}、sourceTable=public.${databaseSourceOptions.sourceTable}、lookbackDays=${databaseSourceOptions.lookbackDays}、maxMetadataRows=${databaseSourceOptions.maxMetadataRows}、maxContentRows=${databaseSourceOptions.maxContentRows}。`,
@@ -1361,10 +1367,14 @@ export class HermesService {
       `8. Research Phase 必须执行完整 K/HB 全量流水线：先写入 reports/${jobId}/context.json；如启用数据库信源，再完成 pg-sources__query PG 向量库预召回并保存 database/database_query_plan.json、database/database_sources.json（仅在 PG 空结果/失败且已记录 fallback reason 后才可用 mysql-test__mysql_query 兜底）；随后必须调用 ${HERMES_CONTAINER_REPORT_DIR.replace(/\/reports$/, '')}/skills/web-research-firecrawl/scripts/harness_cli.py plan 生成 plan.json 和 groups/group_A.json 等分组文件；再启动 research-${jobIdShort}-{X} 调研子任务，由子任务调用 harness_cli.py run 产出 research/research_{X}.json；最后合并为 research/consolidated.json 后才能进入撰稿。`,
       '9. Research Phase 禁止把 research_cli.py brief 作为 K/HB 主调研路径；research_cli.py brief 只允许在 harness_cli.py plan/run 已失败且已记录 firecrawl_fallback_reason 时作为异常补充。PG 向量信源不能替代 Tavily、Exa、Firecrawl 三件套，不能减少 harness_cli.py run、research_*.json 或 consolidated.json 的生成要求。',
       '10. Research Phase 输出必须形成完整内部素材包：context.json、plan.json、至少一个 groups/group_*.json、至少一个 research/research_*.json、research/consolidated.json、sources、evidence_cards、key_findings、verification_needed 和信息缺口；consolidated.json 或 research_*.json 中必须能看到 Tavily、Exa、Firecrawl 调研记录，除非三件套不可用且已记录明确 fallback reason。',
-      crawlerEnabled
+      planningCrawlerAlreadyExecuted && !allowFurtherCrawlerCollection
+        ? '10a. context.json.crawlerPlan.executePhase="planning" 且 alreadyExecuted=true 时，Research Phase 不得调用 source-collection-agent、controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items；必须直接使用 context.json.crawlerSourceContext.items 中规划页面已选择的采集信源。'
+        : crawlerEnabled
         ? '10a. source-collection-agent: context.json.crawlerPlan.enabled=true 时，在 PG 向量召回后、公开检索分组前，必须启动 Research Phase 子任务 source-collection-agent。该子任务只读取 crawlerPlan、report_plan、database_sources 信息缺口，生成受控采集请求，并通过 controlled-web-collector skill 调用 NestJS 内部接口 crawler.create_task、crawler.run_task、crawler.get_items；严禁让模型自由执行 Python、shell、登录、验证码绕过、付费墙抓取或内网访问。'
         : '10a. context.json.crawlerPlan.enabled 不是 true 时，不得调用 controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items；继续使用 PG 向量召回和公开检索流水线。',
-      crawlerEnabled
+      planningCrawlerAlreadyExecuted && !allowFurtherCrawlerCollection
+        ? '10b. 规划页面已选采集信源的 sourcePhase 必须保持为 "planning"，用户可见日志写“资料采集工具：使用规划页面已选择的 N 条采集信源。”；不得伪造或扩大 selectedCrawlerItemIds 之外的采集结果。'
+        : crawlerEnabled
         ? '10b. controlled-web-collector skill 只允许访问 NestJS /api/internal/crawler/*，必须携带 x-internal-skill-token；采集结果必须写入 context.json.crawlerSourceContext={tasks:[],items:[]}，每个 item 包含 title、url、publisher、publishedAt、fetchedAt、contentSummary、contentText、sourceType="crawler"、relevanceScore、credibilityScore。crawlerSourceContext 只能补充公开信源，不能覆盖 database_sources、report_plan、userPreferenceContext 或 draftAssistantContext。'
         : '10b. context.json.crawlerSourceContext 保持 {tasks:[],items:[]}，不得伪造资料采集结果。',
       '10c. 用户可见进度日志中，把 PG/vector 召回称为“数据库检索工具”，把 Tavily/Exa/Firecrawl 称为“互联网搜索工具”，把 controlled-web-collector 称为“资料采集工具”，如确有本地脚本则称为“本地脚本工具”；不要出现 OpenClaw 字样。',

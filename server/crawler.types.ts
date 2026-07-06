@@ -22,13 +22,21 @@ export interface CrawlerPlan {
   maxDepth: number;
   lookbackHours: number | null;
   language: string;
-  executePhase: 'research';
+  executePhase: 'planning' | 'research';
+  alreadyExecuted?: boolean;
+  allowFurtherCollectionInResearch?: boolean;
+  planningSessionId?: string;
+  sourcePhase?: 'planning' | 'research';
+  reportTitle?: string;
 }
 
 export interface CreateCrawlerTaskInput {
   jobId?: unknown;
   ownerId?: unknown;
   ownerUsername?: unknown;
+  planningSessionId?: unknown;
+  sourcePhase?: unknown;
+  reportTitle?: unknown;
   title?: unknown;
   goal?: unknown;
   crawlerPlan?: unknown;

@@ -371,6 +371,23 @@ export function createReportPlan(body) {
   })
 }
 
+export function createCrawlerTask(payload) {
+  return request('/crawler/tasks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function runCrawlerTask(taskId) {
+  return request(`/crawler/tasks/${encodeURIComponent(taskId)}/run`, {
+    method: 'POST',
+  })
+}
+
+export function getCrawlerTaskItems(taskId) {
+  return request(`/crawler/tasks/${encodeURIComponent(taskId)}/items`)
+}
+
 export function createChatCompletion(body) {
   return request('/chat/completions', {
     method: 'POST',

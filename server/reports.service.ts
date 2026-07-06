@@ -706,6 +706,20 @@ export class ReportsService implements OnModuleDestroy {
     return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   }
 
+  private stringArray(value: unknown, limit = 50): string[] {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set<string>();
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+      .filter((item) => {
+        if (seen.has(item)) return false;
+        seen.add(item);
+        return true;
+      })
+      .slice(0, limit);
+  }
+
   private isoString(value: unknown): string {
     if (!value) return '';
     const date = value instanceof Date ? value : new Date(String(value));
@@ -1371,6 +1385,13 @@ export class ReportsService implements OnModuleDestroy {
     if (job.skill !== 'write-hb') return payload;
     const context = this.contextObjectFromPayload(payload);
     const crawlerPlan = this.plainObject(context.crawlerPlan);
+    const isPlanningExecuted =
+      String(crawlerPlan.executePhase || '') === 'planning' &&
+      crawlerPlan.alreadyExecuted === true;
+    if (isPlanningExecuted) {
+      const selectedContext = await this.enrichPayloadWithPlanningCrawlerSources(job, payload, context, crawlerPlan);
+      return selectedContext;
+    }
     const enabled = crawlerPlan.enabled === true || String(crawlerPlan.enabled || '').toLowerCase() === 'true';
     if (!enabled) {
       const nextContext = {
@@ -1466,6 +1487,127 @@ export class ReportsService implements OnModuleDestroy {
       await this.writeCrawlerContextArtifact(job, nextContext);
       return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
     }
+  }
+
+  private async enrichPayloadWithPlanningCrawlerSources(
+    job: JobRecord,
+    payload: Record<string, unknown>,
+    context: Record<string, unknown>,
+    crawlerPlan: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const selectedIds = this.stringArray(context.selectedCrawlerItemIds, 80);
+    const selectedItems = await this.readSelectedCrawlerItemsForJob(job, selectedIds);
+    const fallbackContext = this.normalizeCrawlerSourceContext(context.crawlerSourceContext);
+    const fallbackItems = Array.isArray(fallbackContext.items)
+      ? fallbackContext.items.filter((item) => {
+        if (!selectedIds.length) return false;
+        const id = this.firstString(this.plainObject(item), ['itemId', 'item_id']);
+        return selectedIds.includes(id);
+      })
+      : [];
+    const items = selectedItems.length ? selectedItems : fallbackItems.map((item, index) => ({
+      ...this.plainObject(item),
+      itemId: this.firstString(this.plainObject(item), ['itemId', 'item_id']) || `planning-selected-${index + 1}`,
+      sourceType: 'crawler',
+      sourcePhase: 'planning',
+    }));
+    const taskIds = this.stringArray(context.crawlerTaskIds, 20);
+    const crawlerSourceContext = {
+      source: 'planning_selected_sources',
+      tasks: this.buildPlanningCrawlerTaskSummaries(fallbackContext.tasks, taskIds, items.length),
+      items: items.map((item) => ({
+        ...item,
+        sourceType: 'crawler',
+        sourcePhase: 'planning',
+      })),
+    };
+    const nextContext = {
+      ...context,
+      crawlerPlan: {
+        ...crawlerPlan,
+        enabled: crawlerPlan.enabled !== false,
+        executePhase: 'planning',
+        alreadyExecuted: true,
+        allowFurtherCollectionInResearch: crawlerPlan.allowFurtherCollectionInResearch === true,
+      },
+      selectedCrawlerItemIds: selectedIds,
+      crawlerTaskIds: taskIds,
+      crawlerSourceContext,
+    };
+    job.artifacts = {
+      ...job.artifacts,
+      crawlerSourceContext,
+      crawlerTaskIds: taskIds,
+      crawlerItemCount: crawlerSourceContext.items.length,
+    };
+    await this.writeCrawlerContextArtifact(job, nextContext);
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'crawler_planning_selected',
+      message: `资料采集工具：使用规划页面已选择的 ${crawlerSourceContext.items.length} 条采集信源。`,
+    });
+    this.pushEvent(job, {
+      type: 'sources',
+      sources: crawlerSourceContext.items.map((item) => ({
+        ...item,
+        sourceGroup: 'crawler',
+        sourceOrigin: 'crawler',
+        sourceType: '资料采集',
+        sourcePhase: 'planning',
+        method: '规划页面已选',
+      })),
+    });
+    return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
+  }
+
+  private async readSelectedCrawlerItemsForJob(job: JobRecord, selectedIds: string[]): Promise<Array<Record<string, unknown>>> {
+    if (!selectedIds.length) return [];
+    const pool = await this.getPool();
+    const isAdminOwner = job.ownerRole === 'admin';
+    const result = isAdminOwner
+      ? await pool.query(
+        `SELECT * FROM crawler_items WHERE item_id::text = ANY($1::text[]) ORDER BY created_at ASC`,
+        [selectedIds],
+      )
+      : await pool.query(
+        `SELECT * FROM crawler_items WHERE item_id::text = ANY($1::text[]) AND owner_id = $2 ORDER BY created_at ASC`,
+        [selectedIds, job.ownerUserId || ''],
+      );
+    return result.rows.map((row) => this.crawlerItemRowToContextItem(row));
+  }
+
+  private crawlerItemRowToContextItem(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+      itemId: String(row.item_id || ''),
+      taskId: String(row.task_id || ''),
+      title: String(row.title || ''),
+      url: String(row.url || ''),
+      publisher: String(row.publisher || ''),
+      publishedAt: row.published_at ? this.isoString(row.published_at) : null,
+      fetchedAt: this.isoString(row.fetched_at),
+      contentSummary: String(row.content_summary || ''),
+      contentText: String(row.content_text || ''),
+      sourceType: 'crawler',
+      sourcePhase: 'planning',
+      relevanceScore: this.firstNumber(row, ['relevance_score']) ?? null,
+      credibilityScore: this.firstNumber(row, ['credibility_score']) ?? null,
+    };
+  }
+
+  private buildPlanningCrawlerTaskSummaries(tasks: unknown[], taskIds: string[], selectedCount: number): unknown[] {
+    const existing = Array.isArray(tasks) ? tasks : [];
+    if (existing.length) {
+      return existing.map((task) => ({
+        ...this.plainObject(task),
+        selectedCount,
+      }));
+    }
+    return taskIds.map((taskId) => ({
+      taskId,
+      status: 'completed',
+      itemCount: selectedCount,
+      selectedCount,
+    }));
   }
 
   private buildCrawlerSourceContext(task: CrawlerTaskResponse, items: CrawlerItemResponse[]) {
@@ -3711,6 +3853,12 @@ export class ReportsService implements OnModuleDestroy {
     if (!item || typeof item !== 'object') return null;
     const source = item as Record<string, unknown>;
     const normalized = this.normalizeSourceRecord(source, index, 'crawler');
+    const sourcePhase = this.firstString(source, ['sourcePhase', 'source_phase']);
+    const method = sourcePhase === 'planning'
+      ? '规划页面已选'
+      : sourcePhase === 'research'
+        ? 'Research Phase 补采'
+        : normalized.method || '资料采集工具';
     return {
       ...normalized,
       id: normalized.id || `crawler-${index + 1}`,
@@ -3726,7 +3874,7 @@ export class ReportsService implements OnModuleDestroy {
       sourceType: '资料采集',
       relevanceScore: normalized.relevanceScore ?? this.firstNumber(source, ['relevanceScore', 'relevance_score']) ?? undefined,
       status: normalized.status || 'collected',
-      method: normalized.method || '资料采集工具',
+      method,
     };
   }
 

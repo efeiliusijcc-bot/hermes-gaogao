@@ -65,6 +65,7 @@ VALUES
   ('template', 'update', 'Update own report templates and prompt snippets'),
   ('template', 'delete', 'Delete own report templates and prompt snippets'),
   ('crawler', 'create', 'Create controlled crawler tasks'),
+  ('crawler', 'execute', 'Execute controlled crawler tasks'),
   ('crawler', 'read', 'Read controlled crawler tasks and collected items'),
   ('crawler', 'delete', 'Delete controlled crawler tasks')
 ON CONFLICT (resource, action) DO UPDATE
@@ -103,6 +104,7 @@ WITH operator_permissions(permission_key) AS (
     ('template:update'),
     ('template:delete'),
     ('crawler:create'),
+    ('crawler:execute'),
     ('crawler:read'),
     ('crawler:delete')
 ),

@@ -63,6 +63,38 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  planningSessionId: {
+    type: String,
+    default: '',
+  },
+  planningCrawlerTask: {
+    type: Object,
+    default: null,
+  },
+  planningCrawlerItems: {
+    type: Array,
+    default: () => [],
+  },
+  selectedCrawlerItemIds: {
+    type: Array,
+    default: () => [],
+  },
+  planningCrawlerStatus: {
+    type: String,
+    default: 'idle',
+  },
+  planningCrawlerError: {
+    type: String,
+    default: '',
+  },
+  planningCrawlerNotice: {
+    type: String,
+    default: '',
+  },
+  planningCrawlerExpandedIds: {
+    type: Array,
+    default: () => [],
+  },
   databaseSourceEnabled: {
     type: Boolean,
     default: true,
@@ -143,6 +175,11 @@ const emit = defineEmits([
   'toggle-plan-option',
   'add-plan-option',
   'toggle-plan-search-query',
+  'run-planning-crawler',
+  'toggle-planning-crawler-item',
+  'select-planning-crawler-items',
+  'toggle-planning-crawler-item-expanded',
+  'remove-low-quality-planning-crawler-items',
   'next-plan-step',
   'prev-plan-step',
   'open-daily-awareness',
@@ -258,6 +295,26 @@ const networkPlanSourceOptions = computed(() => (currentPlanStep.value?.options 
 const isSupplementPlanStep = computed(() => currentPlanStep.value?.type === 'supplement')
 const manualPlanSources = computed(() => parseManualPlanSources(props.planSourceInput))
 const crawlerPlanView = computed(() => normalizeCrawlerPlanForView(props.crawlerPlan))
+const selectedCrawlerItemSet = computed(() => new Set((props.selectedCrawlerItemIds || []).map((item) => String(item))))
+const planningCrawlerStats = computed(() => ({
+  taskCount: props.planningCrawlerTask?.taskId ? 1 : 0,
+  itemCount: props.planningCrawlerItems?.length || 0,
+  selectedCount: props.selectedCrawlerItemIds?.length || 0,
+  failedUrlCount: Number(props.planningCrawlerTask?.crawlerPlan?.failedUrlCount || 0),
+  blockedUrlCount: Number(props.planningCrawlerTask?.crawlerPlan?.blockedUrlCount || 0),
+}))
+const planningCrawlerStatusLabel = computed(() => {
+  if (props.planningCrawlerStatus === 'running') return '采集中'
+  if (props.planningCrawlerStatus === 'completed') return '采集完成'
+  if (props.planningCrawlerStatus === 'failed') return '采集失败'
+  return '未开始'
+})
+const planningCrawlerStatusClass = computed(() => {
+  if (props.planningCrawlerStatus === 'running') return 'running'
+  if (props.planningCrawlerStatus === 'completed') return 'completed'
+  if (props.planningCrawlerStatus === 'failed') return 'failed'
+  return 'idle'
+})
 const reportTypeLabel = computed(() => {
   if (effectiveReportType.value === 'person-intelligence-report') return '人物报'
   if (effectiveReportType.value === 'risk-assessment-reports') return '风险报'
@@ -2050,7 +2107,11 @@ function normalizeCrawlerPlanForView(plan = {}) {
     maxDepth: Number(plan.maxDepth ?? 1),
     lookbackHours: plan.lookbackHours ?? '',
     language: String(plan.language || 'zh-CN'),
-    executePhase: 'research',
+    executePhase: 'planning',
+    alreadyExecuted: plan.alreadyExecuted === true,
+    allowFurtherCollectionInResearch: plan.allowFurtherCollectionInResearch === true,
+    planningSessionId: String(plan.planningSessionId || props.planningSessionId || ''),
+    sourcePhase: 'planning',
   }
 }
 
@@ -2058,7 +2119,9 @@ function updateCrawlerPlan(patch) {
   emit('update:crawlerPlan', {
     ...crawlerPlanView.value,
     ...patch,
-    executePhase: 'research',
+    executePhase: 'planning',
+    sourcePhase: 'planning',
+    allowFurtherCollectionInResearch: false,
   })
 }
 
@@ -2079,6 +2142,41 @@ function updateCrawlerDirection(index, patch) {
 
 function updateCrawlerDirectionList(index, key, value) {
   updateCrawlerDirection(index, { [key]: parseCrawlerList(value) })
+}
+
+function crawlerItemId(item) {
+  return String(item?.itemId || item?.id || '').trim()
+}
+
+function isCrawlerItemSelected(item) {
+  return selectedCrawlerItemSet.value.has(crawlerItemId(item))
+}
+
+function isCrawlerItemExpanded(item) {
+  return (props.planningCrawlerExpandedIds || []).map((id) => String(id)).includes(crawlerItemId(item))
+}
+
+function crawlerItemTitle(item) {
+  return String(item?.title || item?.url || '未命名采集信源').trim()
+}
+
+function crawlerItemSummary(item) {
+  return String(item?.contentSummary || item?.summary || item?.contentText || '').trim()
+}
+
+function crawlerScoreLabel(value) {
+  const score = Number(value)
+  return Number.isFinite(score) ? Math.round(score) : '--'
+}
+
+function crawlerItemTime(item) {
+  const value = item?.publishedAt || item?.fetchedAt || item?.createdAt || ''
+  if (!value) return '--'
+  try {
+    return new Date(value).toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return String(value)
+  }
 }
 
 function commitManualPlanSources(items) {
@@ -4248,10 +4346,10 @@ function exportPdf() {
               <section class="plan-source-section crawler-plan-section">
                 <div class="plan-source-section-head">
                   <strong>资料采集与补充信源</strong>
-                  <span>仅生成计划，资料采集阶段执行</span>
+                  <span :class="['crawler-status-pill', planningCrawlerStatusClass]">{{ planningCrawlerStatusLabel }}</span>
                 </div>
                 <p class="crawler-plan-notice">
-                  当前仅生成资料采集计划。提交正式编报任务后，智能体将在资料采集阶段按上述计划补充公开信源。
+                  在执行正式编报任务前，可先采集公开信源。采集完成后，请选择需要纳入本次编报的材料。
                 </p>
 
                 <div class="crawler-plan-controls">
@@ -4292,6 +4390,36 @@ function exportPdf() {
                       @input="updateCrawlerPlan({ goal: $event.target.value })"
                     />
                   </label>
+                </div>
+
+                <div class="planning-crawler-action-bar">
+                  <div>
+                    <strong>规划采集会话</strong>
+                    <span>{{ planningSessionId || '--' }}</span>
+                  </div>
+                  <button
+                    class="sci-btn text-[10px] px-4 py-2 border-neon-cyan"
+                    type="button"
+                    :disabled="planningCrawlerStatus === 'running' || !crawlerPlanView.enabled"
+                    @click="emit('run-planning-crawler')"
+                  >
+                    {{ planningCrawlerStatus === 'running' ? '采集中...' : '开始采集' }}
+                  </button>
+                </div>
+
+                <div class="planning-crawler-stats">
+                  <div><span>采集任务数</span><b>{{ planningCrawlerStats.taskCount }}</b></div>
+                  <div><span>采集结果数</span><b>{{ planningCrawlerStats.itemCount }}</b></div>
+                  <div><span>已选择结果数</span><b>{{ planningCrawlerStats.selectedCount }}</b></div>
+                  <div><span>失败 URL 数</span><b>{{ planningCrawlerStats.failedUrlCount }}</b></div>
+                  <div><span>安全规则拦截</span><b>{{ planningCrawlerStats.blockedUrlCount }}</b></div>
+                </div>
+
+                <div v-if="planningCrawlerNotice" class="crawler-result-notice">
+                  {{ planningCrawlerNotice }}
+                </div>
+                <div v-if="planningCrawlerError" class="crawler-result-error">
+                  {{ planningCrawlerError }}
                 </div>
 
                 <div class="crawler-direction-list">
@@ -4428,7 +4556,7 @@ function exportPdf() {
 
                 <div class="manual-source-compat">
                   <strong>兼容补充信源</strong>
-                  <p class="manual-source-hint">保留原有规划信源字段，作为资料采集阶段的人工线索，不会立即执行采集。</p>
+                  <p class="manual-source-hint">保留原有规划信源字段，作为本次规划页采集和正式编报的人工线索。</p>
                 </div>
                 <div class="manual-source-entry">
                   <textarea
@@ -4445,6 +4573,67 @@ function exportPdf() {
                     <span>{{ source }}</span>
                     <button type="button" @click="removeManualPlanSource(index)">删除</button>
                   </div>
+                </div>
+
+                <div class="planning-crawler-results">
+                  <div class="planning-crawler-results-head">
+                    <div>
+                      <strong>采集结果</strong>
+                      <span>已采集 {{ planningCrawlerStats.itemCount }} 条公开信源，已选择 {{ planningCrawlerStats.selectedCount }} 条纳入正式编报。</span>
+                    </div>
+                    <div class="planning-crawler-result-actions">
+                      <button type="button" @click="emit('select-planning-crawler-items', 'all')">全选</button>
+                      <button type="button" @click="emit('select-planning-crawler-items', 'none')">取消全选</button>
+                      <button type="button" @click="emit('select-planning-crawler-items', 'high-relevance')">只选择高相关</button>
+                      <button type="button" @click="emit('select-planning-crawler-items', 'high-credibility')">只选择高可信</button>
+                      <button type="button" @click="emit('remove-low-quality-planning-crawler-items')">移除低质量结果</button>
+                    </div>
+                  </div>
+                  <div v-if="planningCrawlerStatus === 'running'" class="planning-crawler-empty">
+                    资料采集工具正在采集公开信源，请稍候。
+                  </div>
+                  <div v-else-if="!planningCrawlerItems.length" class="planning-crawler-empty">
+                    尚未采集公开信源。确认采集配置后点击“开始采集”。
+                  </div>
+                  <div v-else class="planning-crawler-item-list">
+                    <article
+                      v-for="item in planningCrawlerItems"
+                      :key="crawlerItemId(item)"
+                      class="planning-crawler-item"
+                      :class="{ selected: isCrawlerItemSelected(item) }"
+                    >
+                      <label class="planning-crawler-check">
+                        <input
+                          type="checkbox"
+                          :checked="isCrawlerItemSelected(item)"
+                          @change="emit('toggle-planning-crawler-item', crawlerItemId(item))"
+                        />
+                        <span>纳入正式编报</span>
+                      </label>
+                      <div class="planning-crawler-item-main">
+                        <div class="planning-crawler-item-title">
+                          <strong>{{ crawlerItemTitle(item) }}</strong>
+                          <a v-if="item.url" :href="item.url" target="_blank" rel="noopener noreferrer">打开来源</a>
+                        </div>
+                        <div class="planning-crawler-item-meta">
+                          <span>来源：{{ item.publisher || '公开网页' }}</span>
+                          <span>时间：{{ crawlerItemTime(item) }}</span>
+                          <span>相关性：{{ crawlerScoreLabel(item.relevanceScore) }}</span>
+                          <span>可信度：{{ crawlerScoreLabel(item.credibilityScore) }}</span>
+                        </div>
+                        <p>{{ crawlerItemSummary(item) || '暂无摘要。' }}</p>
+                        <button
+                          class="planning-crawler-expand"
+                          type="button"
+                          @click="emit('toggle-planning-crawler-item-expanded', crawlerItemId(item))"
+                        >
+                          {{ isCrawlerItemExpanded(item) ? '收起正文' : '查看正文' }}
+                        </button>
+                        <pre v-if="isCrawlerItemExpanded(item)" class="planning-crawler-fulltext">{{ item.contentText || item.contentSummary || '暂无正文。' }}</pre>
+                      </div>
+                    </article>
+                  </div>
+                  <p class="crawler-submit-hint">正式编报将使用你已选择的采集信源，不会默认重复采集。</p>
                 </div>
               </section>
             </div>
@@ -4529,9 +4718,10 @@ function exportPdf() {
                 v-else
                 class="sci-btn text-[10px] px-4 py-2 border-neon-green text-neon-green shadow-[0_0_18px_rgba(0,255,159,0.12)]"
                 type="button"
+                :disabled="planningCrawlerStatus === 'running'"
                 @click="emit('confirm-plan')"
               >
-                确认并开始编写
+                {{ planningCrawlerStatus === 'running' ? '等待采集完成' : '确认并开始编写' }}
               </button>
             </div>
           </div>
