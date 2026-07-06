@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { fetchResearchKeys, fetchVectorSourceStatus, switchVectorSourceProfile, updateResearchKeys } from '../lib/api.js'
+import { deriveUserModules } from '../lib/permissionModules.js'
 
 const props = defineProps({
   user: {
@@ -70,7 +71,7 @@ const loginForm = reactive({
 })
 
 const userPermissions = computed(() => Array.isArray(props.user?.permissions) ? props.user.permissions : [])
-const userModules = computed(() => Array.isArray(props.user?.modules) ? props.user.modules : [])
+const userModules = computed(() => deriveUserModules(props.user))
 const canManageUsers = computed(() => userPermissions.value.includes('user:manage') || userPermissions.value.includes('role:manage'))
 const canManageSources = computed(() => {
   return userPermissions.value.includes('research_key:update') || userPermissions.value.includes('vector_source:update')

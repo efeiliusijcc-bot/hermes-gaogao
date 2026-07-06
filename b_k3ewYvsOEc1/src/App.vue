@@ -8,6 +8,7 @@ import PersonalSettings from './components/PersonalSettings.vue'
 import UserManagement from './components/UserManagement.vue'
 import { useAuth } from './composables/useAuth.js'
 import { useReportJobs } from './composables/useReportJobs.js'
+import { deriveUserModules } from './lib/permissionModules.js'
 import { computed, onMounted, ref, watch } from 'vue'
 
 const {
@@ -153,7 +154,7 @@ const hasReturnableWorkspace = computed(() => {
   return Boolean(returnableWorkspaceJobId.value)
 })
 
-const userModules = computed(() => Array.isArray(authUser.value?.modules) ? authUser.value.modules : [])
+const userModules = computed(() => deriveUserModules(authUser.value))
 const userPermissions = computed(() => Array.isArray(authUser.value?.permissions) ? authUser.value.permissions : [])
 const canDeleteReports = computed(() => userPermissions.value.includes('report:delete'))
 const hasAnyBusinessModule = computed(() => userModules.value.some((module) => ['report', 'qa', 'draft', 'daily'].includes(module)))
