@@ -147,6 +147,7 @@ const sidebarCurrentJobId = computed(() => {
 })
 
 const currentWorkspace = computed(() => {
+  if (showDraftAssistant.value) return 'draft'
   if (showDailyAwareness.value) return 'daily'
   if (!showUserManagement.value && !showDraftAssistant.value && homeMode.value === 'qa') return 'qa'
   return 'report'
@@ -276,6 +277,12 @@ function exitReportDetailForWorkspace() {
 }
 
 function switchWorkspace(mode) {
+  if (mode === 'draft') {
+    draftInitialEventId.value = ''
+    openDraftAssistant()
+    return
+  }
+
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
@@ -462,7 +469,6 @@ function jobActionLabel(status) {
       @login="handleLogin"
       @logout="handleLogout"
       @open-user-management="openUserManagement"
-      @open-draft-assistant="openDraftAssistant"
       @open-personal-settings="openPersonalSettings"
       @switch-workspace="switchWorkspace"
     />

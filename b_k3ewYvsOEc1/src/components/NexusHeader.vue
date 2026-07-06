@@ -25,7 +25,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-draft-assistant', 'open-personal-settings', 'switch-workspace'])
+const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-personal-settings', 'switch-workspace'])
 
 const currentTime = ref('')
 const canvasRef = ref(null)
@@ -82,6 +82,7 @@ const workspaceItems = [
   { key: 'report', title: 'AI智能体深度编报' },
   { key: 'qa', title: 'QA问答' },
   { key: 'daily', title: '每日动态感知' },
+  { key: 'draft', title: '拟稿助手' },
 ]
 const activeWorkspaceItem = computed(() => {
   return workspaceItems.find((item) => item.key === props.currentWorkspace) || workspaceItems[0]
@@ -225,11 +226,6 @@ function logout() {
 function openUserManagement() {
   closeSettingsMenu()
   emit('open-user-management')
-}
-
-function openDraftAssistant() {
-  closeSettingsMenu()
-  emit('open-draft-assistant')
 }
 
 function openPersonalSettings() {
@@ -553,14 +549,6 @@ watch(() => props.authError, (error) => {
         <span class="header-user-name">{{ displayUserName }}</span>
         <span class="header-user-role">{{ roleLabel(user.role) }}</span>
       </div>
-
-      <button
-        class="sci-btn header-login-btn"
-        type="button"
-        @click="openDraftAssistant"
-      >
-        拟稿助手
-      </button>
 
       <button
         v-if="isAdmin"
