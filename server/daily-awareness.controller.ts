@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpException, HttpStatus, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
 import { CurrentUser } from './current-user.decorator.js';
@@ -29,6 +30,20 @@ export class DailyAwarenessController {
   @Get('briefs/:briefId')
   getBrief(@Param('briefId') briefId: string, @CurrentUser() user: AuthUser) {
     return this.dailyAwareness.getBrief(briefId, user);
+  }
+
+  @Get('briefs/:briefId/download')
+  async downloadBrief(
+    @Param('briefId') briefId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('format') format = 'docx',
+    @Res() response: Response,
+  ) {
+    const result = await this.dailyAwareness.downloadBrief(briefId, user, format);
+    if (!result) throw new HttpException({ error: 'Daily brief not found' }, HttpStatus.NOT_FOUND);
+    response.setHeader('Content-Type', result.contentType);
+    response.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(result.filename)}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`);
+    response.send(result.buffer);
   }
 
   @Get('briefs/:briefId/events')

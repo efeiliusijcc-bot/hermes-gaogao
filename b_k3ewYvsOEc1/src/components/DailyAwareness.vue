@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
+  downloadDailyBrief,
   generateDailyBrief,
   getDailyBrief,
   getDailyBriefs,
@@ -46,6 +47,7 @@ const loading = ref(false)
 const historyLoading = ref(false)
 const openingBriefId = ref('')
 const importingItemId = ref('')
+const exportingWord = ref(false)
 const errorMessage = ref('')
 const noticeMessage = ref('')
 const diagnostics = ref(null)
@@ -55,6 +57,7 @@ const events = ref([])
 const historyItems = ref([])
 const showHistoryDrawer = ref(false)
 const settingsCollapsed = ref(false)
+const showMarkdownRaw = ref(false)
 const expandedEventIds = ref(new Set())
 const importedEventIds = ref(new Set())
 
@@ -119,6 +122,22 @@ const categoryDistribution = computed(() => {
     return Object.entries(distribution).map(([category, count]) => ({ category, count: Number(count || 0) }))
   }
   return categoryStats.value
+})
+const reportSections = computed(() => {
+  const sections = new Map()
+  for (const event of enrichedEvents.value) {
+    const category = event.category || '其他'
+    if (!sections.has(category)) sections.set(category, [])
+    sections.get(category).push(event)
+  }
+  const preferredOrder = categoryStats.value.map((item) => item.category)
+  return [...sections.entries()]
+    .map(([category, items]) => ({ category, items: [...items].sort((a, b) => Number(a.rank || a.rankNo || 0) - Number(b.rank || b.rankNo || 0)) }))
+    .sort((a, b) => {
+      const left = preferredOrder.indexOf(a.category)
+      const right = preferredOrder.indexOf(b.category)
+      return (left < 0 ? 999 : left) - (right < 0 ? 999 : right)
+    })
 })
 const emptyState = computed(() => {
   if (errorMessage.value) {
@@ -339,6 +358,30 @@ async function copyReport() {
     noticeMessage.value = '每日动态简报已复制。'
   } catch {
     errorMessage.value = '复制失败，请检查浏览器剪贴板权限。'
+  }
+}
+
+async function exportWord() {
+  if (!activeBrief.value?.briefId || exportingWord.value) return
+  exportingWord.value = true
+  errorMessage.value = ''
+  noticeMessage.value = ''
+  try {
+    const result = await downloadDailyBrief(activeBrief.value.briefId, 'docx')
+    const filename = result.filename || `${overview.value.date}-每日动态简报.docx`
+    const url = URL.createObjectURL(result.blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    noticeMessage.value = 'Word 文件已开始下载。'
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message || '导出 Word 失败，请稍后重试。' : '导出 Word 失败，请稍后重试。'
+  } finally {
+    exportingWord.value = false
   }
 }
 
@@ -583,7 +626,12 @@ watch(() => props.currentUser?.id, () => {
             <h2>{{ reportTitle }}</h2>
             <p>{{ reportSummary || '暂无概览。' }}</p>
           </div>
-          <button type="button" class="daily-secondary-btn" @click="copyReport">复制报告</button>
+          <div class="daily-summary-actions">
+            <button type="button" class="daily-secondary-btn" @click="copyReport">复制报告</button>
+            <button type="button" class="daily-primary-inline-btn" :disabled="exportingWord" @click="exportWord">
+              {{ exportingWord ? '导出中...' : '导出 Word' }}
+            </button>
+          </div>
           <div class="daily-distribution">
             <span v-for="item in categoryDistribution" :key="item.category">
               {{ item.category }} <strong>{{ item.count }}</strong>
@@ -594,15 +642,55 @@ watch(() => props.currentUser?.id, () => {
           {{ overview.fallbackReason || '当前日期无可用材料，已使用最近可用信源生成。' }}
         </div>
 
-        <section v-if="activeBrief" class="daily-report-card">
+        <section v-if="activeBrief" class="daily-report-card daily-readable-report">
           <div class="daily-report-head">
             <div>
-              <div class="daily-card-kicker">REPORT MARKDOWN</div>
-              <h3>简报正文</h3>
+              <div class="daily-card-kicker">DAILY BRIEF REPORT</div>
+              <h3>每日动态简报正文</h3>
             </div>
-            <button type="button" class="daily-secondary-btn" @click="copyReport">复制</button>
+            <button type="button" class="daily-secondary-btn" @click="copyReport">复制报告</button>
           </div>
-          <pre>{{ reportMarkdown }}</pre>
+          <article class="daily-report-document">
+            <h1>{{ reportTitle }}</h1>
+            <section>
+              <h2>一、今日概览</h2>
+              <p>{{ reportSummary || fallbackSummary() }}</p>
+            </section>
+            <section>
+              <h2>二、分类分布</h2>
+              <ul class="daily-report-distribution-list">
+                <li v-for="item in categoryDistribution" :key="`report-${item.category}`">
+                  <span>{{ item.category }}</span>
+                  <strong>{{ item.count }} 条</strong>
+                </li>
+              </ul>
+            </section>
+            <section>
+              <h2>三、重点新闻列表</h2>
+              <div v-for="section in reportSections" :key="section.category" class="daily-report-section">
+                <h3>{{ section.category }}</h3>
+                <ol>
+                  <li v-for="event in section.items" :key="`report-news-${event.itemId}`">
+                    <strong>{{ event.displayTitle }}</strong>
+                    <p>简要内容：{{ newsBrief(event) }}</p>
+                    <small>来源：{{ sourcePublisher(event) }}，发布时间：{{ formatTime(sourceTime(event)) }}</small>
+                  </li>
+                </ol>
+              </div>
+            </section>
+            <section>
+              <h2>四、可进一步研判方向</h2>
+              <ul>
+                <li>可围绕高频分类中的重点新闻形成专题编报。</li>
+                <li>可选择单条新闻导入拟稿助手开展深度分析。</li>
+                <li>正式编报前建议复核关键时间、主体表态和来源链接。</li>
+              </ul>
+            </section>
+          </article>
+          <details class="daily-markdown-raw" :open="showMarkdownRaw" @toggle="showMarkdownRaw = $event.target.open">
+            <summary>查看 Markdown 原文</summary>
+            <pre>{{ reportMarkdown }}</pre>
+          </details>
         </section>
 
         <section class="daily-category-bar">
@@ -978,6 +1066,7 @@ watch(() => props.currentUser?.id, () => {
 
 .daily-primary-btn,
 .daily-import-btn,
+.daily-primary-inline-btn,
 .daily-secondary-btn {
   border: 1px solid #2563eb;
   border-radius: 9px;
@@ -997,9 +1086,17 @@ watch(() => props.currentUser?.id, () => {
 }
 
 .daily-primary-btn:disabled,
-.daily-import-btn:disabled {
+.daily-import-btn:disabled,
+.daily-primary-inline-btn:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.daily-primary-inline-btn {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .daily-secondary-btn {
@@ -1135,6 +1232,14 @@ watch(() => props.currentUser?.id, () => {
   color: #64748b;
 }
 
+.daily-summary-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .daily-summary-grid {
   grid-column: 1 / -1;
   display: grid;
@@ -1231,6 +1336,11 @@ watch(() => props.currentUser?.id, () => {
   padding: 16px;
 }
 
+.daily-readable-report {
+  display: grid;
+  gap: 16px;
+}
+
 .daily-report-head {
   display: flex;
   align-items: flex-start;
@@ -1244,15 +1354,118 @@ watch(() => props.currentUser?.id, () => {
   font-size: 16px;
 }
 
-.daily-report-card pre {
-  max-height: 360px;
-  overflow: auto;
-  margin: 0;
+.daily-report-document {
+  display: grid;
+  gap: 18px;
   border: 1px solid #edf2f7;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 22px;
+}
+
+.daily-report-document h1 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 22px;
+  line-height: 1.45;
+}
+
+.daily-report-document h2 {
+  margin: 0 0 10px;
+  color: #1e3a8a;
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.daily-report-document h3 {
+  margin: 4px 0 10px;
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.daily-report-document p {
+  margin: 0;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.daily-report-document ul,
+.daily-report-document ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.daily-report-document li {
+  color: #334155;
+  line-height: 1.75;
+}
+
+.daily-report-distribution-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  list-style: none;
+  padding-left: 0 !important;
+}
+
+.daily-report-distribution-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #edf2f7;
+  padding-bottom: 7px;
+}
+
+.daily-report-distribution-list strong {
+  color: #1d4ed8;
+  white-space: nowrap;
+}
+
+.daily-report-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.daily-report-section li {
+  margin-bottom: 14px;
+}
+
+.daily-report-section strong {
+  color: #0f172a;
+}
+
+.daily-report-section small {
+  display: block;
+  margin-top: 5px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.daily-markdown-raw {
+  border: 1px solid #e2e8f0;
   border-radius: 10px;
   background: #f8fafc;
-  color: #334155;
-  padding: 14px;
+  padding: 12px;
+}
+
+.daily-markdown-raw summary {
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.daily-markdown-raw pre {
+  max-height: 320px;
+  overflow: auto;
+  margin: 12px 0 0;
+  border-top: 1px solid #e2e8f0;
+  color: #475569;
+  padding-top: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
   line-height: 1.7;
@@ -1650,6 +1863,10 @@ watch(() => props.currentUser?.id, () => {
 
   .daily-summary-card {
     display: grid;
+  }
+
+  .daily-report-distribution-list {
+    grid-template-columns: 1fr;
   }
 }
 

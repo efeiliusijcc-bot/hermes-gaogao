@@ -122,6 +122,69 @@ async function request(path, options = {}) {
   return data
 }
 
+async function blobRequest(path, options = {}) {
+  const token = getAuthToken()
+  const headers = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options.headers || {}),
+  }
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers,
+    credentials: 'include',
+    ...options,
+  })
+
+  if (!response.ok) {
+    let data = null
+    try {
+      const text = await response.text()
+      data = text ? JSON.parse(text) : null
+    } catch {
+      data = null
+    }
+    const fallbackMessage = response.status === 403 ? '无权限访问该资源' : `HTTP ${response.status}`
+    const error = new ApiError(data?.error || data?.message || data?.details?.[0] || fallbackMessage, response.status, data)
+    if (response.status === 401 && !options.skipRefresh) {
+      try {
+        await refreshAuthSession()
+        return blobRequest(path, { ...options, skipRefresh: true })
+      } catch {
+        clearAuthSession()
+        unauthorizedHandler?.(error)
+      }
+    } else if (response.status === 401) {
+      clearAuthSession()
+      unauthorizedHandler?.(error)
+    }
+    throw error
+  }
+
+  const blob = await response.blob()
+  return {
+    blob,
+    filename: parseDownloadFilename(response.headers.get('Content-Disposition') || ''),
+    contentType: response.headers.get('Content-Type') || blob.type,
+  }
+}
+
+function parseDownloadFilename(contentDisposition) {
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition)
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      return utf8Match[1]
+    }
+  }
+  const asciiMatch = /filename="?([^";]+)"?/i.exec(contentDisposition)
+  if (!asciiMatch) return ''
+  try {
+    return decodeURIComponent(asciiMatch[1])
+  } catch {
+    return asciiMatch[1]
+  }
+}
+
 export function login(username, password) {
   return request('/auth/login', {
     method: 'POST',
@@ -433,6 +496,10 @@ export function getDailyBriefEvents(briefId, params = {}) {
   })
   const suffix = query.toString() ? `?${query.toString()}` : ''
   return request(`/daily-awareness/briefs/${encodeURIComponent(briefId)}/events${suffix}`)
+}
+
+export function downloadDailyBrief(briefId, format = 'docx') {
+  return blobRequest(`/daily-awareness/briefs/${encodeURIComponent(briefId)}/download?format=${encodeURIComponent(format)}`)
 }
 
 export function importDailyEventToDraft(itemId) {

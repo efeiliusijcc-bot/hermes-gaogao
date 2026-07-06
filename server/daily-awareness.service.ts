@@ -6,6 +6,14 @@ import {
   OnModuleDestroy,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import {
+  Document,
+  ExternalHyperlink,
+  HeadingLevel,
+  Packer,
+  Paragraph,
+  TextRun,
+} from 'docx';
 import OpenAI from 'openai';
 import type { AuthUser } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
@@ -57,6 +65,7 @@ const DEFAULT_CATEGORIES = [
 ];
 const CLASSIFICATION_BATCH_SIZE = 40;
 const CLASSIFICATION_CONCURRENCY = 3;
+const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 @Injectable()
 export class DailyAwarenessService implements OnModuleDestroy {
@@ -240,6 +249,26 @@ export class DailyAwarenessService implements OnModuleDestroy {
   async listEvents(briefId: string, query: { page?: unknown; pageSize?: unknown; category?: unknown }, user: AuthUser) {
     const brief = await this.loadBriefForUser(briefId, user);
     return this.loadEventsForBrief(brief.briefId, user, query);
+  }
+
+  async downloadBrief(briefId: string, user: AuthUser, format = 'docx') {
+    const normalizedFormat = String(format || 'docx').toLowerCase();
+    if (normalizedFormat === 'pdf') {
+      throw new BadRequestException({ error: 'PDF export is not supported yet. Please use format=docx.' });
+    }
+    if (normalizedFormat !== 'docx') {
+      throw new BadRequestException({ error: 'Unsupported download format. Use format=docx.' });
+    }
+
+    const brief = await this.loadBriefForUser(briefId, user);
+    const eventResult = await this.loadEventsForBrief(brief.briefId, user, { page: 1, pageSize: 200 });
+    const events = eventResult.items as Array<Record<string, unknown>>;
+    const buffer = await this.buildBriefDocx(brief, events);
+    return {
+      buffer,
+      contentType: DOCX_CONTENT_TYPE,
+      filename: `${this.safeFilename(`${brief.briefDate || 'daily'}-每日动态简报`)}.docx`,
+    };
   }
 
   async importEventToDraft(itemId: string, user: AuthUser) {
@@ -534,6 +563,130 @@ export class DailyAwarenessService implements OnModuleDestroy {
       riskScore: Number(row.risk_score || 0),
       createdAt: this.dateString(row.created_at),
     };
+  }
+
+  private async buildBriefDocx(brief: Record<string, unknown>, events: Array<Record<string, unknown>>) {
+    const title = this.text(brief.title || `${brief.briefDate || ''} 每日动态简报`, 256) || '每日动态简报';
+    const summary = this.text(brief.summary, 3000) || this.buildFallbackSummary(brief, events);
+    const categories = this.normalizeCategoryStats(brief.categories || brief.contentJson && (brief.contentJson as Record<string, unknown>).categoryStats, events);
+    const children: Paragraph[] = [
+      new Paragraph({ text: title, heading: HeadingLevel.TITLE }),
+      this.metaParagraph(`简报日期：${this.text(brief.briefDate, 32) || '--'}`),
+      this.metaParagraph(`生成时间：${this.formatExportTime(brief.createdAt)}`),
+      new Paragraph({ text: '一、今日概览', heading: HeadingLevel.HEADING_1 }),
+      this.bodyParagraph(summary),
+      new Paragraph({ text: '二、分类分布', heading: HeadingLevel.HEADING_1 }),
+    ];
+
+    if (categories.length) {
+      for (const item of categories) children.push(this.bulletParagraph(`${item.category}：${item.count} 条`));
+    } else {
+      children.push(this.bodyParagraph('暂无分类统计。'));
+    }
+
+    children.push(new Paragraph({ text: '三、重点新闻列表', heading: HeadingLevel.HEADING_1 }));
+    for (const event of events) {
+      const source = this.primaryEventSource(event);
+      const rank = Number(event.rank || event.rankNo || 0);
+      const titleText = this.text(event.title || event.eventTitle, 512) || '未命名新闻';
+      const category = this.text(event.category, 128) || '其他';
+      const importance = Number(event.importanceScore || 0);
+      const briefContent = this.text(event.briefContent || event.basicSituation, 4000) || '暂无简要内容。';
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun({ text: `${rank ? `${rank}. ` : ''}${titleText}`, bold: true })],
+      }));
+      children.push(this.metaParagraph(`分类：${category}｜重要性：${importance.toFixed(0)}｜来源：${source.publisher || '来源未知'}｜发布时间：${source.publishedAt || '时间未知'}`));
+      children.push(this.bodyParagraph(`简要内容：${briefContent}`));
+      if (source.url) {
+        children.push(new Paragraph({
+          children: [
+            new TextRun({ text: '来源链接：', bold: true }),
+            new ExternalHyperlink({
+              link: source.url,
+              children: [new TextRun({ text: source.url, style: 'Hyperlink' })],
+            }),
+          ],
+        }));
+      }
+    }
+
+    children.push(
+      new Paragraph({ text: '四、可进一步研判方向', heading: HeadingLevel.HEADING_1 }),
+      this.bulletParagraph('可围绕高频分类中的重点新闻形成专题编报。'),
+      this.bulletParagraph('可选择单条新闻导入拟稿助手开展深度分析。'),
+      this.bulletParagraph('正式编报前建议复核关键时间、主体表态和来源链接。'),
+    );
+
+    const document = new Document({
+      sections: [{ properties: {}, children }],
+    });
+    return Packer.toBuffer(document);
+  }
+
+  private metaParagraph(text: string) {
+    return new Paragraph({
+      children: [new TextRun({ text, color: '475569', size: 20 })],
+      spacing: { after: 120 },
+    });
+  }
+
+  private bodyParagraph(text: string) {
+    return new Paragraph({
+      children: [new TextRun({ text })],
+      spacing: { after: 180 },
+    });
+  }
+
+  private bulletParagraph(text: string) {
+    return new Paragraph({
+      bullet: { level: 0 },
+      children: [new TextRun({ text })],
+      spacing: { after: 100 },
+    });
+  }
+
+  private buildFallbackSummary(brief: Record<string, unknown>, events: Array<Record<string, unknown>>) {
+    const selected = Number(brief.selectedNewsCount || brief.selectedCount || events.length || 0);
+    const materialCount = Number(brief.candidateMaterialCount || 0);
+    const categories = this.normalizeCategoryStats(brief.categories, events).map((item) => item.category).slice(0, 5);
+    return `今日共从 ${materialCount} 条候选新闻中筛选出 ${selected} 条重点新闻，主要集中在${categories.join('、') || '多个'}领域。`;
+  }
+
+  private normalizeCategoryStats(value: unknown, events: Array<Record<string, unknown>>): Array<{ category: string; count: number }> {
+    const fromValue = this.asArray(value)
+      .map((item) => {
+        const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        return { category: this.text(raw.category, 128), count: Number(raw.count || 0) };
+      })
+      .filter((item) => item.category && item.count > 0);
+    if (fromValue.length) return fromValue;
+    const counts = new Map<string, number>();
+    for (const event of events) {
+      const category = this.text(event.category, 128) || '其他';
+      counts.set(category, (counts.get(category) || 0) + 1);
+    }
+    return [...counts.entries()].map(([category, count]) => ({ category, count }));
+  }
+
+  private primaryEventSource(event: Record<string, unknown>): DailyAwarenessSourceInfo {
+    const sources = this.normalizeSources(this.asArray(event.sourceInfo));
+    const source = sources[0] || { title: '', publisher: '', publishedAt: '', url: '' };
+    return {
+      title: source.title || this.text(event.title || event.eventTitle, 512),
+      publisher: this.text(event.publisher, 256) || source.publisher,
+      publishedAt: this.text(event.publishedAt, 128) || source.publishedAt,
+      url: this.text(event.sourceUrl, 2048) || source.url,
+    };
+  }
+
+  private formatExportTime(value: unknown) {
+    const date = new Date(String(value || ''));
+    return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '--';
+  }
+
+  private safeFilename(value: string) {
+    return String(value || 'daily-awareness').replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '-').slice(0, 120);
   }
 
   private getLlm(): OpenAI {
