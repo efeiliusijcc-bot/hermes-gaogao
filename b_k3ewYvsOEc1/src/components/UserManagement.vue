@@ -35,10 +35,10 @@ const roleLabels = {
 }
 
 const moduleOptions = [
-  { key: 'report', label: '编报', description: '允许使用 AI智能体深度编报，包括创建编报、查看自己的编报、编辑编报规划和查看结果。' },
-  { key: 'qa', label: '问答', description: '允许使用 QA 问答，包括提问、查看自己的问答历史。' },
-  { key: 'draft', label: '拟稿', description: '允许使用拟稿助手，包括事件分析、提纲生成、提纲导入深度编报。' },
-  { key: 'daily', label: '每日动态感知', description: '允许查看和生成每日动态简报。' },
+  { key: 'report', label: '编报', icon: '编', description: '允许使用 AI 智能体深度编报，包括创建、查看、规划和报告结果。' },
+  { key: 'qa', label: '问答', icon: '问', description: '允许使用 QA 问答，包括知识库检索和问答历史。' },
+  { key: 'draft', label: '拟稿', icon: '稿', description: '允许使用拟稿助手，包括事件分析、提纲生成和导入深度编报。' },
+  { key: 'daily', label: '每日动态感知', icon: '日', description: '允许查看和生成每日动态简报。' },
 ]
 
 const moduleLabels = Object.fromEntries(moduleOptions.map((item) => [item.key, item.label]))
@@ -55,6 +55,8 @@ const passwordUserId = ref('')
 const passwordValue = ref('')
 const editingRoleId = ref('')
 const selectedRoleId = ref('')
+const roleDrawerOpen = ref(false)
+const roleDrawerMode = ref('create')
 
 const createForm = reactive({
   username: '',
@@ -97,6 +99,10 @@ function roleLabel(role) {
   return roleLabels[role] || role || '--'
 }
 
+function roleDisplayName(role) {
+  return roleLabel(role?.name)
+}
+
 function moduleLabel(module) {
   return moduleLabels[module] || module
 }
@@ -111,6 +117,10 @@ function userModules(user) {
 
 function moduleChecked(module) {
   return roleForm.modules.includes(module)
+}
+
+function selectedRoleHasModule(module) {
+  return selectedRoleModules.value.includes(module)
 }
 
 function toggleModule(module) {
@@ -221,6 +231,63 @@ function resetCreateForm() {
   createForm.roles = ['viewer']
 }
 
+function selectRole(role) {
+  if (!role?.id) return
+  selectedRoleId.value = role.id
+}
+
+function roleTypeLabel(role) {
+  return role?.isSystem ? '系统角色' : '自定义角色'
+}
+
+function roleProtectionLabel(role) {
+  if (role?.name === 'admin') return '受保护'
+  if (role?.isSystem) return '不可删除'
+  return '可配置'
+}
+
+function roleCreatedAt(role) {
+  return formatTime(role?.createdAt || role?.created_at)
+}
+
+function roleUsageHint(role) {
+  if (role?.name === 'admin') return '系统最高权限角色，拥有所有功能模块和系统管理权限，可进行用户、角色、模块及系统设置管理。'
+  if (role?.name === 'operator') return '系统业务角色，可根据需要调整业务模块权限，但不能获得系统管理权限。'
+  if (role?.name === 'viewer') return '系统观察角色，可根据需要分配部分业务模块，不能获得系统管理权限。'
+  return '该角色由管理员创建，可根据业务需要配置功能模块权限。'
+}
+
+function roleActionHint(role) {
+  if (role?.name === 'admin') return '受保护系统角色，不能删除。'
+  if (role?.isSystem) return '系统角色，不能删除。'
+  return '自定义角色未被用户使用时可以删除。'
+}
+
+function openCreateRoleDrawer() {
+  clearMessages()
+  resetRoleForm()
+  roleDrawerMode.value = 'create'
+  roleDrawerOpen.value = true
+}
+
+function openEditRoleDrawer(role) {
+  if (!role?.id || role.name === 'admin') return
+  clearMessages()
+  selectedRoleId.value = role.id
+  editingRoleId.value = role.id
+  roleDrawerMode.value = 'edit'
+  roleForm.name = role.name || ''
+  roleForm.description = String(role.description || '').slice(0, 200)
+  roleForm.modules = roleModules(role).slice()
+  roleDrawerOpen.value = true
+}
+
+function closeRoleDrawer() {
+  if (saving.value) return
+  roleDrawerOpen.value = false
+  resetRoleForm()
+}
+
 async function submitCreateUser() {
   saving.value = true
   clearMessages()
@@ -325,32 +392,38 @@ function resetRoleForm() {
 }
 
 function startEditRole(role) {
-  clearMessages()
-  selectedRoleId.value = role.id
-  editingRoleId.value = role.id
-  roleForm.name = role.name || ''
-  roleForm.description = role.description || ''
-  roleForm.modules = roleModules(role).slice()
+  openEditRoleDrawer(role)
 }
 
 async function submitRoleForm() {
+  if (!roleForm.name.trim()) {
+    errorMessage.value = '请填写角色名称'
+    return
+  }
   saving.value = true
   clearMessages()
+  const wasEditing = Boolean(editingRoleId.value)
+  const currentRoleId = editingRoleId.value
   try {
     const payload = {
       name: roleForm.name.trim(),
-      description: roleForm.description.trim(),
+      description: roleForm.description.trim().slice(0, 200),
       modules: roleForm.modules,
     }
+    let savedRole = null
     if (editingRoleId.value) {
-      await updateRole(editingRoleId.value, payload)
+      savedRole = await updateRole(editingRoleId.value, payload)
       noticeMessage.value = '角色已更新'
     } else {
-      await createRole(payload)
+      savedRole = await createRole(payload)
       noticeMessage.value = '角色已创建'
     }
+    const nextSelectedId = savedRole?.id || currentRoleId || ''
+    roleDrawerOpen.value = false
     resetRoleForm()
     await loadRoleData()
+    if (nextSelectedId) selectedRoleId.value = nextSelectedId
+    else if (!wasEditing && roles.value[0]) selectedRoleId.value = roles.value[0].id
   } catch (error) {
     setError(error)
   } finally {
@@ -531,67 +604,136 @@ async function confirmDeleteRole(role) {
               <span>角色列表</span>
               <small>{{ availableRoles.length }} 个角色</small>
             </div>
+            <button class="sci-btn sci-btn-primary role-management__new" type="button" :disabled="saving" @click="openCreateRoleDrawer">
+              新建角色
+            </button>
             <button
               v-for="role in availableRoles"
               :key="role.id"
               class="role-management__item"
               :class="{ active: selectedRole?.id === role.id }"
               type="button"
-              @click="selectedRoleId = role.id"
+              @click="selectRole(role)"
             >
               <span>
-                <strong>{{ roleLabel(role.name) }}</strong>
+                <strong>{{ roleDisplayName(role) }}</strong>
                 <small>{{ role.description || role.name }}</small>
               </span>
-              <em>{{ role.isSystem ? '系统角色' : `${roleModules(role).length} 模块` }}</em>
+              <em>{{ roleModules(role).length }} 个模块 · {{ roleTypeLabel(role) }}</em>
             </button>
           </div>
 
           <div class="role-management__detail panel">
             <div v-if="selectedRole" class="role-management__summary">
               <div>
-                <h2>{{ roleLabel(selectedRole.name) }}</h2>
-                <p>{{ selectedRole.description || '--' }}</p>
-                <div class="role-management__module-tags">
-                  <span v-for="module in selectedRoleModules" :key="module" class="user-management__module">{{ moduleLabel(module) }}</span>
-                  <span v-if="!selectedRoleModules.length" class="user-management__muted">暂无业务模块</span>
+                <div class="role-management__title-row">
+                  <h2>{{ roleDisplayName(selectedRole) }}</h2>
+                  <span class="role-management__badge">{{ roleTypeLabel(selectedRole) }}</span>
+                  <span class="role-management__badge muted">{{ roleProtectionLabel(selectedRole) }}</span>
                 </div>
+                <dl class="role-management__meta">
+                  <div>
+                    <dt>角色标识</dt>
+                    <dd>{{ selectedRole.name }}</dd>
+                  </div>
+                  <div>
+                    <dt>创建时间</dt>
+                    <dd>{{ roleCreatedAt(selectedRole) }}</dd>
+                  </div>
+                  <div>
+                    <dt>描述</dt>
+                    <dd>{{ selectedRole.description || '--' }}</dd>
+                  </div>
+                </dl>
               </div>
               <div class="user-management__actions">
-                <button class="sci-btn" type="button" :disabled="saving" @click="startEditRole(selectedRole)">编辑</button>
+                <button class="sci-btn" type="button" :disabled="saving || selectedRole.name === 'admin'" @click="startEditRole(selectedRole)">编辑</button>
                 <button class="sci-btn user-management__danger" type="button" :disabled="saving || selectedRole.isSystem" @click="confirmDeleteRole(selectedRole)">删除</button>
               </div>
             </div>
 
-            <form class="role-management__form" @submit.prevent="submitRoleForm">
-              <div class="user-management__section-title">
-                <span>{{ editingRoleId ? '编辑角色' : '新增角色' }}</span>
-                <small v-if="editingRoleId">正在编辑 {{ roleForm.name }}</small>
+            <div v-if="selectedRole" class="role-management__content">
+              <section class="role-detail-section">
+                <div class="user-management__section-title">
+                  <span>已开通功能</span>
+                  <small>{{ selectedRoleModules.length }} / {{ moduleOptions.length }} 个模块</small>
+                </div>
+                <div class="role-module-grid">
+                  <article
+                    v-for="module in moduleOptions"
+                    :key="module.key"
+                    class="role-module-card"
+                    :class="{ enabled: selectedRoleHasModule(module.key) }"
+                  >
+                    <div class="role-module-card__icon">{{ module.icon }}</div>
+                    <div>
+                      <div class="role-module-card__head">
+                        <strong>{{ module.label }}</strong>
+                        <span>{{ selectedRoleHasModule(module.key) ? '已开通' : '未开通' }}</span>
+                      </div>
+                      <p>{{ module.description }}</p>
+                    </div>
+                  </article>
+                </div>
+              </section>
+
+              <section class="role-note-card">
+                <div class="user-management__section-title">
+                  <span>角色说明</span>
+                  <small>{{ roleActionHint(selectedRole) }}</small>
+                </div>
+                <p>{{ roleUsageHint(selectedRole) }}</p>
+              </section>
+            </div>
+
+            <div v-else class="user-management__empty">请选择左侧角色查看详情。</div>
+          </div>
+        </div>
+
+        <div v-if="roleDrawerOpen" class="role-drawer-backdrop" @click="closeRoleDrawer"></div>
+        <aside v-if="roleDrawerOpen" class="role-drawer" aria-modal="true" role="dialog">
+          <form class="role-drawer__form" @submit.prevent="submitRoleForm">
+            <header class="role-drawer__header">
+              <div>
+                <p>{{ roleDrawerMode === 'edit' ? 'EDIT ROLE' : 'NEW ROLE' }}</p>
+                <h2>{{ roleDrawerMode === 'edit' ? '编辑角色' : '新建角色' }}</h2>
               </div>
-              <div class="role-management__form-grid">
-                <label>
-                  <span>角色名称</span>
-                  <input v-model="roleForm.name" class="sci-input" required maxlength="64" :disabled="Boolean(editingRoleId && selectedRole?.isSystem)" />
-                </label>
-                <label>
-                  <span>描述</span>
-                  <input v-model="roleForm.description" class="sci-input" maxlength="255" />
-                </label>
-              </div>
+              <button class="sci-btn" type="button" :disabled="saving" @click="closeRoleDrawer">关闭</button>
+            </header>
+
+            <div class="role-drawer__body">
+              <label class="role-drawer__field">
+                <span>角色名称</span>
+                <input
+                  v-model="roleForm.name"
+                  class="sci-input"
+                  required
+                  maxlength="64"
+                  autocomplete="off"
+                  :disabled="Boolean(editingRoleId && selectedRole?.isSystem)"
+                />
+              </label>
+
+              <label class="role-drawer__field">
+                <span>角色描述</span>
+                <textarea v-model="roleForm.description" class="sci-input" maxlength="200" rows="4"></textarea>
+                <small>{{ roleForm.description.length }} / 200</small>
+              </label>
 
               <div class="module-permission-section">
                 <div class="user-management__section-title">
                   <span>功能权限</span>
-                  <small>管理员只需选择业务模块，底层权限由系统映射</small>
+                  <small>只选择业务模块，底层权限由系统映射</small>
                 </div>
-                <div class="module-permission-grid">
+                <div class="drawer-module-grid">
                   <label
                     v-for="module in moduleOptions"
                     :key="module.key"
-                    class="module-permission-card"
+                    class="drawer-module-card"
                     :class="{ selected: moduleChecked(module.key) }"
                   >
                     <input type="checkbox" :checked="moduleChecked(module.key)" @change="toggleModule(module.key)" />
+                    <span class="drawer-module-card__icon">{{ module.icon }}</span>
                     <span>
                       <strong>{{ module.label }}</strong>
                       <small>{{ module.description }}</small>
@@ -602,16 +744,16 @@ async function confirmDeleteRole(role) {
                   系统管理员默认拥有用户管理、角色管理、密钥配置、向量源配置和报告删除权限，这些系统权限不会在业务模块中展示，也不会被移除。
                 </div>
               </div>
+            </div>
 
-              <div class="user-management__inline-actions">
-                <button class="sci-btn" type="button" :disabled="saving" @click="resetRoleForm">清空</button>
-                <button class="sci-btn sci-btn-primary" type="submit" :disabled="saving">
-                  {{ saving ? '保存中...' : '保存角色' }}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <footer class="role-drawer__footer">
+              <button class="sci-btn" type="button" :disabled="saving" @click="closeRoleDrawer">取消</button>
+              <button class="sci-btn sci-btn-primary" type="submit" :disabled="saving">
+                {{ saving ? '保存中...' : '保存角色' }}
+              </button>
+            </footer>
+          </form>
+        </aside>
       </template>
     </template>
   </section>
@@ -620,10 +762,11 @@ async function confirmDeleteRole(role) {
 <style scoped>
 .user-management {
   width: min(1280px, calc(100vw - 48px));
+  min-height: calc(100vh - 96px);
   max-height: calc(100vh - 96px);
   overflow-y: auto;
   margin: 0 auto;
-  padding: 28px 0 48px;
+  padding: 28px 0 80px;
   color: #111827;
   scrollbar-gutter: stable;
 }
@@ -938,25 +1081,33 @@ async function confirmDeleteRole(role) {
 
 .role-management {
   display: grid;
-  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
 }
 
 .role-management__list,
 .role-management__detail {
-  padding: 18px;
+  padding: 20px;
 }
 
 .role-management__list {
-  max-height: calc(100vh - 220px);
+  max-height: calc(100vh - 260px);
   overflow-y: auto;
 }
 
 .role-management__detail {
   display: flex;
-  max-height: calc(100vh - 220px);
+  min-height: 520px;
+  max-height: none;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: visible;
+}
+
+.role-management__new {
+  width: 100%;
+  margin-bottom: 12px;
+  justify-content: center;
 }
 
 .role-management__item {
@@ -969,14 +1120,16 @@ async function confirmDeleteRole(role) {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
-  padding: 10px 12px;
+  padding: 12px;
   text-align: left;
   cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
 }
 
 .role-management__item.active {
-  border-color: #93c5fd;
+  border-color: #60a5fa;
   background: #eff6ff;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.1);
 }
 
 .role-management__item strong,
@@ -989,6 +1142,17 @@ async function confirmDeleteRole(role) {
   font-size: 13px;
 }
 
+.role-management__item > span {
+  min-width: 0;
+}
+
+.role-management__item > span small {
+  overflow: hidden;
+  max-width: 190px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .role-management__item small,
 .role-management__item em {
   color: #64748b;
@@ -996,89 +1160,211 @@ async function confirmDeleteRole(role) {
   font-style: normal;
 }
 
+.role-management__item em {
+  flex: 0 0 auto;
+  max-width: 96px;
+  text-align: right;
+}
+
 .role-management__summary {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
   border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 14px;
+  padding-bottom: 18px;
 }
 
 .role-management__summary h2 {
   font-size: 20px;
 }
 
-.role-management__form-grid {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.role-management__form > .user-management__inline-actions {
-  position: sticky;
-  bottom: -18px;
-  margin: 0 -18px -18px;
-  border-top: 1px solid #e2e8f0;
-  background: rgba(255, 255, 255, 0.96);
-  padding: 12px 18px 18px;
-}
-
-.module-permission-section {
-  display: grid;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.module-permission-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.module-permission-card {
+.role-management__title-row {
   display: flex;
-  min-height: 132px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-management__badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.role-management__badge.muted {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.role-management__meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+  margin-top: 14px;
+}
+
+.role-management__meta div {
+  min-width: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.role-management__meta dt {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.role-management__meta dd {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.role-management__content {
+  display: grid;
+  gap: 18px;
+}
+
+.role-detail-section,
+.role-note-card {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
-  padding: 14px;
-  cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+  padding: 16px;
 }
 
-.module-permission-card.selected {
+.role-module-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.role-module-card {
+  display: flex;
+  min-height: 128px;
+  gap: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 14px;
+  color: #64748b;
+}
+
+.role-module-card.enabled {
   border-color: #60a5fa;
   background: #eff6ff;
   box-shadow: 0 8px 22px rgba(37, 99, 235, 0.1);
+  color: #1e40af;
 }
 
-.module-permission-card input {
-  margin-top: 2px;
-  width: 16px;
-  height: 16px;
+.role-module-card__icon,
+.drawer-module-card__icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 900;
 }
 
-.module-permission-card span {
+.role-module-card.enabled .role-module-card__icon,
+.drawer-module-card.selected .drawer-module-card__icon {
+  background: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.role-module-card__head {
   display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.module-permission-card strong {
+.role-module-card strong,
+.drawer-module-card strong {
   color: #0f172a;
   font-size: 14px;
   font-weight: 900;
 }
 
-.module-permission-card small {
+.role-module-card__head span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #e2e8f0;
+  padding: 3px 8px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.role-module-card.enabled .role-module-card__head span {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.role-module-card p,
+.role-note-card p,
+.drawer-module-card small {
+  margin-top: 8px;
   color: #64748b;
   font-size: 12px;
   font-weight: 500;
   line-height: 1.6;
+}
+
+.module-permission-section {
+  display: grid;
+  gap: 12px;
+}
+
+.drawer-module-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.drawer-module-card {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.drawer-module-card.selected {
+  border-color: #60a5fa;
+  background: #eff6ff;
+  box-shadow: 0 8px 22px rgba(37, 99, 235, 0.1);
+}
+
+.drawer-module-card input {
+  margin-top: 9px;
+  width: 16px;
+  height: 16px;
+}
+
+.drawer-module-card > span:last-child {
+  min-width: 0;
 }
 
 .system-permission-hint {
@@ -1089,6 +1375,92 @@ async function confirmDeleteRole(role) {
   color: #1e40af;
   font-size: 12px;
   line-height: 1.7;
+}
+
+.role-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 990;
+  background: rgba(15, 23, 42, 0.24);
+}
+
+.role-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 1000;
+  width: min(460px, 100vw);
+  height: 100vh;
+  background: #fff;
+  box-shadow: -22px 0 48px rgba(15, 23, 42, 0.18);
+}
+
+.role-drawer__form {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+}
+
+.role-drawer__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 22px 24px 18px;
+}
+
+.role-drawer__header p {
+  margin: 0 0 6px;
+  color: #0369a1;
+  font-family: "Fira Code", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.role-drawer__header h2 {
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.role-drawer__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 22px 24px 28px;
+}
+
+.role-drawer__field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 16px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.role-drawer__field textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.role-drawer__field small {
+  align-self: flex-end;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.role-drawer__footer {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.98);
+  padding: 16px 24px;
 }
 
 @media (max-width: 1100px) {
@@ -1109,7 +1481,12 @@ async function confirmDeleteRole(role) {
     grid-template-columns: 1fr;
   }
 
-  .module-permission-grid {
+  .role-management__list {
+    max-height: 360px;
+  }
+
+  .role-management__meta,
+  .role-module-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1128,8 +1505,8 @@ async function confirmDeleteRole(role) {
   .user-management__inline-form,
   .user-management__inline-form.is-password,
   .user-management__row,
-  .role-management__form-grid,
-  .module-permission-grid {
+  .role-management__meta,
+  .role-module-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1138,6 +1515,10 @@ async function confirmDeleteRole(role) {
   .user-management__role-picker,
   .user-management__role-picker.compact {
     grid-column: auto;
+  }
+
+  .role-drawer {
+    width: 100vw;
   }
 }
 </style>

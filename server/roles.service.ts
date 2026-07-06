@@ -22,6 +22,7 @@ export interface RoleResponse {
   name: string;
   description: string;
   isSystem: boolean;
+  createdAt: string;
   modules: PermissionModule[];
   permissions: string[];
 }
@@ -51,7 +52,7 @@ export class RolesService implements OnModuleDestroy {
   async listRoles(): Promise<RoleResponse[]> {
     const pool = await this.getPool();
     const result = await pool.query(
-      `SELECT r.id, r.name, r.description, r.is_system,
+      `SELECT r.id, r.name, r.description, r.is_system, r.created_at,
               COALESCE(
                 array_agg(concat(p.resource, ':', p.action) ORDER BY p.resource, p.action)
                   FILTER (WHERE p.id IS NOT NULL),
@@ -60,7 +61,7 @@ export class RolesService implements OnModuleDestroy {
          FROM roles r
          LEFT JOIN role_permissions rp ON rp.role_id = r.id
          LEFT JOIN permissions p ON p.id = rp.permission_id
-        GROUP BY r.id, r.name, r.description, r.is_system
+        GROUP BY r.id, r.name, r.description, r.is_system, r.created_at
         ORDER BY r.is_system DESC, r.name ASC`,
     );
     return result.rows.map((row) => this.toRoleResponse(row));
@@ -88,7 +89,7 @@ export class RolesService implements OnModuleDestroy {
       const result = await pool.query(
         `INSERT INTO roles (name, description, is_system)
          VALUES ($1, $2, false)
-         RETURNING id, name, description, is_system`,
+         RETURNING id, name, description, is_system, created_at`,
         [name, description],
       );
       const role = result.rows[0];
@@ -129,7 +130,7 @@ export class RolesService implements OnModuleDestroy {
         `UPDATE roles
             SET name = $1, description = $2
           WHERE id = $3
-          RETURNING id, name, description, is_system`,
+          RETURNING id, name, description, is_system, created_at`,
         [nextName, nextDescription, roleId],
       );
       await this.replaceRolePermissions(roleId, permissionRows.map((row) => row.id));
@@ -168,7 +169,7 @@ export class RolesService implements OnModuleDestroy {
   private async getRoleRow(roleId: string): Promise<Record<string, unknown>> {
     const pool = await this.getPool();
     const result = await pool.query(
-      `SELECT id, name, description, is_system
+      `SELECT id, name, description, is_system, created_at
          FROM roles
         WHERE id = $1
         LIMIT 1`,
@@ -241,6 +242,7 @@ export class RolesService implements OnModuleDestroy {
       name: roleName,
       description: String(row.description || ''),
       isSystem: row.is_system === true || String(row.is_system).toLowerCase() === 'true',
+      createdAt: this.dateString(row.created_at),
       modules: modulesFromPermissions(effectivePermissions),
       permissions: effectivePermissions,
     };
@@ -299,6 +301,12 @@ export class RolesService implements OnModuleDestroy {
     const value = String(id || '').trim();
     if (!value) throw new BadRequestException({ error: 'id is required' });
     return value;
+  }
+
+  private dateString(value: unknown): string {
+    if (!value) return '';
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
   }
 
   private isUniqueViolation(error: unknown): boolean {
