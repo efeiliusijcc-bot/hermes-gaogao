@@ -153,7 +153,10 @@ const hasReturnableWorkspace = computed(() => {
   return Boolean(returnableWorkspaceJobId.value)
 })
 
-const canDeleteReports = computed(() => authUser.value?.role === 'admin')
+const userModules = computed(() => Array.isArray(authUser.value?.modules) ? authUser.value.modules : [])
+const userPermissions = computed(() => Array.isArray(authUser.value?.permissions) ? authUser.value.permissions : [])
+const canDeleteReports = computed(() => userPermissions.value.includes('report:delete'))
+const hasAnyBusinessModule = computed(() => userModules.value.some((module) => ['report', 'qa', 'draft', 'daily'].includes(module)))
 
 const sidebarCurrentJobId = computed(() => {
   return openedHistoryJobId.value || job.value?.jobId || activeWorkspaceJobId.value
@@ -165,6 +168,25 @@ const currentWorkspace = computed(() => {
   if (!showUserManagement.value && !showDraftAssistant.value && homeMode.value === 'qa') return 'qa'
   return 'report'
 })
+
+function hasModule(module) {
+  return userModules.value.includes(module)
+}
+
+function hasPermission(permission) {
+  return userPermissions.value.includes(permission)
+}
+
+function firstAvailableBusinessModule() {
+  return ['report', 'qa', 'daily', 'draft'].find((module) => hasModule(module)) || ''
+}
+
+function alignWorkspaceWithModules() {
+  if (!authUser.value || !hasAnyBusinessModule.value) return
+  if (hasModule(currentWorkspace.value)) return
+  const fallback = firstAvailableBusinessModule()
+  if (fallback) switchWorkspace(fallback)
+}
 
 async function handleLogin(credentials) {
   return loginUser(credentials?.username || '', credentials?.password || '')
@@ -185,7 +207,7 @@ function openUserManagement() {
     setAuthNotice('\u8bf7\u5148\u767b\u5f55')
     return
   }
-  if (authUser.value.role !== 'admin') {
+  if (!hasPermission('user:manage') && !hasPermission('role:manage')) {
     setAuthNotice('\u65e0\u6743\u9650\u8bbf\u95ee\u7528\u6237\u7ba1\u7406')
     return
   }
@@ -209,6 +231,10 @@ function openDraftAssistant() {
     setAuthNotice('请先登录')
     return
   }
+  if (!hasModule('draft')) {
+    setAuthNotice('当前账号暂无拟稿助手权限，请联系管理员分配权限。')
+    return
+  }
   backgroundActiveWorkspace()
   showPersonalSettings.value = false
   showUserManagement.value = false
@@ -217,6 +243,10 @@ function openDraftAssistant() {
 }
 
 function openDailyAwareness() {
+  if (authUser.value && !hasModule('daily')) {
+    setAuthNotice('当前账号暂无每日动态感知权限，请联系管理员分配权限。')
+    return
+  }
   exitReportDetailForWorkspace()
   showPersonalSettings.value = false
   showUserManagement.value = false
@@ -290,6 +320,10 @@ function exitReportDetailForWorkspace() {
 }
 
 function switchWorkspace(mode) {
+  if (authUser.value && !hasModule(mode)) {
+    setAuthNotice('当前账号暂无该功能权限，请联系管理员分配权限。')
+    return
+  }
   if (mode === 'draft') {
     draftInitialEventId.value = ''
     openDraftAssistant()
@@ -339,6 +373,10 @@ function upsertQaSession(session) {
 }
 
 function openQaSession(session) {
+  if (authUser.value && !hasModule('qa')) {
+    setAuthNotice('当前账号暂无 QA 问答权限，请联系管理员分配权限。')
+    return
+  }
   if (!session?.id) return
   showUserManagement.value = false
   showDraftAssistant.value = false
@@ -360,6 +398,10 @@ function openReportJob(item) {
 }
 
 function startQaFromSidebar() {
+  if (authUser.value && !hasModule('qa')) {
+    setAuthNotice('当前账号暂无 QA 问答权限，请联系管理员分配权限。')
+    return
+  }
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
@@ -374,6 +416,10 @@ function clearSelectedQaSession() {
 }
 
 function startReportFromSidebar() {
+  if (authUser.value && !hasModule('report')) {
+    setAuthNotice('当前账号暂无编报权限，请联系管理员分配权限。')
+    return
+  }
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
@@ -383,6 +429,10 @@ function startReportFromSidebar() {
 }
 
 function openReportHistoryList() {
+  if (authUser.value && !hasModule('report')) {
+    setAuthNotice('当前账号暂无编报权限，请联系管理员分配权限。')
+    return
+  }
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
@@ -393,6 +443,10 @@ function openReportHistoryList() {
 }
 
 function resetForNewReportFromCanvas() {
+  if (authUser.value && !hasModule('report')) {
+    setAuthNotice('当前账号暂无编报权限，请联系管理员分配权限。')
+    return
+  }
   showUserManagement.value = false
   showDraftAssistant.value = false
   showDailyAwareness.value = false
@@ -416,7 +470,7 @@ function returnHome() {
 watch(qaSessions, persistQaSessions, { deep: true })
 
 watch(authUser, (user) => {
-  if (showUserManagement.value && user?.role !== 'admin') {
+  if (showUserManagement.value && !hasPermission('user:manage') && !hasPermission('role:manage')) {
     showUserManagement.value = false
   }
   if (user) {
@@ -424,6 +478,7 @@ watch(authUser, (user) => {
       loadJobList(false),
       refreshRecentReports(),
     ])
+    alignWorkspaceWithModules()
   } else {
     showDraftAssistant.value = false
     showDailyAwareness.value = false
@@ -509,6 +564,14 @@ function jobActionLabel(status) {
 
     <main v-else-if="showUserManagement" class="user-management-main">
       <UserManagement :current-user="authUser" @back="returnHome" />
+    </main>
+
+    <main v-else-if="authUser && !hasAnyBusinessModule" class="module-empty-main">
+      <section class="module-empty-card">
+        <div class="module-empty-eyebrow">ACCESS REQUIRED</div>
+        <h1>当前账号暂无可用功能</h1>
+        <p>请联系管理员分配编报、问答、拟稿或每日动态感知模块权限。</p>
+      </section>
     </main>
 
     <div v-else-if="currentView === 'generator'" class="app-body">

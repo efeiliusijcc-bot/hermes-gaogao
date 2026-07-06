@@ -7,6 +7,7 @@ export interface AuthUser {
   email: string | null;
   role: UserRole;
   roles: string[];
+  modules: string[];
   permissions: string[];
 }
 
@@ -15,6 +16,7 @@ export interface JwtAuthPayload {
   username: string;
   role: UserRole;
   roles?: string[];
+  modules?: string[];
   permissions?: string[];
   typ?: 'access' | 'refresh';
 }

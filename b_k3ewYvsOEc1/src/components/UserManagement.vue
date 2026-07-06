@@ -5,7 +5,6 @@ import {
   createUser,
   deleteRole,
   disableUser,
-  getPermissions,
   getRoles,
   getUsers,
   resetUserPassword,
@@ -23,9 +22,9 @@ const props = defineProps({
 const emit = defineEmits(['back'])
 
 const fallbackRoles = [
-  { id: 'admin', name: 'admin', description: '管理员', isSystem: true, permissions: [] },
-  { id: 'operator', name: 'operator', description: '操作员', isSystem: true, permissions: [] },
-  { id: 'viewer', name: 'viewer', description: '观察员', isSystem: true, permissions: [] },
+  { id: 'admin', name: 'admin', description: '管理员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
+  { id: 'operator', name: 'operator', description: '操作员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
+  { id: 'viewer', name: 'viewer', description: '观察员', isSystem: true, modules: ['qa', 'daily'], permissions: [] },
 ]
 
 const roleLabels = {
@@ -34,10 +33,18 @@ const roleLabels = {
   viewer: '观察员',
 }
 
+const moduleOptions = [
+  { key: 'report', label: '编报', description: '允许使用 AI智能体深度编报，包括创建编报、查看自己的编报、编辑编报规划和查看结果。' },
+  { key: 'qa', label: '问答', description: '允许使用 QA 问答，包括提问、查看自己的问答历史。' },
+  { key: 'draft', label: '拟稿', description: '允许使用拟稿助手，包括事件分析、提纲生成、提纲导入深度编报。' },
+  { key: 'daily', label: '每日动态感知', description: '允许查看和生成每日动态简报。' },
+]
+
+const moduleLabels = Object.fromEntries(moduleOptions.map((item) => [item.key, item.label]))
+
 const activeTab = ref('users')
 const users = ref([])
 const roles = ref([])
-const permissions = ref([])
 const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
@@ -66,32 +73,50 @@ const editForm = reactive({
 const roleForm = reactive({
   name: '',
   description: '',
-  permissions: [],
+  modules: [],
 })
 
 const isLoggedIn = computed(() => Boolean(props.currentUser?.id))
-const isAdmin = computed(() => props.currentUser?.role === 'admin' || props.currentUser?.roles?.includes('admin'))
+const currentPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
+const canManageUsers = computed(() => currentPermissions.value.includes('user:manage'))
+const canManageRoles = computed(() => currentPermissions.value.includes('role:manage'))
+const canAccessManagement = computed(() => canManageUsers.value || canManageRoles.value)
 const availableRoles = computed(() => roles.value.length ? roles.value : fallbackRoles)
 const selectedRole = computed(() => availableRoles.value.find((role) => role.id === selectedRoleId.value) || availableRoles.value[0] || null)
-const groupedPermissions = computed(() => {
-  const groups = new Map()
-  permissions.value.forEach((permission) => {
-    const resource = permission.resource || String(permission.permission || '').split(':')[0] || 'other'
-    if (!groups.has(resource)) groups.set(resource, [])
-    groups.get(resource).push(permission)
-  })
-  return Array.from(groups.entries()).map(([resource, items]) => ({
-    resource,
-    items: items.slice().sort((a, b) => String(a.permission).localeCompare(String(b.permission))),
-  }))
-})
+const selectedRoleModules = computed(() => roleModules(selectedRole.value))
 
 onMounted(() => {
-  if (isAdmin.value) void loadAll()
+  if (canAccessManagement.value) {
+    activeTab.value = canManageUsers.value ? 'users' : 'roles'
+    void loadAll()
+  }
 })
 
 function roleLabel(role) {
   return roleLabels[role] || role || '--'
+}
+
+function moduleLabel(module) {
+  return moduleLabels[module] || module
+}
+
+function roleModules(role) {
+  return Array.isArray(role?.modules) ? role.modules : []
+}
+
+function userModules(user) {
+  return Array.isArray(user?.modules) ? user.modules : []
+}
+
+function moduleChecked(module) {
+  return roleForm.modules.includes(module)
+}
+
+function toggleModule(module) {
+  const next = new Set(roleForm.modules)
+  if (next.has(module)) next.delete(module)
+  else next.add(module)
+  roleForm.modules = moduleOptions.map((item) => item.key).filter((key) => next.has(key))
 }
 
 function statusLabel(user) {
@@ -119,7 +144,10 @@ function clearMessages() {
 }
 
 async function loadAll() {
-  await Promise.all([loadUsers(), loadRoleData()])
+  await Promise.all([
+    canManageUsers.value ? loadUsers() : Promise.resolve(),
+    canManageRoles.value ? loadRoleData() : Promise.resolve(),
+  ])
 }
 
 async function loadUsers() {
@@ -127,7 +155,7 @@ async function loadUsers() {
     errorMessage.value = '请先登录'
     return
   }
-  if (!isAdmin.value) {
+  if (!canManageUsers.value) {
     errorMessage.value = '无权限访问用户管理'
     return
   }
@@ -145,13 +173,12 @@ async function loadUsers() {
 }
 
 async function loadRoleData() {
-  if (!isAdmin.value) return
+  if (!canManageRoles.value) return
   loading.value = true
   clearMessages()
   try {
-    const [roleResult, permissionResult] = await Promise.all([getRoles(), getPermissions()])
+    const roleResult = await getRoles()
     roles.value = Array.isArray(roleResult) ? roleResult : []
-    permissions.value = Array.isArray(permissionResult) ? permissionResult : []
     if (!selectedRoleId.value && roles.value[0]) selectedRoleId.value = roles.value[0].id
   } catch (error) {
     setError(error)
@@ -161,6 +188,8 @@ async function loadRoleData() {
 }
 
 function switchTab(tab) {
+  if (tab === 'users' && !canManageUsers.value) return
+  if (tab === 'roles' && !canManageRoles.value) return
   activeTab.value = tab
   clearMessages()
   if (tab === 'roles') void loadRoleData()
@@ -290,7 +319,7 @@ async function confirmDisableUser(user) {
 function resetRoleForm() {
   roleForm.name = ''
   roleForm.description = ''
-  roleForm.permissions = []
+  roleForm.modules = []
   editingRoleId.value = ''
 }
 
@@ -300,18 +329,7 @@ function startEditRole(role) {
   editingRoleId.value = role.id
   roleForm.name = role.name || ''
   roleForm.description = role.description || ''
-  roleForm.permissions = Array.isArray(role.permissions) ? role.permissions.slice() : []
-}
-
-function togglePermission(permission) {
-  const next = new Set(roleForm.permissions)
-  if (next.has(permission)) next.delete(permission)
-  else next.add(permission)
-  roleForm.permissions = Array.from(next).sort()
-}
-
-function permissionChecked(permission) {
-  return roleForm.permissions.includes(permission)
+  roleForm.modules = roleModules(role).slice()
 }
 
 async function submitRoleForm() {
@@ -321,7 +339,7 @@ async function submitRoleForm() {
     const payload = {
       name: roleForm.name.trim(),
       description: roleForm.description.trim(),
-      permissions: roleForm.permissions,
+      modules: roleForm.modules,
     }
     if (editingRoleId.value) {
       await updateRole(editingRoleId.value, payload)
@@ -367,18 +385,18 @@ async function confirmDeleteRole(role) {
       </div>
       <div class="user-management__actions">
         <button class="sci-btn" type="button" @click="emit('back')">返回工作台</button>
-        <button class="sci-btn sci-btn-primary" type="button" :disabled="loading || !isAdmin" @click="activeTab === 'roles' ? loadRoleData() : loadUsers()">
+        <button class="sci-btn sci-btn-primary" type="button" :disabled="loading || !canAccessManagement" @click="activeTab === 'roles' ? loadRoleData() : loadUsers()">
           {{ loading ? '刷新中...' : '刷新列表' }}
         </button>
       </div>
     </div>
 
     <div v-if="!isLoggedIn" class="user-management__empty">请先登录后再访问用户管理。</div>
-    <div v-else-if="!isAdmin" class="user-management__empty">无权限访问用户管理。</div>
+    <div v-else-if="!canAccessManagement" class="user-management__empty">无权限访问用户或角色管理。</div>
     <template v-else>
       <div class="user-management__tabs" role="tablist">
-        <button type="button" :class="{ active: activeTab === 'users' }" @click="switchTab('users')">用户管理</button>
-        <button type="button" :class="{ active: activeTab === 'roles' }" @click="switchTab('roles')">角色管理</button>
+        <button v-if="canManageUsers" type="button" :class="{ active: activeTab === 'users' }" @click="switchTab('users')">用户管理</button>
+        <button v-if="canManageRoles" type="button" :class="{ active: activeTab === 'roles' }" @click="switchTab('roles')">角色管理</button>
       </div>
 
       <div v-if="errorMessage" class="user-management__error">{{ errorMessage }}</div>
@@ -425,9 +443,8 @@ async function confirmDeleteRole(role) {
         <div class="user-management__table panel">
           <div class="user-management__table-head">
             <div>用户名</div>
-            <div>显示名称</div>
-            <div>邮箱</div>
             <div>角色</div>
+            <div>可用模块</div>
             <div>状态</div>
             <div>创建时间</div>
             <div>操作</div>
@@ -439,10 +456,12 @@ async function confirmDeleteRole(role) {
           <template v-else>
             <div v-for="user in users" :key="user.id" class="user-management__row">
               <div class="user-management__cell user-management__username">{{ user.username }}</div>
-              <div class="user-management__cell">{{ user.displayName || '--' }}</div>
-              <div class="user-management__cell">{{ user.email || '--' }}</div>
               <div class="user-management__cell user-management__roles">
                 <span v-for="role in userRoleNames(user)" :key="role" class="user-management__role">{{ roleLabel(role) }}</span>
+              </div>
+              <div class="user-management__cell user-management__modules">
+                <span v-for="module in userModules(user)" :key="module" class="user-management__module">{{ moduleLabel(module) }}</span>
+                <span v-if="!userModules(user).length" class="user-management__muted">暂无模块</span>
               </div>
               <div class="user-management__cell">
                 <span class="user-management__status" :class="{ 'is-disabled': !user.isActive }">
@@ -523,7 +542,7 @@ async function confirmDeleteRole(role) {
                 <strong>{{ roleLabel(role.name) }}</strong>
                 <small>{{ role.description || role.name }}</small>
               </span>
-              <em>{{ role.isSystem ? '系统角色' : `${role.permissions?.length || 0} 权限` }}</em>
+              <em>{{ role.isSystem ? '系统角色' : `${roleModules(role).length} 模块` }}</em>
             </button>
           </div>
 
@@ -532,6 +551,10 @@ async function confirmDeleteRole(role) {
               <div>
                 <h2>{{ roleLabel(selectedRole.name) }}</h2>
                 <p>{{ selectedRole.description || '--' }}</p>
+                <div class="role-management__module-tags">
+                  <span v-for="module in selectedRoleModules" :key="module" class="user-management__module">{{ moduleLabel(module) }}</span>
+                  <span v-if="!selectedRoleModules.length" class="user-management__muted">暂无业务模块</span>
+                </div>
               </div>
               <div class="user-management__actions">
                 <button class="sci-btn" type="button" :disabled="saving" @click="startEditRole(selectedRole)">编辑</button>
@@ -555,15 +578,28 @@ async function confirmDeleteRole(role) {
                 </label>
               </div>
 
-              <div class="permission-groups">
-                <section v-for="group in groupedPermissions" :key="group.resource" class="permission-group">
-                  <h3>{{ group.resource }}</h3>
-                  <label v-for="permission in group.items" :key="permission.permission">
-                    <input type="checkbox" :checked="permissionChecked(permission.permission)" @change="togglePermission(permission.permission)" />
-                    <span>{{ permission.permission }}</span>
-                    <small>{{ permission.description }}</small>
+              <div class="module-permission-section">
+                <div class="user-management__section-title">
+                  <span>功能权限</span>
+                  <small>管理员只需选择业务模块，底层权限由系统映射</small>
+                </div>
+                <div class="module-permission-grid">
+                  <label
+                    v-for="module in moduleOptions"
+                    :key="module.key"
+                    class="module-permission-card"
+                    :class="{ selected: moduleChecked(module.key) }"
+                  >
+                    <input type="checkbox" :checked="moduleChecked(module.key)" @change="toggleModule(module.key)" />
+                    <span>
+                      <strong>{{ module.label }}</strong>
+                      <small>{{ module.description }}</small>
+                    </span>
                   </label>
-                </section>
+                </div>
+                <div v-if="roleForm.name === 'admin'" class="system-permission-hint">
+                  系统管理员默认拥有用户管理、角色管理、密钥配置、向量源配置和报告删除权限，这些系统权限不会在业务模块中展示，也不会被移除。
+                </div>
               </div>
 
               <div class="user-management__inline-actions">
@@ -583,9 +619,12 @@ async function confirmDeleteRole(role) {
 <style scoped>
 .user-management {
   width: min(1280px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
   margin: 0 auto;
   padding: 28px 0 48px;
   color: #111827;
+  scrollbar-gutter: stable;
 }
 
 .user-management__header,
@@ -769,8 +808,7 @@ async function confirmDeleteRole(role) {
   font-weight: 800;
 }
 
-.user-management__role-picker label,
-.permission-group label {
+.user-management__role-picker label {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
@@ -785,7 +823,7 @@ async function confirmDeleteRole(role) {
 .user-management__table-head,
 .user-management__row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.25fr 1.2fr 0.65fr 1.1fr 1.6fr;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(180px, 1.4fr) minmax(88px, 0.7fr) minmax(150px, 1.1fr) minmax(240px, 1.7fr);
   gap: 12px;
   align-items: center;
 }
@@ -821,7 +859,16 @@ async function confirmDeleteRole(role) {
   font-weight: 800;
 }
 
+.user-management__modules,
+.role-management__module-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .user-management__role,
+.user-management__module,
 .user-management__status {
   display: inline-flex;
   align-items: center;
@@ -832,6 +879,16 @@ async function confirmDeleteRole(role) {
   color: #1d4ed8;
   font-size: 12px;
   font-weight: 800;
+}
+
+.user-management__module {
+  background: #f0f9ff;
+  color: #0369a1;
+}
+
+.user-management__muted {
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .user-management__status {
@@ -887,6 +944,18 @@ async function confirmDeleteRole(role) {
 .role-management__list,
 .role-management__detail {
   padding: 18px;
+}
+
+.role-management__list {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+}
+
+.role-management__detail {
+  display: flex;
+  max-height: calc(100vh - 220px);
+  flex-direction: column;
+  overflow-y: auto;
 }
 
 .role-management__item {
@@ -946,45 +1015,79 @@ async function confirmDeleteRole(role) {
   margin-bottom: 14px;
 }
 
-.permission-groups {
+.role-management__form > .user-management__inline-actions {
+  position: sticky;
+  bottom: -18px;
+  margin: 0 -18px -18px;
+  border-top: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 12px 18px 18px;
+}
+
+.module-permission-section {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 14px;
 }
 
-.permission-group {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 12px;
+.module-permission-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.permission-group h3 {
-  margin-bottom: 8px;
+.module-permission-card {
+  display: flex;
+  min-height: 132px;
+  gap: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.module-permission-card.selected {
+  border-color: #60a5fa;
+  background: #eff6ff;
+  box-shadow: 0 8px 22px rgba(37, 99, 235, 0.1);
+}
+
+.module-permission-card input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+}
+
+.module-permission-card span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.module-permission-card strong {
   color: #0f172a;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 900;
 }
 
-.permission-group label {
-  width: 100%;
-  justify-content: flex-start;
-  margin-top: 7px;
-  color: #334155;
-}
-
-.permission-group label span {
-  min-width: 138px;
-  color: #1d4ed8;
-  font-family: "Fira Code", monospace;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.permission-group label small {
+.module-permission-card small {
   color: #64748b;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.system-permission-hint {
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  padding: 10px 12px;
+  color: #1e40af;
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 @media (max-width: 1100px) {
@@ -1001,9 +1104,12 @@ async function confirmDeleteRole(role) {
     grid-column: 1 / -1;
   }
 
-  .role-management,
-  .permission-groups {
+  .role-management {
     grid-template-columns: 1fr;
+  }
+
+  .module-permission-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1021,7 +1127,8 @@ async function confirmDeleteRole(role) {
   .user-management__inline-form,
   .user-management__inline-form.is-password,
   .user-management__row,
-  .role-management__form-grid {
+  .role-management__form-grid,
+  .module-permission-grid {
     grid-template-columns: 1fr;
   }
 

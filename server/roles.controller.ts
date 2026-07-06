@@ -23,7 +23,7 @@ export class RolesController {
   }
 
   @Post('roles')
-  async createRole(@Body() body: { name?: string; description?: string; permissions?: unknown }, @CurrentUser() user: AuthUser, @Req() request: Request) {
+  async createRole(@Body() body: { name?: string; description?: string; modules?: unknown; permissions?: unknown }, @CurrentUser() user: AuthUser, @Req() request: Request) {
     const role = await this.roles.createRole(body || {});
     await this.audit?.log({ actor: user, action: 'role_create', resource: 'role', resourceId: role.id, request, detail: { roleName: role.name } });
     return role;
@@ -32,7 +32,7 @@ export class RolesController {
   @Put('roles/:id')
   async updateRole(
     @Param('id') id: string,
-    @Body() body: { name?: string; description?: string; permissions?: unknown },
+    @Body() body: { name?: string; description?: string; modules?: unknown; permissions?: unknown },
     @CurrentUser() user: AuthUser,
     @Req() request: Request,
   ) {

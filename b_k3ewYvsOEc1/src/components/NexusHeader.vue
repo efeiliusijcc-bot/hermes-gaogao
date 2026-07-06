@@ -69,7 +69,12 @@ const loginForm = reactive({
   password: '',
 })
 
-const isAdmin = computed(() => props.user?.role === 'admin')
+const userPermissions = computed(() => Array.isArray(props.user?.permissions) ? props.user.permissions : [])
+const userModules = computed(() => Array.isArray(props.user?.modules) ? props.user.modules : [])
+const canManageUsers = computed(() => userPermissions.value.includes('user:manage') || userPermissions.value.includes('role:manage'))
+const canManageSources = computed(() => {
+  return userPermissions.value.includes('research_key:update') || userPermissions.value.includes('vector_source:update')
+})
 const displayUserName = computed(() => props.user?.displayName || props.user?.username || '')
 const loginExpiredNotice = computed(() => {
   const notice = String(props.authNotice || '')
@@ -84,8 +89,12 @@ const workspaceItems = [
   { key: 'daily', title: '每日动态感知' },
   { key: 'draft', title: '拟稿助手' },
 ]
+const visibleWorkspaceItems = computed(() => {
+  if (!props.user) return workspaceItems
+  return workspaceItems.filter((item) => userModules.value.includes(item.key))
+})
 const activeWorkspaceItem = computed(() => {
-  return workspaceItems.find((item) => item.key === props.currentWorkspace) || workspaceItems[0]
+  return visibleWorkspaceItems.value.find((item) => item.key === props.currentWorkspace) || visibleWorkspaceItems.value[0] || { title: '暂无可用模块' }
 })
 
 const keyFields = [
@@ -510,7 +519,7 @@ watch(() => props.authError, (error) => {
         </button>
         <div id="global-workspace-quick-options" class="workspace-quick-options" role="tablist" aria-label="全局工作区导航">
           <button
-            v-for="item in workspaceItems"
+            v-for="item in visibleWorkspaceItems"
             :key="item.key"
             class="workspace-quick-option"
             :class="{ active: item.key === currentWorkspace }"
@@ -551,7 +560,7 @@ watch(() => props.authError, (error) => {
       </div>
 
       <button
-        v-if="isAdmin"
+        v-if="canManageUsers"
         class="sci-btn header-login-btn"
         type="button"
         @click="openUserManagement"
@@ -597,7 +606,7 @@ watch(() => props.authError, (error) => {
         <span class="settings-menu-icon">◌</span>
         <span>个人设置</span>
       </button>
-      <button class="settings-dropdown-item" type="button" role="menuitem" @click="openKeySettings">
+      <button v-if="canManageSources" class="settings-dropdown-item" type="button" role="menuitem" @click="openKeySettings">
         <span class="settings-menu-icon">⌁</span>
         <span>信源设置</span>
       </button>

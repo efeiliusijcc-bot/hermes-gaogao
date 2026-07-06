@@ -2454,6 +2454,7 @@ export class ReportsService implements OnModuleDestroy {
         email: '',
         role: job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer',
         roles: [job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer'],
+        modules: [],
         permissions: [],
       });
       const runInput: RunInput = {

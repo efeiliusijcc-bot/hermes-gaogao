@@ -4,6 +4,7 @@ import jwt, { type SignOptions } from 'jsonwebtoken';
 import type { AuthUser, JwtAuthPayload, UserRole } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
 import { AuditLogService } from './audit-log.service.js';
+import { modulesFromPermissions } from './permission-modules.js';
 
 interface UserRow {
   id: string;
@@ -17,6 +18,7 @@ interface UserRow {
 
 interface UserAccess {
   roles: string[];
+  modules: string[];
   permissions: string[];
 }
 
@@ -59,6 +61,10 @@ const FALLBACK_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     'template:read',
     'template:update',
     'template:delete',
+    'crawler:create',
+    'crawler:execute',
+    'crawler:read',
+    'crawler:delete',
   ],
   operator: [
     'report:create',
@@ -80,6 +86,10 @@ const FALLBACK_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     'template:read',
     'template:update',
     'template:delete',
+    'crawler:create',
+    'crawler:execute',
+    'crawler:read',
+    'crawler:delete',
   ],
   viewer: [
     'report:read',
@@ -97,6 +107,7 @@ const FALLBACK_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     'template:read',
     'template:update',
     'template:delete',
+    'crawler:read',
   ],
 };
 
@@ -253,6 +264,7 @@ export class AuthService implements OnModuleDestroy {
       username: user.username,
       role: user.role,
       roles: user.roles,
+      modules: user.modules,
       permissions: user.permissions,
       typ: 'access',
     };
@@ -281,6 +293,7 @@ export class AuthService implements OnModuleDestroy {
       email: row.email || null,
       role,
       roles: access.roles,
+      modules: access.modules,
       permissions: access.permissions,
     };
   }
@@ -308,7 +321,7 @@ export class AuthService implements OnModuleDestroy {
           }),
       );
       if (roles.length) {
-        return { roles, permissions };
+        return { roles, modules: modulesFromPermissions(permissions), permissions };
       }
       return this.fallbackAccess(fallbackRole);
     } catch (error) {
@@ -322,6 +335,7 @@ export class AuthService implements OnModuleDestroy {
   private fallbackAccess(role: UserRole): UserAccess {
     return {
       roles: [role],
+      modules: modulesFromPermissions(FALLBACK_ROLE_PERMISSIONS[role]),
       permissions: FALLBACK_ROLE_PERMISSIONS[role],
     };
   }

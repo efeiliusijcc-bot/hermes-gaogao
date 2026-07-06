@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import { createAuthPool, type PgPool } from './auth-database.js';
+import { modulesFromPermissions, normalizeModules, permissionsFromModules, SYSTEM_ADMIN_PERMISSIONS, uniqueStrings, type PermissionModule } from './permission-modules.js';
 
 export interface PermissionResponse {
   resource: string;
@@ -13,18 +14,21 @@ export interface RoleResponse {
   name: string;
   description: string;
   isSystem: boolean;
+  modules: PermissionModule[];
   permissions: string[];
 }
 
 interface CreateRoleInput {
   name?: string;
   description?: string;
+  modules?: unknown;
   permissions?: unknown;
 }
 
 interface UpdateRoleInput {
   name?: string;
   description?: string;
+  modules?: unknown;
   permissions?: unknown;
 }
 
@@ -67,7 +71,7 @@ export class RolesService implements OnModuleDestroy {
   async createRole(input: CreateRoleInput): Promise<RoleResponse> {
     const name = this.normalizeRoleName(input.name);
     const description = this.normalizeDescription(input.description);
-    const permissions = this.normalizePermissions(input.permissions);
+    const permissions = this.permissionsFromInput(input);
     const pool = await this.getPool();
 
     try {
@@ -106,12 +110,12 @@ export class RolesService implements OnModuleDestroy {
       const nextDescription = Object.prototype.hasOwnProperty.call(input, 'description')
         ? this.normalizeDescription(input.description)
         : String(existing.description || '');
-      const permissions = Object.prototype.hasOwnProperty.call(input, 'permissions')
-        ? this.normalizePermissions(input.permissions)
-        : await this.getRolePermissions(roleId);
-      if (existing.name === 'admin' && permissions.length === 0) {
-        throw new BadRequestException('Admin role permissions cannot be empty');
-      }
+      const permissions = this.protectAdminPermissions(
+        String(existing.name),
+        Object.prototype.hasOwnProperty.call(input, 'modules') || Object.prototype.hasOwnProperty.call(input, 'permissions')
+          ? this.permissionsFromInput(input)
+          : await this.getRolePermissions(roleId),
+      );
       const permissionRows = await this.resolvePermissionRows(permissions);
       const result = await pool.query(
         `UPDATE roles
@@ -219,12 +223,14 @@ export class RolesService implements OnModuleDestroy {
 
   private toRoleResponse(row: Record<string, unknown>): RoleResponse {
     const rawPermissions = Array.isArray(row.permissions) ? row.permissions : [];
+    const permissions = rawPermissions.map((permission) => String(permission)).filter(Boolean);
     return {
       id: String(row.id || ''),
       name: String(row.name || ''),
       description: String(row.description || ''),
       isSystem: row.is_system === true || String(row.is_system).toLowerCase() === 'true',
-      permissions: rawPermissions.map((permission) => String(permission)).filter(Boolean),
+      modules: modulesFromPermissions(permissions),
+      permissions,
     };
   }
 
@@ -256,6 +262,18 @@ export class RolesService implements OnModuleDestroy {
   private normalizePermissions(value: unknown): string[] {
     if (!Array.isArray(value)) return [];
     return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)));
+  }
+
+  private permissionsFromInput(input: { modules?: unknown; permissions?: unknown }): string[] {
+    if (Object.prototype.hasOwnProperty.call(input, 'modules')) {
+      return permissionsFromModules(normalizeModules(input.modules));
+    }
+    return this.normalizePermissions(input.permissions);
+  }
+
+  private protectAdminPermissions(roleName: string, permissions: string[]): string[] {
+    if (roleName !== 'admin') return permissions;
+    return uniqueStrings([...permissions, ...SYSTEM_ADMIN_PERMISSIONS]);
   }
 
   private normalizeId(id: string): string {

@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import bcrypt from 'bcrypt';
 import type { AuthUser, UserRole } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
+import { modulesFromPermissions } from './permission-modules.js';
 
 interface UserRow {
   id: string;
@@ -26,6 +27,7 @@ export interface UserResponse {
   email: string | null;
   role: UserRole;
   roles: string[];
+  modules: string[];
   permissions: string[];
   isActive: boolean;
   createdAt: string;
@@ -280,6 +282,7 @@ export class UsersService implements OnModuleDestroy {
       email: row.email ? String(row.email) : null,
       role,
       roles,
+      modules: modulesFromPermissions(permissions),
       permissions,
       isActive: row.is_active === true || String(row.is_active).toLowerCase() === 'true',
       createdAt: this.dateString(row.created_at),
