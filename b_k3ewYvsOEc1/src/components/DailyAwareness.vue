@@ -57,7 +57,6 @@ const events = ref([])
 const historyItems = ref([])
 const showHistoryDrawer = ref(false)
 const settingsCollapsed = ref(false)
-const showMarkdownRaw = ref(false)
 const expandedEventIds = ref(new Set())
 const importedEventIds = ref(new Set())
 
@@ -687,10 +686,6 @@ watch(() => props.currentUser?.id, () => {
               </ul>
             </section>
           </article>
-          <details class="daily-markdown-raw" :open="showMarkdownRaw" @toggle="showMarkdownRaw = $event.target.open">
-            <summary>查看 Markdown 原文</summary>
-            <pre>{{ reportMarkdown }}</pre>
-          </details>
         </section>
 
         <section class="daily-category-bar">
@@ -1443,33 +1438,6 @@ watch(() => props.currentUser?.id, () => {
   color: #64748b;
   font-size: 12px;
   line-height: 1.6;
-}
-
-.daily-markdown-raw {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #f8fafc;
-  padding: 12px;
-}
-
-.daily-markdown-raw summary {
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.daily-markdown-raw pre {
-  max-height: 320px;
-  overflow: auto;
-  margin: 12px 0 0;
-  border-top: 1px solid #e2e8f0;
-  color: #475569;
-  padding-top: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  line-height: 1.7;
-  white-space: pre-wrap;
 }
 
 .daily-category-bar {
