@@ -66,3 +66,14 @@ export function deriveUserModules(user) {
 
   return []
 }
+
+export function deriveRoleModules(role) {
+  const explicitModules = normalizeModules(role?.modules)
+  if (explicitModules.length) return explicitModules
+
+  const permissionModules = modulesFromPermissions(role?.permissions)
+  if (permissionModules.length) return permissionModules
+
+  const modules = SYSTEM_ROLE_MODULES[String(role?.name || '').trim()]
+  return modules?.length ? modules.slice() : []
+}

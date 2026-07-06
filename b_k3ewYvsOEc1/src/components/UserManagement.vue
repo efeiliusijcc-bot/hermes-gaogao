@@ -11,6 +11,7 @@ import {
   updateRole,
   updateUser,
 } from '../lib/api.js'
+import { deriveRoleModules, deriveUserModules } from '../lib/permissionModules.js'
 
 const props = defineProps({
   currentUser: {
@@ -101,11 +102,11 @@ function moduleLabel(module) {
 }
 
 function roleModules(role) {
-  return Array.isArray(role?.modules) ? role.modules : []
+  return deriveRoleModules(role)
 }
 
 function userModules(user) {
-  return Array.isArray(user?.modules) ? user.modules : []
+  return deriveUserModules(user)
 }
 
 function moduleChecked(module) {
