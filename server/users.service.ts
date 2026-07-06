@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import bcrypt from 'bcrypt';
 import type { AuthUser, UserRole } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
-import { modulesFromPermissions } from './permission-modules.js';
+import { modulesFromPermissions, SYSTEM_ROLE_PERMISSIONS } from './permission-modules.js';
 
 interface UserRow {
   id: string;
@@ -274,7 +274,8 @@ export class UsersService implements OnModuleDestroy {
   private toUserResponse(row: Record<string, unknown>): UserResponse {
     const role = this.isUserRole(row.role) ? row.role : 'viewer';
     const roles = Array.isArray(row.roles) && row.roles.length ? row.roles.map((item) => String(item)) : [role];
-    const permissions = Array.isArray(row.permissions) ? row.permissions.map((item) => String(item)).filter(Boolean) : [];
+    const rawPermissions = Array.isArray(row.permissions) ? row.permissions.map((item) => String(item)).filter(Boolean) : [];
+    const permissions = rawPermissions.length || !roles.includes(role) ? rawPermissions : SYSTEM_ROLE_PERMISSIONS[role];
     return {
       id: String(row.id || ''),
       username: String(row.username || ''),

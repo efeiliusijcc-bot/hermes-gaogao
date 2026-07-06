@@ -4,7 +4,7 @@ import jwt, { type SignOptions } from 'jsonwebtoken';
 import type { AuthUser, JwtAuthPayload, UserRole } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
 import { AuditLogService } from './audit-log.service.js';
-import { modulesFromPermissions } from './permission-modules.js';
+import { modulesFromPermissions, SYSTEM_ROLE_PERMISSIONS } from './permission-modules.js';
 
 interface UserRow {
   id: string;
@@ -34,82 +34,6 @@ const REFRESH_TOKEN_TTL = '7d';
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
 const loginFailures = new Map<string, { count: number; lockedUntil: number }>();
-
-const FALLBACK_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
-  admin: [
-    'report:create',
-    'report:read',
-    'report:update',
-    'report:delete',
-    'chat:execute',
-    'chat:read',
-    'research_key:read',
-    'research_key:update',
-    'vector_source:read',
-    'vector_source:update',
-    'user:manage',
-    'role:manage',
-    'draft_assistant:create',
-    'draft_assistant:read',
-    'draft_assistant:update',
-    'daily_awareness:create',
-    'daily_awareness:read',
-    'daily_awareness:import',
-    'preference:read',
-    'preference:update',
-    'template:create',
-    'template:read',
-    'template:update',
-    'template:delete',
-    'crawler:create',
-    'crawler:execute',
-    'crawler:read',
-    'crawler:delete',
-  ],
-  operator: [
-    'report:create',
-    'report:read',
-    'report:update',
-    'chat:execute',
-    'chat:read',
-    'research_key:read',
-    'vector_source:read',
-    'draft_assistant:create',
-    'draft_assistant:read',
-    'draft_assistant:update',
-    'daily_awareness:create',
-    'daily_awareness:read',
-    'daily_awareness:import',
-    'preference:read',
-    'preference:update',
-    'template:create',
-    'template:read',
-    'template:update',
-    'template:delete',
-    'crawler:create',
-    'crawler:execute',
-    'crawler:read',
-    'crawler:delete',
-  ],
-  viewer: [
-    'report:read',
-    'chat:execute',
-    'chat:read',
-    'research_key:read',
-    'vector_source:read',
-    'draft_assistant:create',
-    'draft_assistant:read',
-    'draft_assistant:update',
-    'daily_awareness:read',
-    'preference:read',
-    'preference:update',
-    'template:create',
-    'template:read',
-    'template:update',
-    'template:delete',
-    'crawler:read',
-  ],
-};
 
 function jwtSecret(): string {
   const secret = process.env.JWT_SECRET || '';
@@ -321,6 +245,10 @@ export class AuthService implements OnModuleDestroy {
           }),
       );
       if (roles.length) {
+        if (!permissions.length && roles.includes(fallbackRole)) {
+          const fallbackPermissions = SYSTEM_ROLE_PERMISSIONS[fallbackRole];
+          return { roles, modules: modulesFromPermissions(fallbackPermissions), permissions: fallbackPermissions };
+        }
         return { roles, modules: modulesFromPermissions(permissions), permissions };
       }
       return this.fallbackAccess(fallbackRole);
@@ -335,8 +263,8 @@ export class AuthService implements OnModuleDestroy {
   private fallbackAccess(role: UserRole): UserAccess {
     return {
       roles: [role],
-      modules: modulesFromPermissions(FALLBACK_ROLE_PERMISSIONS[role]),
-      permissions: FALLBACK_ROLE_PERMISSIONS[role],
+      modules: modulesFromPermissions(SYSTEM_ROLE_PERMISSIONS[role]),
+      permissions: SYSTEM_ROLE_PERMISSIONS[role],
     };
   }
 

@@ -141,8 +141,41 @@ async function testUsersAndAuthExposeModules() {
   sameMembers(decoded.modules || [], ['report', 'qa', 'daily']);
 }
 
+async function testSystemRoleFallsBackWhenRbacPermissionsAreEmpty() {
+  const passwordHash = await bcrypt.hash('password123', 4);
+  const pool = {
+    query: async (text: string, params?: unknown[]) => {
+      if (text.includes('FROM users') && params?.[0] === 'admin') {
+        return { rows: [{
+          id: 'admin-1',
+          username: 'admin',
+          password_hash: passwordHash,
+          display_name: 'Administrator',
+          email: null,
+          role: 'admin',
+          is_active: true,
+        }] };
+      }
+      if (text.includes('FROM user_roles') && params?.[0] === 'admin-1') {
+        return { rows: [{ role_name: 'admin', resource: null, action: null }] };
+      }
+      return { rows: [] };
+    },
+    end: async () => undefined,
+  };
+
+  const auth = new AuthService() as AuthService & { getPool: () => Promise<typeof pool> };
+  auth.getPool = async () => pool;
+  const login = await auth.login('admin', 'password123');
+  sameMembers(login.user.roles, ['admin']);
+  sameMembers(login.user.modules, ['report', 'qa', 'draft', 'daily']);
+  assert.ok(login.user.permissions.includes('user:manage'));
+  assert.ok(login.user.permissions.includes('role:manage'));
+}
+
 testPermissionModuleMappings();
 await testRolesServiceAcceptsModulesAndProtectsAdmin();
 await testUsersAndAuthExposeModules();
+await testSystemRoleFallsBackWhenRbacPermissionsAreEmpty();
 
 console.log('module permissions tests passed');
