@@ -26,9 +26,12 @@ import type {
   DailyAwarenessSourceInfo,
 } from './daily-awareness.types.js';
 import {
+  buildDailyReportJson,
+  buildDailyReportMarkdown,
   buildEventCandidates,
   categoryStats,
   clampScore,
+  dailyReportTitle,
   dedupeMaterials,
   extractJsonObject,
   rankDailyEvents,
@@ -106,13 +109,28 @@ export class DailyAwarenessService implements OnModuleDestroy {
     const ranked = rankDailyEvents(scoredEvents, maxItems);
     const stats = categoryStats(ranked);
     const summary = await this.generateSummary(date, ranked, stats).catch(() => {
-      return `${date} 每日动态感知共筛选 ${ranked.length} 条重点事件，涉及 ${stats.map((item) => item.category).join('、') || '多个'}领域。`;
+      return `${date} 每日动态简报共筛选 ${ranked.length} 条重点新闻，涉及 ${stats.map((item) => item.category).join('、') || '多个'}领域。`;
     });
-    const title = `${date} 每日动态简报`;
+    const title = dailyReportTitle(date, diagnostics.usedFallback);
+    const reportJson = buildDailyReportJson(ranked);
+    const reportMarkdown = buildDailyReportMarkdown({
+      date,
+      title,
+      summary,
+      materialCount: materials.length,
+      selectedCount: ranked.length,
+      categoryStats: stats,
+      events: ranked,
+      usedFallback: diagnostics.usedFallback,
+    });
+    const categoryDistribution = Object.fromEntries(stats.map((item) => [item.category, item.count]));
     const contentJson = {
       briefDate: date,
       title,
       summary,
+      reportMarkdown,
+      reportJson,
+      categoryDistribution,
       generation: {
         lookbackHours,
         keyword,
@@ -126,6 +144,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
         classificationBatchSize: CLASSIFICATION_BATCH_SIZE,
         classificationConcurrency: CLASSIFICATION_CONCURRENCY,
         selectedEventCount: ranked.length,
+        selectedNewsCount: ranked.length,
         totalMaterials: materials.length,
         totalCandidates: candidates.length,
         selectedCount: ranked.length,
@@ -246,6 +265,9 @@ export class DailyAwarenessService implements OnModuleDestroy {
       title: row.event_title,
       category: row.category,
       region: row.region,
+      briefContent: row.basic_situation,
+      publisher: this.normalizeSources(this.asArray(row.source_info))[0]?.publisher || '',
+      sourceUrl: this.normalizeSources(this.asArray(row.source_info))[0]?.url || '',
       basicSituation: row.basic_situation,
       backgroundContext: row.background_context,
       importanceJudgement: row.importance_judgement,
@@ -270,7 +292,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
           background: row.background_context || '',
           importanceJudgement: row.importance_judgement || '',
           riskToUs: row.risk_to_us ? [row.risk_to_us] : [],
-          suggestedAngles: ['基于每日动态感知事件继续生成拟稿提纲'],
+          suggestedAngles: ['基于每日动态简报入选新闻继续生成拟稿提纲'],
         }),
       ],
     );
@@ -290,7 +312,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
           this.nullableDate(source.publishedAt),
           '',
           source.title || '',
-          '每日动态感知入选事件来源',
+          '每日动态简报入选新闻来源',
           0.75,
         ],
       );
@@ -330,9 +352,11 @@ export class DailyAwarenessService implements OnModuleDestroy {
         {
           role: 'system',
           content: [
-            '你是每日动态感知分析员。请只输出 JSON。',
-            '必须为每条候选事件分类、摘要、评分，并保留 candidateId。',
-            'importanceScore 和 riskScore 范围均为 0 到 100。',
+            '你是每日动态简报编辑。请只输出 JSON。',
+            '你的任务不是写深度研判报告，而是从候选新闻中整理每日动态简报条目。',
+            '每条新闻只需要标题、分类、100 到 200 字简要内容、来源、重要性评分，并保留 candidateId。',
+            'importanceScore 范围为 0 到 100；riskScore 可选，无法判断时填 0。',
+            '不要默认输出四宫格事件分析、复杂来龙去脉、长篇涉我风险研判。',
           ].join('\n'),
         },
         {
@@ -340,18 +364,16 @@ export class DailyAwarenessService implements OnModuleDestroy {
           content: JSON.stringify({
             categories: categoryList,
             outputSchema: {
-              events: [{
+              topNews: [{
                 candidateId: '',
-                eventTitle: '',
+                title: '',
                 category: '',
                 region: '',
-                basicSituation: '',
-                backgroundContext: '',
-                importanceJudgement: '',
-                riskToUs: '',
+                briefContent: '',
                 importanceScore: 0,
-                riskScore: 0,
-                sourceInfo: [{ title: '', publisher: '', publishedAt: '', url: '' }],
+                publisher: '',
+                publishedAt: '',
+                sourceUrl: '',
               }],
             },
             candidates,
@@ -360,24 +382,35 @@ export class DailyAwarenessService implements OnModuleDestroy {
       ],
     });
     const content = completion.choices[0]?.message?.content || '{}';
-    const parsed = extractJsonObject(content) as { events?: unknown[] };
+    const parsed = extractJsonObject(content) as { topNews?: unknown[]; events?: unknown[] };
     const byCandidate = new Map(candidates.map((item) => [item.candidateId, item]));
-    return (Array.isArray(parsed.events) ? parsed.events : []).map((item) => {
+    const items = Array.isArray(parsed.topNews) ? parsed.topNews : Array.isArray(parsed.events) ? parsed.events : [];
+    return items.map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       const candidateId = this.text(raw.candidateId, 128);
       const candidate = byCandidate.get(candidateId);
+      const sourceInfo = this.normalizeSources(Array.isArray(raw.sourceInfo) ? raw.sourceInfo : candidate?.sources || []);
+      if (!sourceInfo.length && (raw.publisher || raw.publishedAt || raw.sourceUrl)) {
+        sourceInfo.push({
+          title: this.text(raw.title || raw.eventTitle || candidate?.title, 512),
+          publisher: this.text(raw.publisher, 256),
+          publishedAt: this.text(raw.publishedAt, 128),
+          url: this.text(raw.sourceUrl || raw.url, 2048),
+        });
+      }
+      const briefContent = this.text(raw.briefContent || raw.basicSituation || candidate?.summaryText, 4000);
       return {
         candidateId,
-        eventTitle: this.text(raw.eventTitle, 512) || candidate?.title || '未命名事件',
+        eventTitle: this.text(raw.title || raw.eventTitle, 512) || candidate?.title || '未命名新闻',
         category: this.text(raw.category, 128) || '其他',
         region: this.text(raw.region, 128),
-        basicSituation: this.text(raw.basicSituation, 4000),
+        basicSituation: briefContent,
         backgroundContext: this.text(raw.backgroundContext, 4000),
         importanceJudgement: this.text(raw.importanceJudgement, 3000),
         riskToUs: this.text(raw.riskToUs, 3000),
         importanceScore: clampScore(raw.importanceScore),
         riskScore: clampScore(raw.riskScore),
-        sourceInfo: this.normalizeSources(Array.isArray(raw.sourceInfo) ? raw.sourceInfo : candidate?.sources || []),
+        sourceInfo,
         relatedMaterialIds: candidate?.relatedMaterialIds || [],
       };
     }).filter((event) => event.eventTitle);
@@ -390,7 +423,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
       temperature: 0.2,
       messages: [
         { role: 'system', content: '你是每日动态简报编辑。请用中文输出一段 300 字以内的总体摘要，不要输出 JSON。' },
-        { role: 'user', content: JSON.stringify({ date, categoryStats: stats, topEvents: events.slice(0, 12) }) },
+        { role: 'user', content: JSON.stringify({ date, categoryStats: stats, topNews: events.slice(0, 12) }) },
       ],
     });
     return this.text(completion.choices[0]?.message?.content || '', 1200);
@@ -460,6 +493,10 @@ export class DailyAwarenessService implements OnModuleDestroy {
       selectedCount: Number(row.selected_count || 0),
       categories: this.asArray(row.categories),
       contentJson,
+      reportMarkdown: String(contentJson.reportMarkdown || ''),
+      reportJson: this.asObject(contentJson.reportJson),
+      selectedNewsCount: Number(generation.selectedNewsCount || row.selected_count || 0),
+      categoryDistribution: this.asObject(contentJson.categoryDistribution),
       candidateMaterialCount: Number(generation.candidateMaterialCount || 0),
       candidateEventCount: Number(generation.candidateEventCount || row.total_candidates || 0),
       selectedEventCount: Number(row.selected_count || 0),
@@ -471,18 +508,27 @@ export class DailyAwarenessService implements OnModuleDestroy {
   }
 
   private toEvent(row: DailyAwarenessEventRow) {
+    const sourceInfo = this.normalizeSources(this.asArray(row.source_info));
+    const primarySource = sourceInfo[0] || { title: '', publisher: '', publishedAt: '', url: '' };
     return {
       itemId: String(row.item_id || ''),
       briefId: String(row.brief_id || ''),
       rankNo: Number(row.rank_no || 0),
+      rank: Number(row.rank_no || 0),
       eventTitle: String(row.event_title || ''),
+      title: String(row.event_title || ''),
       category: String(row.category || '其他'),
       region: String(row.region || ''),
       basicSituation: String(row.basic_situation || ''),
+      briefContent: String(row.basic_situation || ''),
       backgroundContext: String(row.background_context || ''),
       importanceJudgement: String(row.importance_judgement || ''),
       riskToUs: String(row.risk_to_us || ''),
-      sourceInfo: this.normalizeSources(this.asArray(row.source_info)),
+      sourceInfo,
+      publisher: primarySource.publisher || '',
+      publishedAt: primarySource.publishedAt || '',
+      sourceUrl: primarySource.url || '',
+      sourceCount: sourceInfo.length,
       relatedMaterialIds: this.asArray(row.related_material_ids),
       importanceScore: Number(row.importance_score || 0),
       riskScore: Number(row.risk_score || 0),

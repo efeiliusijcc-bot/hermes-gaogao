@@ -55,17 +55,11 @@ const events = ref([])
 const historyItems = ref([])
 const showHistoryDrawer = ref(false)
 const settingsCollapsed = ref(false)
-const summaryExpanded = ref(false)
-const viewMode = ref('compact')
-const sortMode = ref('rank')
-const highRiskOnly = ref(false)
-const importFilter = ref('all')
 const expandedEventIds = ref(new Set())
 const importedEventIds = ref(new Set())
 
 const RECOVERY_POLL_ATTEMPTS = 6
 const RECOVERY_POLL_INTERVAL_MS = 1500
-const HIGH_RISK_SCORE = 80
 
 const isLoggedIn = computed(() => Boolean(props.currentUser))
 const canGenerate = computed(() => isLoggedIn.value && props.currentUser.role !== 'viewer')
@@ -87,16 +81,7 @@ const categoryStats = computed(() => {
 const visibleEvents = computed(() => {
   let items = enrichedEvents.value
   if (selectedCategory.value) items = items.filter((event) => event.category === selectedCategory.value)
-  if (highRiskOnly.value) items = items.filter((event) => Number(event.riskScore || 0) >= HIGH_RISK_SCORE)
-  if (importFilter.value === 'imported') items = items.filter((event) => event.imported)
-  if (importFilter.value === 'notImported') items = items.filter((event) => !event.imported)
-
-  return [...items].sort((a, b) => {
-    if (sortMode.value === 'importance') return Number(b.importanceScore || 0) - Number(a.importanceScore || 0)
-    if (sortMode.value === 'risk') return Number(b.riskScore || 0) - Number(a.riskScore || 0)
-    if (sortMode.value === 'time') return b.latestPublishedAtValue - a.latestPublishedAtValue
-    return Number(a.rankNo || 0) - Number(b.rankNo || 0)
-  })
+  return [...items].sort((a, b) => Number(a.rank || a.rankNo || 0) - Number(b.rank || b.rankNo || 0))
 })
 const overview = computed(() => {
   const content = activeBrief.value?.contentJson || {}
@@ -105,7 +90,7 @@ const overview = computed(() => {
     date: activeBrief.value?.briefDate || filters.date,
     materials: activeBrief.value?.candidateMaterialCount || generation.candidateMaterialCount || generation.totalMaterials || 0,
     candidates: activeBrief.value?.candidateEventCount || generation.candidateEventCount || activeBrief.value?.totalCandidates || generation.totalCandidates || 0,
-    selected: activeBrief.value?.selectedEventCount || activeBrief.value?.selectedCount || generation.selectedEventCount || events.value.length,
+    selected: activeBrief.value?.selectedNewsCount || activeBrief.value?.selectedEventCount || activeBrief.value?.selectedCount || generation.selectedNewsCount || generation.selectedEventCount || events.value.length,
     categoryCount: categoryStats.value.length,
     createdAt: activeBrief.value?.createdAt || '',
     usedFallback: Boolean(activeBrief.value?.usedFallback || generation.usedFallback),
@@ -114,24 +99,26 @@ const overview = computed(() => {
   }
 })
 const enrichedEvents = computed(() => events.value.map((event) => normalizeEventForDisplay(event)))
-const summaryCards = computed(() => {
-  const content = activeBrief.value?.contentJson || {}
-  const summary = activeBrief.value?.summary || ''
-  const highRiskEvent = enrichedEvents.value.find((event) => Number(event.riskScore || 0) >= HIGH_RISK_SCORE) || enrichedEvents.value[0]
-  return {
-    overall: content.overallJudgement || splitSummary(summary)[0] || summary || '暂无总体判断。',
-    themes: normalizeThemeList(content.keyThemes || content.themes).length
-      ? normalizeThemeList(content.keyThemes || content.themes)
-      : categoryStats.value.slice(0, 4).map((item) => item.category),
-    risk: content.riskSummary || highRiskEvent?.riskToUs || highRiskEvent?.compactSummary || '暂无明确风险提示。',
-    rawSummary: summary,
-    shouldCollapse: String(summary || '').length > 180,
-  }
+const reportTitle = computed(() => activeBrief.value?.title || `${overview.value.date} 每日动态简报`)
+const reportSummary = computed(() => activeBrief.value?.summary || fallbackSummary())
+const reportMarkdown = computed(() => {
+  return activeBrief.value?.reportMarkdown
+    || activeBrief.value?.contentJson?.reportMarkdown
+    || buildFallbackReportMarkdown()
 })
-const displayedSummaryText = computed(() => {
-  const text = summaryCards.value.rawSummary || ''
-  if (summaryExpanded.value || text.length <= 180) return text
-  return `${text.slice(0, 180)}...`
+const primaryCategories = computed(() => categoryStats.value.slice(0, 5).map((item) => item.category).join('、') || '多个领域')
+const reportStats = computed(() => [
+  { label: '候选新闻', value: overview.value.materials },
+  { label: '入选新闻', value: overview.value.selected },
+  { label: '分类数量', value: overview.value.categoryCount },
+  { label: '生成时间', value: formatTime(overview.value.createdAt) },
+])
+const categoryDistribution = computed(() => {
+  const distribution = activeBrief.value?.categoryDistribution || activeBrief.value?.contentJson?.categoryDistribution
+  if (distribution && typeof distribution === 'object' && !Array.isArray(distribution)) {
+    return Object.entries(distribution).map(([category, count]) => ({ category, count: Number(count || 0) }))
+  }
+  return categoryStats.value
 })
 const emptyState = computed(() => {
   if (errorMessage.value) {
@@ -150,8 +137,8 @@ const emptyState = computed(() => {
   }
   if (events.value.length && !visibleEvents.value.length) {
     return {
-      title: '当前筛选下暂无事件',
-      message: '可切换分类、关闭高风险筛选，或调整导入状态筛选。',
+      title: '当前筛选下暂无新闻',
+      message: '可切换分类查看其他入选新闻。',
       suggestion: '',
     }
   }
@@ -342,6 +329,19 @@ async function importToDraft(event) {
   }
 }
 
+async function copyReport() {
+  const text = reportMarkdown.value
+  if (!text) return
+  errorMessage.value = ''
+  noticeMessage.value = ''
+  try {
+    await navigator.clipboard.writeText(text)
+    noticeMessage.value = '每日动态简报已复制。'
+  } catch {
+    errorMessage.value = '复制失败，请检查浏览器剪贴板权限。'
+  }
+}
+
 function setEvents(nextEvents) {
   events.value = nextEvents
   expandedEventIds.value = new Set()
@@ -350,23 +350,27 @@ function setEvents(nextEvents) {
 function normalizeEventForDisplay(event) {
   const sources = Array.isArray(event.sourceInfo) ? event.sourceInfo : []
   const sourceTitle = sources.find((source) => source?.title)?.title || ''
+  const primary = primarySource(event)
   const candidateTitle = firstText([
+    event.title,
     event.displayTitle,
     event.titleZh,
     event.summaryTitle,
     event.eventTitle,
-    event.title,
   ])
   const originalTitle = firstText([event.originalTitle, event.sourceTitle, sourceTitle])
-  const displayTitle = candidateTitle || originalTitle || '未命名事件'
+  const displayTitle = candidateTitle || originalTitle || '未命名新闻'
   const latestPublishedAtValue = Math.max(0, ...sources.map((source) => new Date(source?.publishedAt || '').getTime()).filter(Number.isFinite))
   return {
     ...event,
     displayTitle,
     originalTitle: originalTitle && originalTitle !== displayTitle ? originalTitle : '',
-    sourceCount: sources.length,
+    sourceCount: event.sourceCount || sources.length,
+    publisher: event.publisher || primary.publisher || '',
+    publishedAt: event.publishedAt || primary.publishedAt || '',
+    sourceUrl: event.sourceUrl || primary.url || '',
     imported: isEventImported(event.itemId),
-    compactSummary: firstText([event.basicSituation, event.backgroundContext, event.importanceJudgement]).slice(0, 120),
+    compactSummary: firstText([event.briefContent, event.basicSituation, event.backgroundContext, event.importanceJudgement]).slice(0, 220),
     latestPublishedAtValue,
   }
 }
@@ -375,17 +379,66 @@ function firstText(values) {
   return values.map((value) => String(value || '').trim()).find(Boolean) || ''
 }
 
-function splitSummary(summary) {
-  return String(summary || '')
-    .split(/(?<=[。！？；])\s*/)
-    .map((item) => item.trim())
-    .filter(Boolean)
+function primarySource(event) {
+  const sources = Array.isArray(event?.sourceInfo) ? event.sourceInfo : []
+  return sources[0] || {}
 }
 
-function normalizeThemeList(value) {
-  if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 6)
-  if (typeof value === 'string') return value.split(/[、,，;；\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 6)
-  return []
+function sourceUrl(event) {
+  return event?.sourceUrl || primarySource(event).url || ''
+}
+
+function sourcePublisher(event) {
+  return event?.publisher || primarySource(event).publisher || '来源未知'
+}
+
+function sourceTime(event) {
+  return event?.publishedAt || primarySource(event).publishedAt || ''
+}
+
+function newsBrief(event) {
+  return event?.briefContent || event?.basicSituation || event?.compactSummary || '暂无简要内容。'
+}
+
+function fallbackSummary() {
+  if (!activeBrief.value && !events.value.length) return ''
+  const selected = overview.value.selected || events.value.length
+  return `今日共从 ${overview.value.materials} 条候选新闻中筛选出 ${selected} 条重点新闻，主要集中在${primaryCategories.value}。`
+}
+
+function buildFallbackReportMarkdown() {
+  if (!activeBrief.value && !events.value.length) return ''
+  const lines = [
+    `# ${reportTitle.value}`,
+    '',
+    '## 一、今日概览',
+    '',
+    reportSummary.value || fallbackSummary(),
+    '',
+    '## 二、分类分布',
+    '',
+  ]
+  if (categoryStats.value.length) {
+    for (const item of categoryStats.value) lines.push(`- ${item.category}：${item.count} 条`)
+  } else {
+    lines.push('- 暂无分类统计')
+  }
+  lines.push('', '## 三、重点新闻列表', '')
+  for (const item of enrichedEvents.value) {
+    lines.push(`${item.rank || item.rankNo || 0}. ${item.displayTitle}`)
+    lines.push(`   简要内容：${newsBrief(item)}`)
+    lines.push('')
+    lines.push(`   来源：${sourcePublisher(item)}，发布时间：${sourceTime(item) || '时间未知'}`)
+    lines.push('')
+  }
+  lines.push(
+    '## 四、可进一步研判方向',
+    '',
+    '- 可围绕高频分类中的重点新闻形成专题编报；',
+    '- 可选择单条新闻导入拟稿助手开展深度分析；',
+    '- 正式编报前建议复核关键时间、主体表态和来源链接。',
+  )
+  return lines.join('\n')
 }
 
 function formatTime(value) {
@@ -434,7 +487,7 @@ watch(() => props.currentUser?.id, () => {
       <div>
         <div class="daily-eyebrow">DAILY AWARENESS</div>
         <h1>每日动态感知</h1>
-        <p>基于现有信源库自动筛选每日重点事件，生成动态简报。</p>
+        <p>基于现有信源库筛选每日重点新闻，生成动态简报报告。</p>
       </div>
       <button type="button" class="daily-history-trigger" @click="openHistoryDrawer">
         历史简报
@@ -454,7 +507,7 @@ watch(() => props.currentUser?.id, () => {
 
           <div v-if="settingsCollapsed" class="daily-settings-compact">
             <p><span>当前日期</span><strong>{{ overview.date }}</strong></p>
-            <p><span>入选事件</span><strong>{{ overview.selected }}</strong></p>
+            <p><span>入选新闻</span><strong>{{ overview.selected }}</strong></p>
             <button class="daily-primary-btn compact" type="button" :disabled="!canGenerate || loading" @click="generateBrief">
               {{ loading ? '生成中...' : '重新生成' }}
             </button>
@@ -518,84 +571,38 @@ watch(() => props.currentUser?.id, () => {
         </section>
 
         <section class="daily-overview">
-          <article>
-            <span>简报日期</span>
-            <strong>{{ overview.date }}</strong>
-          </article>
-          <article>
-            <span>候选材料</span>
-            <strong>{{ overview.materials }}</strong>
-          </article>
-          <article>
-            <span>聚合事件</span>
-            <strong>{{ overview.candidates }}</strong>
-          </article>
-          <article>
-            <span>入选事件</span>
-            <strong>{{ overview.selected }}</strong>
+          <article v-for="item in reportStats" :key="item.label">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
           </article>
         </section>
 
         <section v-if="activeBrief" class="daily-summary-card">
           <div class="daily-summary-head">
-            <div class="daily-card-kicker">简报摘要</div>
-            <h2>{{ activeBrief.title }}</h2>
+            <div class="daily-card-kicker">每日动态简报</div>
+            <h2>{{ reportTitle }}</h2>
+            <p>{{ reportSummary || '暂无概览。' }}</p>
           </div>
-          <small>生成时间：{{ formatTime(overview.createdAt) }}</small>
-          <div class="daily-summary-grid">
-            <article>
-              <span>今日总体判断</span>
-              <p>{{ summaryCards.overall }}</p>
-            </article>
-            <article>
-              <span>重点方向</span>
-              <div class="daily-theme-list">
-                <b v-for="theme in summaryCards.themes" :key="theme">{{ theme }}</b>
-                <b v-if="!summaryCards.themes.length">暂无分类</b>
-              </div>
-            </article>
-            <article>
-              <span>风险提示</span>
-              <p>{{ summaryCards.risk }}</p>
-            </article>
-          </div>
-          <div v-if="summaryCards.rawSummary" class="daily-summary-raw">
-            <p>{{ displayedSummaryText }}</p>
-            <button v-if="summaryCards.shouldCollapse" type="button" @click="summaryExpanded = !summaryExpanded">
-              {{ summaryExpanded ? '收起摘要' : '展开完整摘要' }}
-            </button>
+          <button type="button" class="daily-secondary-btn" @click="copyReport">复制报告</button>
+          <div class="daily-distribution">
+            <span v-for="item in categoryDistribution" :key="item.category">
+              {{ item.category }} <strong>{{ item.count }}</strong>
+            </span>
           </div>
         </section>
         <div v-if="overview.usedFallback" class="daily-message warning">
           {{ overview.fallbackReason || '当前日期无可用材料，已使用最近可用信源生成。' }}
         </div>
 
-        <section class="daily-workbench-toolbar">
-          <div class="daily-view-toggle" aria-label="事件视图切换">
-            <button type="button" :class="{ active: viewMode === 'compact' }" @click="viewMode = 'compact'">紧凑列表</button>
-            <button type="button" :class="{ active: viewMode === 'detail' }" @click="viewMode = 'detail'">卡片详情</button>
+        <section v-if="activeBrief" class="daily-report-card">
+          <div class="daily-report-head">
+            <div>
+              <div class="daily-card-kicker">REPORT MARKDOWN</div>
+              <h3>简报正文</h3>
+            </div>
+            <button type="button" class="daily-secondary-btn" @click="copyReport">复制</button>
           </div>
-          <label>
-            <span>排序</span>
-            <select v-model="sortMode">
-              <option value="rank">综合排序</option>
-              <option value="importance">重要性优先</option>
-              <option value="risk">涉我风险优先</option>
-              <option value="time">发布时间优先</option>
-            </select>
-          </label>
-          <label>
-            <span>导入状态</span>
-            <select v-model="importFilter">
-              <option value="all">全部</option>
-              <option value="imported">只看已导入</option>
-              <option value="notImported">只看未导入</option>
-            </select>
-          </label>
-          <label class="daily-risk-check">
-            <input v-model="highRiskOnly" type="checkbox" />
-            <span>只看高风险</span>
-          </label>
+          <pre>{{ reportMarkdown }}</pre>
         </section>
 
         <section class="daily-category-bar">
@@ -611,25 +618,27 @@ watch(() => props.currentUser?.id, () => {
           </button>
         </section>
 
-        <section class="daily-event-list" :class="{ compact: viewMode === 'compact' }">
+        <section class="daily-news-list">
           <article
             v-for="event in visibleEvents"
             :key="event.itemId"
-            class="daily-event-card"
-            :class="{ compact: viewMode === 'compact' }"
+            class="daily-news-card"
           >
-            <div class="daily-event-head">
-              <span class="daily-rank">#{{ event.rankNo }}</span>
+            <div class="daily-news-head">
+              <span class="daily-rank">#{{ event.rank || event.rankNo }}</span>
               <div>
                 <h3>{{ event.displayTitle }}</h3>
                 <small v-if="event.originalTitle" class="daily-original-title">原始标题：{{ event.originalTitle }}</small>
                 <div class="daily-event-meta">
                   <span>分类：{{ event.category || '其他' }}</span>
                   <span>重要性 {{ Number(event.importanceScore || 0).toFixed(0) }}</span>
-                  <span>涉我风险 {{ Number(event.riskScore || 0).toFixed(0) }}</span>
-                  <span>来源 {{ event.sourceCount }}</span>
+                  <span>来源：{{ sourcePublisher(event) }}</span>
+                  <span>{{ formatTime(sourceTime(event)) }}</span>
                 </div>
               </div>
+            </div>
+            <p class="daily-news-brief">{{ newsBrief(event) }}</p>
+            <div class="daily-news-actions">
               <button
                 type="button"
                 class="daily-import-btn"
@@ -638,23 +647,18 @@ watch(() => props.currentUser?.id, () => {
               >
                 {{ event.imported ? '已导入' : importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}
               </button>
+              <a v-if="sourceUrl(event)" class="daily-source-link" :href="sourceUrl(event)" target="_blank" rel="noreferrer">查看来源</a>
+              <button type="button" class="daily-expand-btn" @click="toggleEventDetails(event.itemId)">
+                {{ isEventExpanded(event.itemId) ? '收起详情' : '展开详情' }}
+              </button>
             </div>
-            <p v-if="viewMode === 'compact'" class="daily-compact-summary">{{ event.compactSummary || '暂无事件摘要。' }}</p>
-            <button
-              v-if="viewMode === 'compact'"
-              type="button"
-              class="daily-expand-btn"
-              @click="toggleEventDetails(event.itemId)"
-            >
-              {{ isEventExpanded(event.itemId) ? '收起详情' : '展开详情' }}
-            </button>
-            <div v-if="viewMode === 'detail' || isEventExpanded(event.itemId)" class="daily-event-grid">
+            <div v-if="isEventExpanded(event.itemId)" class="daily-event-grid">
               <section>
-                <h4>事件基本情况</h4>
-                <p>{{ event.basicSituation || '暂无。' }}</p>
+                <h4>原始摘要</h4>
+                <p>{{ event.basicSituation || event.briefContent || '暂无。' }}</p>
               </section>
               <section>
-                <h4>来龙去脉</h4>
+                <h4>补充背景</h4>
                 <p>{{ event.backgroundContext || '暂无。' }}</p>
               </section>
               <section>
@@ -662,12 +666,12 @@ watch(() => props.currentUser?.id, () => {
                 <p>{{ event.importanceJudgement || '暂无。' }}</p>
               </section>
               <section>
-                <h4>涉我风险</h4>
+                <h4>可选风险提示</h4>
                 <p>{{ event.riskToUs || '暂无。' }}</p>
               </section>
             </div>
-            <div v-if="viewMode === 'detail' || isEventExpanded(event.itemId)" class="daily-sources">
-              <strong>来源信息</strong>
+            <div v-if="isEventExpanded(event.itemId)" class="daily-sources">
+              <strong>相关来源</strong>
               <ul>
                 <li v-for="(source, index) in event.sourceInfo || []" :key="`${event.itemId}-${index}`">
                   <span>{{ source.publisher || '来源未知' }}</span>
@@ -729,10 +733,11 @@ watch(() => props.currentUser?.id, () => {
               <strong>{{ brief.title || `${brief.briefDate} 每日动态简报` }}</strong>
               <span v-if="historyUsesFallback(brief)" class="daily-fallback-chip">使用最近信源</span>
             </div>
-            <small>{{ brief.selectedCount || 0 }} 条事件 · {{ formatTime(brief.createdAt) }}</small>
+            <small>{{ brief.selectedNewsCount || brief.selectedCount || 0 }} 条新闻 · {{ formatTime(brief.createdAt) }}</small>
             <div class="daily-history-card-meta">
               <span>候选材料：{{ historyMaterialCount(brief) }} 条</span>
-              <span>分类：{{ historyCategoryCount(brief) }} 类</span>
+              <span>入选新闻：{{ brief.selectedNewsCount || brief.selectedCount || 0 }} 条</span>
+              <span>主要分类：{{ historyCategoryCount(brief) }} 类</span>
             </div>
             <em>{{ openingBriefId === brief.briefId ? '读取中...' : '查看' }}</em>
           </button>
@@ -851,7 +856,8 @@ watch(() => props.currentUser?.id, () => {
 
 .daily-panel,
 .daily-summary-card,
-.daily-event-card {
+.daily-report-card,
+.daily-news-card {
   border: 1px solid #dbe4f0;
   border-radius: 12px;
   background: #ffffff;
@@ -971,7 +977,8 @@ watch(() => props.currentUser?.id, () => {
 }
 
 .daily-primary-btn,
-.daily-import-btn {
+.daily-import-btn,
+.daily-secondary-btn {
   border: 1px solid #2563eb;
   border-radius: 9px;
   background: #2563eb;
@@ -993,6 +1000,16 @@ watch(() => props.currentUser?.id, () => {
 .daily-import-btn:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.daily-secondary-btn {
+  align-self: start;
+  border-color: #dbe4f0;
+  background: #ffffff;
+  color: #1d4ed8;
+  padding: 8px 11px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .daily-helper,
@@ -1185,68 +1202,61 @@ watch(() => props.currentUser?.id, () => {
   cursor: pointer;
 }
 
-.daily-workbench-toolbar {
+.daily-distribution {
+  grid-column: 1 / -1;
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  border: 1px solid #dbe4f0;
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 10px;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  gap: 8px;
+  border-top: 1px solid #edf2f7;
+  padding-top: 12px;
 }
 
-.daily-view-toggle {
-  display: inline-flex;
-  border: 1px solid #dbe4f0;
-  border-radius: 10px;
-  background: #f8fafc;
-  padding: 3px;
-}
-
-.daily-view-toggle button,
-.daily-workbench-toolbar select {
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #475569;
-  font-size: 12px;
-}
-
-.daily-view-toggle button {
-  padding: 7px 10px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.daily-view-toggle button.active {
-  background: #2563eb;
-  color: #ffffff;
-}
-
-.daily-workbench-toolbar label {
+.daily-distribution span {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.daily-workbench-toolbar select {
-  min-height: 34px;
-  border: 1px solid #dbe4f0;
-  background: #ffffff;
-  padding: 0 9px;
-  outline: none;
-}
-
-.daily-risk-check {
   border: 1px solid #dbe4f0;
   border-radius: 999px;
   background: #f8fafc;
-  padding: 7px 10px;
+  color: #475569;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.daily-distribution strong {
+  color: #1d4ed8;
+}
+
+.daily-report-card {
+  padding: 16px;
+}
+
+.daily-report-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.daily-report-head h3 {
+  margin: 4px 0 0;
+  font-size: 16px;
+}
+
+.daily-report-card pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid #edf2f7;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #334155;
+  padding: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
 }
 
 .daily-category-bar {
@@ -1264,28 +1274,20 @@ watch(() => props.currentUser?.id, () => {
   color: #64748b;
 }
 
-.daily-event-list {
+.daily-news-list {
   display: grid;
   gap: 10px;
 }
 
-.daily-event-list.compact {
-  gap: 8px;
-}
-
-.daily-event-card {
+.daily-news-card {
   padding: 14px;
 }
 
-.daily-event-card.compact {
-  padding: 11px 13px;
-}
-
-.daily-event-head {
+.daily-news-head {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .daily-rank {
@@ -1300,15 +1302,10 @@ watch(() => props.currentUser?.id, () => {
   font-weight: 900;
 }
 
-.daily-event-head h3 {
+.daily-news-head h3 {
   margin: 0 0 6px;
   font-size: 16px;
   line-height: 1.45;
-}
-
-.daily-event-card.compact .daily-event-head h3 {
-  font-size: 14px;
-  line-height: 1.38;
 }
 
 .daily-original-title {
@@ -1340,21 +1337,42 @@ watch(() => props.currentUser?.id, () => {
   font-size: 12px;
 }
 
-.daily-compact-summary {
+.daily-news-brief {
   margin: 8px 0 0 52px;
   color: #475569;
   font-size: 13px;
   line-height: 1.55;
 }
 
-.daily-expand-btn {
-  justify-self: start;
-  margin: 8px 0 0 52px;
+.daily-news-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0 52px;
+}
+
+.daily-source-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
   border: 1px solid #dbe4f0;
-  border-radius: 999px;
+  border-radius: 9px;
   background: #ffffff;
   color: #1d4ed8;
-  padding: 5px 9px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.daily-expand-btn {
+  justify-self: start;
+  border: 1px solid #dbe4f0;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #1d4ed8;
+  min-height: 32px;
+  padding: 0 10px;
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
@@ -1621,12 +1639,12 @@ watch(() => props.currentUser?.id, () => {
     grid-template-columns: 1fr;
   }
 
-  .daily-event-head {
+  .daily-news-head {
     grid-template-columns: 1fr;
   }
 
-  .daily-compact-summary,
-  .daily-expand-btn {
+  .daily-news-brief,
+  .daily-news-actions {
     margin-left: 0;
   }
 

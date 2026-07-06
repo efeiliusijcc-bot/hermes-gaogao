@@ -142,6 +142,114 @@ export function categoryStats(events: DailyAwarenessScoredEvent[]): Array<{ cate
     .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category, 'zh-CN'));
 }
 
+export function dailyReportTitle(date: string, usedFallback = false): string {
+  return `${date} 每日动态简报${usedFallback ? '（使用最近可用信源）' : ''}`;
+}
+
+export function buildDailyReportJson(events: DailyAwarenessScoredEvent[]) {
+  const sections = new Map<string, Array<Record<string, unknown>>>();
+  events.forEach((event, index) => {
+    const category = String(event.category || '其他').trim() || '其他';
+    const source = primarySource(event);
+    const items = sections.get(category) || [];
+    items.push({
+      rank: index + 1,
+      title: event.eventTitle,
+      category,
+      importanceScore: clampScore(event.importanceScore),
+      briefContent: eventBriefContent(event),
+      publisher: source.publisher || '',
+      publishedAt: source.publishedAt || '',
+      sourceUrl: source.url || '',
+      sourceCount: Array.isArray(event.sourceInfo) ? event.sourceInfo.length : 0,
+    });
+    sections.set(category, items);
+  });
+
+  return {
+    sections: [...sections.entries()].map(([category, items]) => ({ category, items })),
+  };
+}
+
+export function buildDailyReportMarkdown(input: {
+  date: string;
+  title: string;
+  summary: string;
+  materialCount: number;
+  selectedCount: number;
+  categoryStats: Array<{ category: string; count: number }>;
+  events: DailyAwarenessScoredEvent[];
+  usedFallback?: boolean;
+}) {
+  const materialCount = Number(input.materialCount || 0);
+  const selectedCount = Number(input.selectedCount || input.events.length || 0);
+  const categoryNames = input.categoryStats.map((item) => item.category).filter(Boolean);
+  const overview = input.summary || [
+    `今日共从 ${materialCount} 条候选新闻中筛选出 ${selectedCount} 条重点新闻`,
+    categoryNames.length ? `主要集中在${categoryNames.slice(0, 5).join('、')}等领域` : '覆盖多个领域',
+    input.usedFallback ? '。当前日期无可用材料，已使用最近 7 天可用信源生成简报。' : '。',
+  ].join('');
+  const lines: string[] = [
+    `# ${input.title}`,
+    '',
+    '## 一、今日概览',
+    '',
+    overview,
+    '',
+    '## 二、分类分布',
+    '',
+  ];
+
+  if (input.categoryStats.length) {
+    for (const item of input.categoryStats) lines.push(`- ${item.category}：${item.count} 条`);
+  } else {
+    lines.push('- 暂无分类统计');
+  }
+
+  lines.push('', '## 三、重点新闻列表', '');
+  const grouped = buildDailyReportJson(input.events).sections;
+  for (const [sectionIndex, section] of grouped.entries()) {
+    lines.push(`### ${toChineseSectionNumber(sectionIndex + 1)}${section.category}`, '');
+    for (const item of section.items) {
+      const rank = Number(item.rank || 0);
+      const title = String(item.title || '未命名新闻');
+      const briefContent = String(item.briefContent || '暂无简要内容。');
+      const publisher = String(item.publisher || '来源未知');
+      const publishedAt = String(item.publishedAt || '时间未知');
+      lines.push(`${rank}. ${title}`);
+      lines.push(`   简要内容：${briefContent}`);
+      lines.push('');
+      lines.push(`   来源：${publisher}，发布时间：${publishedAt}`);
+      lines.push('');
+    }
+  }
+
+  lines.push(
+    '## 四、可进一步研判方向',
+    '',
+    '- 可围绕高频分类中的重点新闻形成专题编报；',
+    '- 可选择单条新闻导入拟稿助手开展深度分析；',
+    '- 正式编报前建议复核关键时间、主体表态和来源链接。',
+  );
+
+  return lines.join('\n').trim();
+}
+
+function eventBriefContent(event: DailyAwarenessScoredEvent): string {
+  return String(event.basicSituation || event.backgroundContext || event.importanceJudgement || '').trim() || '暂无简要内容。';
+}
+
+function primarySource(event: DailyAwarenessScoredEvent): DailyAwarenessSourceInfo {
+  return Array.isArray(event.sourceInfo) && event.sourceInfo[0]
+    ? event.sourceInfo[0]
+    : { title: '', publisher: '', publishedAt: '', url: '' };
+}
+
+function toChineseSectionNumber(value: number): string {
+  const numbers = ['（一）', '（二）', '（三）', '（四）', '（五）', '（六）', '（七）', '（八）', '（九）', '（十）'];
+  return numbers[value - 1] || `（${value}）`;
+}
+
 function materialToSource(material: DailyAwarenessMaterial): DailyAwarenessSourceInfo {
   return {
     title: material.title,

@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildDailyReportJson,
+  buildDailyReportMarkdown,
   buildDailyMaterialWindow,
   buildEventCandidates,
+  categoryStats,
+  dailyReportTitle,
   dedupeMaterials,
   extractJsonObject,
   normalizeEventTitle,
@@ -96,4 +100,101 @@ test('extracts a JSON object from fenced model output', () => {
   const parsed = extractJsonObject('```json\n{"events":[{"eventTitle":"测试"}]}\n```');
 
   assert.deepEqual(parsed, { events: [{ eventTitle: '测试' }] });
+});
+
+test('builds daily report title with fallback marker', () => {
+  assert.equal(dailyReportTitle('2026-07-05'), '2026-07-05 每日动态简报');
+  assert.equal(dailyReportTitle('2026-07-05', true), '2026-07-05 每日动态简报（使用最近可用信源）');
+});
+
+test('builds report json grouped by news category', () => {
+  const events: DailyAwarenessScoredEvent[] = [
+    {
+      candidateId: 'a',
+      eventTitle: '国际安全新闻',
+      category: '国际安全',
+      region: '',
+      basicSituation: '一百字以内的简要内容',
+      backgroundContext: '',
+      importanceJudgement: '',
+      riskToUs: '',
+      importanceScore: 92,
+      riskScore: 0,
+      sourceInfo: [{ title: '来源标题', publisher: '新华社', publishedAt: '2026-07-05T01:00:00Z', url: 'https://example.com/a' }],
+      relatedMaterialIds: [],
+    },
+    {
+      candidateId: 'b',
+      eventTitle: '美国政治新闻',
+      category: '美国政治',
+      region: '',
+      basicSituation: '另一条简要内容',
+      backgroundContext: '',
+      importanceJudgement: '',
+      riskToUs: '',
+      importanceScore: 88,
+      riskScore: 0,
+      sourceInfo: [],
+      relatedMaterialIds: [],
+    },
+  ];
+
+  const reportJson = buildDailyReportJson(events);
+
+  assert.equal(reportJson.sections.length, 2);
+  assert.equal(reportJson.sections[0].category, '国际安全');
+  assert.equal(reportJson.sections[0].items[0].title, '国际安全新闻');
+  assert.equal(reportJson.sections[0].items[0].publisher, '新华社');
+});
+
+test('builds daily report markdown with overview, distribution, news and fallback notice', () => {
+  const events: DailyAwarenessScoredEvent[] = [
+    {
+      candidateId: 'a',
+      eventTitle: '法案正式文本发布',
+      category: '国际安全',
+      region: '',
+      basicSituation: '简要内容：法案正式文本发布，监管重点进一步明确。',
+      backgroundContext: '',
+      importanceJudgement: '',
+      riskToUs: '',
+      importanceScore: 90,
+      riskScore: 0,
+      sourceInfo: [{ title: '来源标题', publisher: 'BBC', publishedAt: '2026-07-05T01:00:00Z', url: 'https://example.com/a' }],
+      relatedMaterialIds: [],
+    },
+    {
+      candidateId: 'b',
+      eventTitle: '企业发布回应',
+      category: '科技产业',
+      region: '',
+      basicSituation: '简要内容：相关企业发布最新回应。',
+      backgroundContext: '',
+      importanceJudgement: '',
+      riskToUs: '',
+      importanceScore: 80,
+      riskScore: 0,
+      sourceInfo: [{ title: '来源标题', publisher: 'Reuters', publishedAt: '2026-07-05T02:00:00Z', url: 'https://example.com/b' }],
+      relatedMaterialIds: [],
+    },
+  ];
+
+  const stats = categoryStats(events);
+  const markdown = buildDailyReportMarkdown({
+    date: '2026-07-05',
+    title: dailyReportTitle('2026-07-05', true),
+    summary: '',
+    materialCount: 2186,
+    selectedCount: 2,
+    categoryStats: stats,
+    events,
+    usedFallback: true,
+  });
+
+  assert.match(markdown, /^# 2026-07-05 每日动态简报（使用最近可用信源）/);
+  assert.match(markdown, /今日共从 2186 条候选新闻中筛选出 2 条重点新闻/);
+  assert.match(markdown, /国际安全：1 条/);
+  assert.match(markdown, /1\. 法案正式文本发布/);
+  assert.match(markdown, /来源：BBC，发布时间：2026-07-05T01:00:00Z/);
+  assert.match(markdown, /已使用最近 7 天可用信源生成简报/);
 });
