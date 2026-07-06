@@ -4,16 +4,15 @@ import { BadRequestException } from '@nestjs/common';
 import { DailyAwarenessController } from './daily-awareness.controller.js';
 import type { AuthUser } from './auth-user.interface.js';
 
-const user: AuthUser = {
+const user = {
   id: 'user-1',
   username: 'operator',
   displayName: 'Operator',
   email: null,
   role: 'operator',
   roles: ['operator'],
-  modules: ['daily'],
   permissions: ['daily_awareness:read'],
-};
+} as AuthUser;
 
 test('daily awareness download controller returns docx headers and buffer', async () => {
   const service = {
