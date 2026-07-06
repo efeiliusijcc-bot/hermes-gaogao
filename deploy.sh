@@ -25,7 +25,7 @@ REMOTE_DIR=/usr/docker/hermes-api
 SRC_DIR=$REMOTE_DIR/src
 
 echo "=== 1. Upload backend source ==="
-ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p '$SRC_DIR/server' '$SRC_DIR/src/types' '$SRC_DIR/scripts'"
+ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p '$SRC_DIR/server' '$SRC_DIR/src/types' '$SRC_DIR/scripts' /opt/hermes/workspace/report-agent/agents /opt/hermes/workspace/report-agent/skills"
 
 scp -i "$SSH_KEY" \
   package.json pnpm-lock.yaml tsconfig.server.json Dockerfile \
@@ -37,7 +37,11 @@ scp -i "$SSH_KEY" \
   scripts/init-auth-users.sql scripts/init-chat-sessions.sql scripts/init-draft-assistant.sql \
   scripts/init-report-plans.sql scripts/init-daily-awareness.sql scripts/init-rbac.sql \
   scripts/init-audit-logs.sql scripts/init-user-preferences.sql scripts/init-report-edits.sql \
+  scripts/init-crawler.sql scripts/init-report-quality-reviews.sql \
   "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/scripts/"
+
+scp -i "$SSH_KEY" agents/*.md "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/report-agent/agents/"
+scp -i "$SSH_KEY" -r skills/controlled-web-collector "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/report-agent/skills/"
 
 echo "=== 2. Build and deploy backend remotely ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << REMOTE_SCRIPT
@@ -65,6 +69,8 @@ docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-rbac.sql
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-audit-logs.sql
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-user-preferences.sql
 docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-report-edits.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-crawler.sql
+docker exec -i todo_postgres psql "${AUTH_DATABASE_URL}" < scripts/init-report-quality-reviews.sql
 
 echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true
@@ -102,6 +108,7 @@ docker run -d \
   -e REPORT_AGENT_BASE_URL=${REPORT_AGENT_BASE_URL:-${DIRECT_QA_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}} \
   -e REPORT_AGENT_API_KEY=${REPORT_AGENT_API_KEY:-${DIRECT_QA_API_KEY:-${OPENAI_API_KEY:-}}} \
   -e REPORT_AGENT_MODEL=${REPORT_AGENT_MODEL:-${DIRECT_QA_MODEL:-deepseek-v4-flash}} \
+  -e INTERNAL_SKILL_TOKEN=${INTERNAL_SKILL_TOKEN:-} \
   -e HERMES_REMOTE_HOST= \
   -e REPORT_OUTPUT_DIR=/opt/data/workspace/report-agent/reports \
   -e HERMES_REMOTE_REPORT_DIR=/opt/hermes/workspace/report-agent/reports \
