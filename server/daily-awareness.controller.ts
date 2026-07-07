@@ -5,19 +5,23 @@ import type { AuthUser } from './auth-user.interface.js';
 import { CurrentUser } from './current-user.decorator.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
 import type { DailyAwarenessGenerateInput } from './daily-awareness.types.js';
+import { PermissionsGuard } from './permissions.guard.js';
+import { RequirePermissions } from './require-permissions.decorator.js';
 import { RolesGuard } from './roles.guard.js';
 
 @Controller('/api/daily-awareness')
-@UseGuards(AuthGuard, RolesGuard)
+@UseGuards(AuthGuard, RolesGuard, PermissionsGuard)
 export class DailyAwarenessController {
   constructor(private readonly dailyAwareness: DailyAwarenessService) {}
 
   @Post('generate')
+  @RequirePermissions('daily_awareness:create')
   generate(@Body() body: DailyAwarenessGenerateInput, @CurrentUser() user: AuthUser) {
     return this.dailyAwareness.generate(body || {}, user);
   }
 
   @Get('briefs')
+  @RequirePermissions('daily_awareness:read')
   listBriefs(
     @Query('page') page: string,
     @Query('pageSize') pageSize: string,
@@ -28,11 +32,13 @@ export class DailyAwarenessController {
   }
 
   @Get('briefs/:briefId')
+  @RequirePermissions('daily_awareness:read')
   getBrief(@Param('briefId') briefId: string, @CurrentUser() user: AuthUser) {
     return this.dailyAwareness.getBrief(briefId, user);
   }
 
   @Get('briefs/:briefId/download')
+  @RequirePermissions('daily_awareness:read')
   async downloadBrief(
     @Param('briefId') briefId: string,
     @CurrentUser() user: AuthUser,
@@ -47,6 +53,7 @@ export class DailyAwarenessController {
   }
 
   @Get('briefs/:briefId/events')
+  @RequirePermissions('daily_awareness:read')
   listEvents(
     @Param('briefId') briefId: string,
     @Query('page') page: string,
@@ -58,6 +65,7 @@ export class DailyAwarenessController {
   }
 
   @Post('events/:itemId/import-draft')
+  @RequirePermissions('daily_awareness:import')
   importDraft(@Param('itemId') itemId: string, @CurrentUser() user: AuthUser) {
     return this.dailyAwareness.importEventToDraft(itemId, user);
   }

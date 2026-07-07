@@ -57,9 +57,12 @@ export const BUSINESS_MODULE_PERMISSIONS = uniqueStrings(PERMISSION_MODULES.flat
 export const SYSTEM_ADMIN_PERMISSIONS = [
   'user:manage',
   'role:manage',
+  'research_key:read',
   'research_key:update',
+  'vector_source:read',
   'vector_source:update',
   'report:delete',
+  'crawler:delete',
 ];
 
 export const SYSTEM_ROLE_PERMISSIONS: Record<'admin' | 'operator' | 'viewer', string[]> = {
@@ -70,7 +73,9 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<'admin' | 'operator' | 'viewer', st
     'report:delete',
     'chat:execute',
     'chat:read',
+    'research_key:read',
     'research_key:update',
+    'vector_source:read',
     'vector_source:update',
     'user:manage',
     'role:manage',
@@ -89,6 +94,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<'admin' | 'operator' | 'viewer', st
     'crawler:create',
     'crawler:execute',
     'crawler:read',
+    'crawler:delete',
   ],
   operator: [
     'report:create',

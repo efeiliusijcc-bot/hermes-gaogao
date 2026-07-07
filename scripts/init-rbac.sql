@@ -130,9 +130,12 @@ WITH admin_permissions(permission_key) AS (
     ('crawler:read'),
     ('user:manage'),
     ('role:manage'),
+    ('research_key:read'),
     ('research_key:update'),
+    ('vector_source:read'),
     ('vector_source:update'),
-    ('report:delete')
+    ('report:delete'),
+    ('crawler:delete')
 ),
 resolved AS (
   SELECT r.id AS role_id, p.id AS permission_id

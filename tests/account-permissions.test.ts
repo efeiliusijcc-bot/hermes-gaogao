@@ -10,6 +10,9 @@ import { AuthService } from '../server/auth.service.js';
 import { RolesGuard, AUTH_ROLES_KEY } from '../server/roles.guard.js';
 import { PermissionsGuard } from '../server/permissions.guard.js';
 import { AUTH_PERMISSIONS_KEY } from '../server/require-permissions.decorator.js';
+import { ChatController } from '../server/chat.controller.js';
+import { DailyAwarenessController } from '../server/daily-awareness.controller.js';
+import { DraftAssistantController } from '../server/draft-assistant.controller.js';
 import { ReportsController } from '../server/reports.controller.js';
 import { ReportsService } from '../server/reports.service.js';
 import { ResearchKeysController } from '../server/research-keys.controller.js';
@@ -53,6 +56,11 @@ function user(id: string, role: AuthUser['role']): AuthUser {
     operator: ['report:create'],
     viewer: ['report:read'],
   };
+  const roleModules: Record<AuthUser['role'], string[]> = {
+    admin: ['report', 'qa', 'draft', 'daily'],
+    operator: ['report'],
+    viewer: ['report'],
+  };
   return {
     id,
     username: `${role}-${id}`,
@@ -60,6 +68,7 @@ function user(id: string, role: AuthUser['role']): AuthUser {
     email: null,
     role,
     roles: [role],
+    modules: roleModules[role],
     permissions: rolePermissions[role],
   };
 }
@@ -101,11 +110,57 @@ function testReportPlansRequireAdminOrOperator() {
 
 function testHighRiskEndpointsDeclarePermissions() {
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.create), ['report:create']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.list), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.get), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.cancel), ['report:update']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.delete), ['report:delete']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.listReportEdits), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.restore), ['report:update']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.permanentDelete), ['report:delete']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.progress), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.eventLog), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.events), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.result), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.databaseSources), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.sources), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.download), ['report:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ResearchKeysController.prototype.update), ['research_key:update']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, VectorSourcesController.prototype.switchProfile), ['vector_source:update']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, VectorSourcesController.prototype.reindex), ['vector_source:update']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, UsersController), ['user:manage']);
+}
+
+function testModuleControllersDeclarePermissions() {
+  const chatGuards = Reflect.getMetadata(GUARDS_METADATA, ChatController) || [];
+  assert.ok(chatGuards.includes(AuthGuard), 'ChatController should use AuthGuard');
+  assert.ok(chatGuards.includes(PermissionsGuard), 'ChatController should use PermissionsGuard');
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.completions), ['chat:execute']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.stream), ['chat:execute']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.sources), ['chat:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.upsertSources), ['chat:execute']);
+
+  const draftGuards = Reflect.getMetadata(GUARDS_METADATA, DraftAssistantController) || [];
+  assert.ok(draftGuards.includes(AuthGuard), 'DraftAssistantController should use AuthGuard');
+  assert.ok(draftGuards.includes(PermissionsGuard), 'DraftAssistantController should use PermissionsGuard');
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.analyze), ['draft_assistant:create']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.listEvents), ['draft_assistant:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.getEvent), ['draft_assistant:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.generateOutline), ['draft_assistant:create']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.refineOutline), ['draft_assistant:update']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.manualUpdateOutline), ['draft_assistant:update']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.importOutline), ['draft_assistant:create']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.getOutline), ['draft_assistant:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DraftAssistantController.prototype.listOutlines), ['draft_assistant:read']);
+
+  const dailyGuards = Reflect.getMetadata(GUARDS_METADATA, DailyAwarenessController) || [];
+  assert.ok(dailyGuards.includes(AuthGuard), 'DailyAwarenessController should use AuthGuard');
+  assert.ok(dailyGuards.includes(PermissionsGuard), 'DailyAwarenessController should use PermissionsGuard');
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.generate), ['daily_awareness:create']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.listBriefs), ['daily_awareness:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.getBrief), ['daily_awareness:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.downloadBrief), ['daily_awareness:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.listEvents), ['daily_awareness:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.importDraft), ['daily_awareness:import']);
 }
 
 async function testReportPlansHttpAuthorization() {
@@ -398,6 +453,7 @@ async function testReportJobListVisibility() {
 
 testReportPlansRequireAdminOrOperator();
 testHighRiskEndpointsDeclarePermissions();
+testModuleControllersDeclarePermissions();
 await testReportPlansHttpAuthorization();
 await testPermissionProtectedHttpEndpoints();
 await testAuthServiceReturnsRbacAccess();

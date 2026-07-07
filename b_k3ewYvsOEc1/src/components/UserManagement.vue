@@ -35,10 +35,10 @@ const roleLabels = {
 }
 
 const moduleOptions = [
-  { key: 'report', label: '编报', icon: '编', description: '允许使用 AI 智能体深度编报，包括创建、查看、规划和报告结果。' },
-  { key: 'qa', label: '问答', icon: '问', description: '允许使用 QA 问答，包括知识库检索和问答历史。' },
-  { key: 'draft', label: '拟稿', icon: '稿', description: '允许使用拟稿助手，包括事件分析、提纲生成和导入深度编报。' },
-  { key: 'daily', label: '每日动态感知', icon: '日', description: '允许查看和生成每日动态简报。' },
+  { key: 'report', label: '编报', icon: '编', description: '允许使用 AI 智能体深度编报，包括创建、规划和管理自己的编报任务。' },
+  { key: 'qa', label: '问答', icon: '问', description: '允许使用 QA 问答，包括提问、知识库检索和问答历史。' },
+  { key: 'draft', label: '拟稿', icon: '稿', description: '允许使用拟稿助手，包括事件分析、提纲生成和内容调整。' },
+  { key: 'daily', label: '每日动态感知', icon: '日', description: '允许生成和使用每日动态简报。' },
 ]
 
 const moduleLabels = Object.fromEntries(moduleOptions.map((item) => [item.key, item.label]))
@@ -686,7 +686,7 @@ async function confirmDeleteRole(role) {
               </section>
             </div>
 
-            <div v-else class="user-management__empty">请选择左侧角色查看详情。</div>
+            <div v-else class="user-management__empty">请选择左侧角色以显示详情。</div>
           </div>
         </div>
 
@@ -723,7 +723,7 @@ async function confirmDeleteRole(role) {
               <div class="module-permission-section">
                 <div class="user-management__section-title">
                   <span>功能权限</span>
-                  <small>只选择业务模块，底层权限由系统映射</small>
+                  <small>只选择业务模块，具体接口权限由系统自动处理</small>
                 </div>
                 <div class="drawer-module-grid">
                   <label
@@ -741,7 +741,7 @@ async function confirmDeleteRole(role) {
                   </label>
                 </div>
                 <div v-if="roleForm.name === 'admin'" class="system-permission-hint">
-                  系统管理员默认拥有用户管理、角色管理、密钥配置、向量源配置和报告删除权限，这些系统权限不会在业务模块中展示，也不会被移除。
+                  系统管理员默认拥有用户管理、角色管理、密钥配置、向量源配置和报告删除权限，这些系统权限不会出现在业务模块卡片中，也不会被移除。
                 </div>
               </div>
             </div>

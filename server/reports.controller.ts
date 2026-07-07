@@ -24,6 +24,7 @@ export class ReportsController {
   }
 
   @Get()
+  @RequirePermissions('report:read')
   async list(
     @CurrentUser() user: AuthUser,
     @Query('page') page?: string,
@@ -37,6 +38,7 @@ export class ReportsController {
   }
 
   @Get(':jobId')
+  @RequirePermissions('report:read')
   async get(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const job = await this.reports.getJobWithRecoveredReport(jobId, user);
     if (!job) {
@@ -46,6 +48,7 @@ export class ReportsController {
   }
 
   @Post(':jobId/cancel')
+  @RequirePermissions('report:update')
   async cancel(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const job = await this.reports.cancelJob(jobId, user);
     if (!job) {
@@ -71,6 +74,7 @@ export class ReportsController {
   }
 
   @Get(':jobId/edits')
+  @RequirePermissions('report:read')
   async listReportEdits(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     return this.reports.listReportEdits(jobId, user);
   }
@@ -94,6 +98,7 @@ export class ReportsController {
   }
 
   @Post(':jobId/restore')
+  @RequirePermissions('report:update')
   async restore(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const job = await this.reports.restoreJob(jobId, user);
     if (!job) {
@@ -103,11 +108,13 @@ export class ReportsController {
   }
 
   @Delete(':jobId/permanent')
+  @RequirePermissions('report:delete')
   async permanentDelete(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     return this.reports.permanentlyDeleteJob(jobId, user);
   }
 
   @Get(':jobId/progress')
+  @RequirePermissions('report:read')
   async progress(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const result = await this.reports.getProgressState(jobId, user);
     if (!result) {
@@ -117,6 +124,7 @@ export class ReportsController {
   }
 
   @Get(':jobId/event-log')
+  @RequirePermissions('report:read')
   eventLog(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const result = this.reports.getEventLog(jobId, user);
     if (!result) {
@@ -126,6 +134,7 @@ export class ReportsController {
   }
 
   @Sse(':jobId/events')
+  @RequirePermissions('report:read')
   events(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser): Observable<MessageEvent> {
     return new Observable((subscriber) => {
       void (async () => {
@@ -174,6 +183,7 @@ export class ReportsController {
   }
 
   @Get(':jobId/result')
+  @RequirePermissions('report:read')
   async result(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const result = await this.reports.getResultFromDisk(jobId, user);
     if (result === undefined) {
@@ -187,6 +197,7 @@ export class ReportsController {
   }
 
   @Get(':jobId/database-sources')
+  @RequirePermissions('report:read')
   async databaseSources(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
     const result = await this.reports.getDatabaseSources(jobId, user);
     if (result === undefined) {
@@ -196,6 +207,7 @@ export class ReportsController {
   }
 
   @Get(':jobId/sources')
+  @RequirePermissions('report:read')
   async sources(
     @Param('jobId') jobId: string,
     @CurrentUser() user: AuthUser,
@@ -212,6 +224,7 @@ export class ReportsController {
 
   @Get(':jobId/download')
   @Header('Content-Type', 'text/markdown; charset=utf-8')
+  @RequirePermissions('report:read')
   async download(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser, @Query('format') format = 'md') {
     const result = await this.reports.getMarkdownFromDisk(jobId, user);
     if (result === undefined) {

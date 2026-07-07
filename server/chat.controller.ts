@@ -4,11 +4,13 @@ import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
 import { ChatService } from './chat.service.js';
 import { CurrentUser } from './current-user.decorator.js';
+import { PermissionsGuard } from './permissions.guard.js';
 import { QaSessionSourcesService } from './qa-session-sources.service.js';
+import { RequirePermissions } from './require-permissions.decorator.js';
 import type { ServerEvent } from './types.js';
 
 @Controller('/api/chat')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
 export class ChatController {
   constructor(
     private readonly chat: ChatService,
@@ -16,6 +18,7 @@ export class ChatController {
   ) {}
 
   @Post('completions')
+  @RequirePermissions('chat:execute')
   completions(
     @Body() body: { messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>; stream?: boolean; sessionId?: string },
     @CurrentUser() user: AuthUser,
@@ -26,6 +29,7 @@ export class ChatController {
     return this.chat.complete({ messages: body.messages, stream: body.stream, sessionId: body.sessionId }, user);
   }
 
+  @RequirePermissions('chat:execute')
   @Sse('streams/:streamId')
   stream(@Param('streamId') streamId: string, @CurrentUser() user: AuthUser): Observable<MessageEvent> {
     const { events, subject } = this.chat.stream(streamId, user);
@@ -49,11 +53,13 @@ export class ChatController {
     });
   }
 
+  @RequirePermissions('chat:read')
   @Get('sessions/:sessionId/sources')
   sources(@Param('sessionId') sessionId: string, @CurrentUser() user: AuthUser) {
     return this.qaSources.getSources(sessionId, user);
   }
 
+  @RequirePermissions('chat:execute')
   @Put('sessions/:sessionId/sources')
   upsertSources(
     @Param('sessionId') sessionId: string,

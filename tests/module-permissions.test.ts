@@ -100,11 +100,13 @@ async function testRolesServiceAcceptsModulesAndProtectsAdmin() {
   assert.ok(updatedAdmin.permissions.includes('user:manage'));
   assert.ok(updatedAdmin.permissions.includes('role:manage'));
   assert.ok(updatedAdmin.permissions.includes('report:delete'));
+  assert.ok(updatedAdmin.permissions.includes('crawler:delete'));
+  assert.ok(updatedAdmin.permissions.includes('research_key:read'));
+  assert.ok(updatedAdmin.permissions.includes('vector_source:read'));
   assert.ok(updatedAdmin.permissions.includes('report:create'));
   assert.ok(updatedAdmin.permissions.includes('chat:execute'));
   assert.ok(updatedAdmin.permissions.includes('draft_assistant:create'));
   assert.ok(updatedAdmin.permissions.includes('daily_awareness:create'));
-  assert.ok(!updatedAdmin.permissions.includes('crawler:delete'));
 }
 
 async function testUsersAndAuthExposeModules() {
@@ -191,6 +193,9 @@ async function testSystemRoleFallsBackWhenRbacPermissionsAreEmpty() {
   sameMembers(login.user.modules, ['report', 'qa', 'draft', 'daily']);
   assert.ok(login.user.permissions.includes('user:manage'));
   assert.ok(login.user.permissions.includes('role:manage'));
+  assert.ok(login.user.permissions.includes('crawler:delete'));
+  assert.ok(login.user.permissions.includes('research_key:read'));
+  assert.ok(login.user.permissions.includes('vector_source:read'));
 }
 
 testPermissionModuleMappings();
