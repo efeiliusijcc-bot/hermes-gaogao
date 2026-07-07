@@ -54,6 +54,12 @@ export class ChatController {
   }
 
   @RequirePermissions('chat:read')
+  @Get('sessions')
+  sessions(@CurrentUser() user: AuthUser) {
+    return this.qaSources.listSessions(user);
+  }
+
+  @RequirePermissions('chat:read')
   @Get('sessions/:sessionId/sources')
   sources(@Param('sessionId') sessionId: string, @CurrentUser() user: AuthUser) {
     return this.qaSources.getSources(sessionId, user);

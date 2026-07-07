@@ -48,6 +48,10 @@ export function modulesFromPermissions(permissions) {
 }
 
 export function deriveUserModules(user) {
+  if (user && Object.prototype.hasOwnProperty.call(user, 'modules')) {
+    return normalizeModules(user.modules)
+  }
+
   const explicitModules = normalizeModules(user?.modules)
   if (explicitModules.length) return explicitModules
 
@@ -67,6 +71,10 @@ export function deriveUserModules(user) {
 }
 
 export function deriveRoleModules(role) {
+  if (role && Object.prototype.hasOwnProperty.call(role, 'modules')) {
+    return normalizeModules(role.modules)
+  }
+
   const explicitModules = normalizeModules(role?.modules)
   if (explicitModules.length) return explicitModules
 

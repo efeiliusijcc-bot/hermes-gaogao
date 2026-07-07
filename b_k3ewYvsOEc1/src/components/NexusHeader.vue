@@ -72,7 +72,8 @@ const loginForm = reactive({
 
 const userPermissions = computed(() => Array.isArray(props.user?.permissions) ? props.user.permissions : [])
 const userModules = computed(() => deriveUserModules(props.user))
-const canManageUsers = computed(() => userPermissions.value.includes('user:manage') || userPermissions.value.includes('role:manage'))
+const isAdminUser = computed(() => props.user?.role === 'admin' || (Array.isArray(props.user?.roles) && props.user.roles.includes('admin')))
+const canManageUsers = computed(() => isAdminUser.value && (userPermissions.value.includes('user:manage') || userPermissions.value.includes('role:manage')))
 const canManageSources = computed(() => {
   return userPermissions.value.includes('research_key:update') || userPermissions.value.includes('vector_source:update')
 })

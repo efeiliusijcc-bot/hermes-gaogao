@@ -14,6 +14,15 @@ export interface QaSessionSourcesRecord {
   sources: Record<string, JsonValue>[];
 }
 
+export interface QaSessionSummary {
+  sessionId: string;
+  ownerUserId: string;
+  ownerUsername: string | null;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface UpsertSourcesInput {
   sources?: unknown;
   merge?: boolean;
@@ -40,6 +49,22 @@ export class QaSessionSourcesService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     if (this.pool) await this.pool.end();
+  }
+
+  async listSessions(user: AuthUser): Promise<{ items: QaSessionSummary[] }> {
+    const pool = await this.getPool();
+    const params: unknown[] = [];
+    const where = user.role === 'admin' ? '' : 'WHERE owner_id = $1';
+    if (user.role !== 'admin') params.push(user.id);
+    const result = await pool.query(
+      `SELECT session_id, owner_id, owner_username, title, created_at, updated_at
+         FROM chat_sessions
+         ${where}
+        ORDER BY updated_at DESC
+        LIMIT 100`,
+      params,
+    );
+    return { items: result.rows.map((row) => this.toSessionSummary(row)) };
   }
 
   async getSources(sessionId: string, user: AuthUser): Promise<QaSessionSourcesRecord> {
@@ -165,6 +190,23 @@ export class QaSessionSourcesService implements OnModuleDestroy {
       sourceCount: 0,
       sources: [],
     };
+  }
+
+  private toSessionSummary(row: Record<string, unknown>): QaSessionSummary {
+    return {
+      sessionId: String(row.session_id || ''),
+      ownerUserId: String(row.owner_id || ''),
+      ownerUsername: row.owner_username ? String(row.owner_username) : null,
+      title: row.title ? String(row.title) : null,
+      createdAt: this.dateString(row.created_at),
+      updatedAt: this.dateString(row.updated_at),
+    };
+  }
+
+  private dateString(value: unknown): string {
+    if (!value) return '';
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
   }
 
   private normalizeSources(value: unknown): Record<string, JsonValue>[] {

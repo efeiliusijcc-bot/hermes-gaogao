@@ -136,6 +136,7 @@ function testModuleControllersDeclarePermissions() {
   assert.ok(chatGuards.includes(PermissionsGuard), 'ChatController should use PermissionsGuard');
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.completions), ['chat:execute']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.stream), ['chat:execute']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.sessions), ['chat:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.sources), ['chat:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ChatController.prototype.upsertSources), ['chat:execute']);
 

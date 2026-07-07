@@ -12,11 +12,13 @@ function sameMembers(actual: string[], expected: string[]) {
 sameMembers(modulesFromPermissions(['report:create', 'chat:read', 'daily_awareness:read']), ['report', 'qa', 'daily']);
 sameMembers(modulesFromPermissions(['crawler:delete']), []);
 sameMembers(deriveUserModules({ modules: ['report', 'draft'], permissions: ['chat:read'] }), ['report', 'draft']);
+sameMembers(deriveUserModules({ modules: [], permissions: ['chat:read'], role: 'operator' }), []);
 sameMembers(deriveUserModules({ permissions: ['chat:execute', 'draft_assistant:create'] }), ['qa', 'draft']);
-sameMembers(deriveUserModules({ role: 'admin', roles: ['admin'], modules: [], permissions: [] }), ['report', 'qa', 'draft', 'daily']);
-sameMembers(deriveUserModules({ role: 'operator', modules: [], permissions: [] }), ['report', 'qa', 'draft', 'daily']);
-sameMembers(deriveUserModules({ role: 'viewer', modules: [], permissions: [] }), ['qa', 'daily']);
-sameMembers(deriveRoleModules({ name: 'editor', modules: [], permissions: ['report:create', 'chat:read'] }), ['report', 'qa']);
-sameMembers(deriveRoleModules({ name: 'admin', modules: [], permissions: [] }), ['report', 'qa', 'draft', 'daily']);
+sameMembers(deriveUserModules({ role: 'admin', roles: ['admin'], permissions: [] }), ['report', 'qa', 'draft', 'daily']);
+sameMembers(deriveUserModules({ role: 'operator', permissions: [] }), ['report', 'qa', 'draft', 'daily']);
+sameMembers(deriveUserModules({ role: 'viewer', permissions: [] }), ['qa', 'daily']);
+sameMembers(deriveRoleModules({ name: 'editor', permissions: ['report:create', 'chat:read'] }), ['report', 'qa']);
+sameMembers(deriveRoleModules({ name: 'operator', modules: [], permissions: ['report:create', 'chat:read'] }), []);
+sameMembers(deriveRoleModules({ name: 'admin', permissions: [] }), ['report', 'qa', 'draft', 'daily']);
 
 console.log('frontend permission module tests passed');
