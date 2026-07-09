@@ -24,6 +24,10 @@ const props = defineProps({
     type: String,
     default: 'report',
   },
+  userManagementOpen: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-personal-settings', 'switch-workspace'])
@@ -73,11 +77,17 @@ const loginForm = reactive({
 const userPermissions = computed(() => Array.isArray(props.user?.permissions) ? props.user.permissions : [])
 const userModules = computed(() => deriveUserModules(props.user))
 const isAdminUser = computed(() => props.user?.role === 'admin' || (Array.isArray(props.user?.roles) && props.user.roles.includes('admin')))
-const canManageUsers = computed(() => isAdminUser.value && (userPermissions.value.includes('user:manage') || userPermissions.value.includes('role:manage')))
-const canManageSources = computed(() => {
-  return userPermissions.value.includes('research_key:update') || userPermissions.value.includes('vector_source:update')
+const canManageUsers = computed(() => {
+  return isAdminUser.value || userPermissions.value.includes('user:manage') || userPermissions.value.includes('role:manage')
+})
+const canManageSystemConfig = computed(() => {
+  return isAdminUser.value ||
+    userPermissions.value.includes('system:manage') ||
+    userPermissions.value.includes('research_key:update') ||
+    userPermissions.value.includes('vector_source:update')
 })
 const displayUserName = computed(() => props.user?.displayName || props.user?.username || '')
+const displayRoleName = computed(() => roleLabel(props.user?.role))
 const loginExpiredNotice = computed(() => {
   const notice = String(props.authNotice || '')
   return /失效|重新登录|过期/i.test(notice) ? '登录状态已失效，请重新登录。' : ''
@@ -97,6 +107,10 @@ const visibleWorkspaceItems = computed(() => {
 })
 const activeWorkspaceItem = computed(() => {
   return visibleWorkspaceItems.value.find((item) => item.key === props.currentWorkspace) || visibleWorkspaceItems.value[0] || { title: '暂无可用模块' }
+})
+const currentLocationLabel = computed(() => {
+  if (props.userManagementOpen) return '用户与角色管理'
+  return activeWorkspaceItem.value.title
 })
 
 const keyFields = [
@@ -239,6 +253,11 @@ function openUserManagement() {
   emit('open-user-management')
 }
 
+function returnToWorkbench() {
+  closeSettingsMenu()
+  emit('return-home')
+}
+
 function openPersonalSettings() {
   closeSettingsMenu()
   emit('open-personal-settings')
@@ -270,6 +289,10 @@ function updateSettingsMenuPosition() {
 
 function toggleSettingsMenu(event) {
   event?.stopPropagation()
+  if (!props.user) {
+    openLoginDialog()
+    return
+  }
   if (!showSettingsMenu.value) updateSettingsMenuPosition()
   showSettingsMenu.value = !showSettingsMenu.value
 }
@@ -556,30 +579,23 @@ watch(() => props.authError, (error) => {
         登录
       </button>
 
-      <div v-else class="header-user-chip">
-        <span class="header-user-name">{{ displayUserName }}</span>
-        <span class="header-user-role">{{ roleLabel(user.role) }}</span>
-      </div>
-
       <button
-        v-if="canManageUsers"
-        class="sci-btn header-login-btn"
+        v-else
+        class="header-user-chip"
         type="button"
-        @click="openUserManagement"
+        :aria-expanded="showSettingsMenu"
+        aria-haspopup="menu"
+        @click.stop="toggleSettingsMenu"
       >
-        用户管理
+        <span class="header-user-avatar">{{ displayUserName.slice(0, 1).toUpperCase() }}</span>
+        <span class="header-user-text">
+          <span class="header-user-name">{{ displayUserName }}</span>
+          <span class="header-user-role">{{ displayRoleName }}</span>
+        </span>
+        <span class="header-user-caret">▾</span>
       </button>
 
-      <button
-        v-if="user"
-        class="sci-btn header-login-btn"
-        type="button"
-        @click="logout"
-      >
-        退出登录
-      </button>
-
-      <div class="header-settings relative">
+      <div v-if="user" class="header-settings relative">
         <button
           ref="settingsButtonRef"
           class="settings-icon-btn"
@@ -604,13 +620,39 @@ watch(() => props.authError, (error) => {
       :style="settingsMenuStyle"
       @click.stop
     >
-      <button v-if="user" class="settings-dropdown-item" type="button" role="menuitem" @click="openPersonalSettings">
-        <span class="settings-menu-icon">◌</span>
-        <span>个人设置</span>
-      </button>
-      <button v-if="canManageSources" class="settings-dropdown-item" type="button" role="menuitem" @click="openKeySettings">
-        <span class="settings-menu-icon">⌁</span>
-        <span>信源设置</span>
+      <div class="settings-account-card">
+        <strong>{{ displayUserName }}</strong>
+        <span>{{ displayRoleName }} · {{ user.role || '--' }}</span>
+        <small>当前模块：{{ currentLocationLabel }}</small>
+      </div>
+      <div class="settings-dropdown-section">
+        <button v-if="user" class="settings-dropdown-item" type="button" role="menuitem" @click="openPersonalSettings">
+          <span class="settings-menu-icon">◌</span>
+          <span>个人设置</span>
+        </button>
+        <button
+          v-if="canManageUsers"
+          class="settings-dropdown-item"
+          type="button"
+          role="menuitem"
+          :class="{ active: userManagementOpen }"
+          @click="openUserManagement"
+        >
+          <span class="settings-menu-icon">◎</span>
+          <span>用户与角色管理</span>
+        </button>
+        <button v-if="canManageSystemConfig" class="settings-dropdown-item" type="button" role="menuitem" @click="openKeySettings">
+          <span class="settings-menu-icon">⌁</span>
+          <span>系统配置</span>
+        </button>
+        <button v-if="userManagementOpen" class="settings-dropdown-item" type="button" role="menuitem" @click="returnToWorkbench">
+          <span class="settings-menu-icon">↩</span>
+          <span>返回工作台</span>
+        </button>
+      </div>
+      <button class="settings-dropdown-item danger" type="button" role="menuitem" @click="logout">
+        <span class="settings-menu-icon">⎋</span>
+        <span>退出登录</span>
       </button>
     </div>
   </Teleport>

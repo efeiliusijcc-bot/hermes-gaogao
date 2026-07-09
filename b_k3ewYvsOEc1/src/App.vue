@@ -157,6 +157,7 @@ const hasReturnableWorkspace = computed(() => {
 const userModules = computed(() => deriveUserModules(authUser.value))
 const userPermissions = computed(() => Array.isArray(authUser.value?.permissions) ? authUser.value.permissions : [])
 const isAdminUser = computed(() => authUser.value?.role === 'admin' || (Array.isArray(authUser.value?.roles) && authUser.value.roles.includes('admin')))
+const canManageUsers = computed(() => isAdminUser.value || hasPermission('user:manage') || hasPermission('role:manage'))
 const canDeleteReports = computed(() => userPermissions.value.includes('report:delete'))
 const hasAnyBusinessModule = computed(() => userModules.value.some((module) => ['report', 'qa', 'draft', 'daily'].includes(module)))
 
@@ -209,7 +210,7 @@ function openUserManagement() {
     setAuthNotice('\u8bf7\u5148\u767b\u5f55')
     return
   }
-  if (!isAdminUser.value || (!hasPermission('user:manage') && !hasPermission('role:manage'))) {
+  if (!canManageUsers.value) {
     setAuthNotice('\u65e0\u6743\u9650\u8bbf\u95ee\u7528\u6237\u7ba1\u7406')
     return
   }
@@ -472,7 +473,7 @@ function returnHome() {
 watch(qaSessions, persistQaSessions, { deep: true })
 
 watch(authUser, (user) => {
-  if (showUserManagement.value && (!isAdminUser.value || (!hasPermission('user:manage') && !hasPermission('role:manage')))) {
+  if (showUserManagement.value && !canManageUsers.value) {
     showUserManagement.value = false
   }
   if (user) {
@@ -535,6 +536,7 @@ function jobActionLabel(status) {
       :auth-error="authError"
       :auth-notice="authNotice"
       :current-workspace="currentWorkspace"
+      :user-management-open="showUserManagement"
       @return-home="returnHome"
       @login="handleLogin"
       @logout="handleLogout"
