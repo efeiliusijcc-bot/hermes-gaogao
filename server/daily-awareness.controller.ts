@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpException, HttpStatus, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpException, HttpStatus, Inject, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
@@ -7,12 +7,11 @@ import { DailyAwarenessService } from './daily-awareness.service.js';
 import type { DailyAwarenessGenerateInput } from './daily-awareness.types.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { RequirePermissions } from './require-permissions.decorator.js';
-import { RolesGuard } from './roles.guard.js';
 
 @Controller('/api/daily-awareness')
-@UseGuards(AuthGuard, RolesGuard, PermissionsGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
 export class DailyAwarenessController {
-  constructor(private readonly dailyAwareness: DailyAwarenessService) {}
+  constructor(@Inject(DailyAwarenessService) private readonly dailyAwareness: DailyAwarenessService) {}
 
   @Post('generate')
   @RequirePermissions('daily_awareness:create')

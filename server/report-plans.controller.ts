@@ -3,12 +3,10 @@ import { AuthGuard } from './auth.guard.js';
 import { HermesService } from './hermes.service.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { RequirePermissions } from './require-permissions.decorator.js';
-import { Roles, RolesGuard } from './roles.guard.js';
 import type { ReportPlanRequest } from './types.js';
 
 @Controller('/api/report-plans')
-@UseGuards(AuthGuard, RolesGuard, PermissionsGuard)
-@Roles('admin', 'operator')
+@UseGuards(AuthGuard, PermissionsGuard)
 @RequirePermissions('report:create')
 export class ReportPlansController {
   constructor(@Inject(HermesService) private readonly hermes: HermesService) {}

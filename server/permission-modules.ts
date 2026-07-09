@@ -96,33 +96,8 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<'admin' | 'operator' | 'viewer', st
     'crawler:read',
     'crawler:delete',
   ],
-  operator: [
-    'report:create',
-    'report:read',
-    'report:update',
-    'chat:execute',
-    'chat:read',
-    'draft_assistant:create',
-    'draft_assistant:read',
-    'draft_assistant:update',
-    'daily_awareness:create',
-    'daily_awareness:read',
-    'daily_awareness:import',
-    'preference:read',
-    'preference:update',
-    'template:create',
-    'template:read',
-    'template:update',
-    'template:delete',
-    'crawler:create',
-    'crawler:execute',
-    'crawler:read',
-  ],
-  viewer: [
-    'chat:execute',
-    'chat:read',
-    'daily_awareness:read',
-  ],
+  operator: [],
+  viewer: [],
 };
 
 const MODULE_KEYS = new Set(PERMISSION_MODULES.map((module) => module.key));
@@ -148,31 +123,9 @@ export function permissionsFromModules(modules: unknown): string[] {
 
 export function modulesFromPermissions(permissions: unknown): PermissionModule[] {
   const permissionSet = new Set(Array.isArray(permissions) ? permissions.map((item) => String(item || '').trim()).filter(Boolean) : []);
-  const modules: PermissionModule[] = [];
-
-  const hasAny = (values: string[]) => values.some((permission) => permissionSet.has(permission));
-  const hasDaily = hasAny(['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import']);
-  const hasDraft = permissionSet.has('draft_assistant:update') || (hasAny(['draft_assistant:create', 'draft_assistant:read']) && !hasDaily);
-  const hasReportSpecific = hasAny([
-    'report:update',
-    'crawler:create',
-    'crawler:execute',
-    'crawler:read',
-    'template:create',
-    'template:read',
-    'template:update',
-    'template:delete',
-    'preference:read',
-    'preference:update',
-  ]);
-  const hasReportReadOnly = hasAny(['report:create', 'report:read']) && !hasDraft;
-
-  if (hasReportSpecific || hasReportReadOnly) modules.push('report');
-  if (hasAny(['chat:execute', 'chat:read'])) modules.push('qa');
-  if (hasDraft) modules.push('draft');
-  if (hasDaily) modules.push('daily');
-
-  return modules;
+  return PERMISSION_MODULES
+    .filter((module) => module.permissions.every((permission) => permissionSet.has(permission)))
+    .map((module) => module.key);
 }
 
 export function uniqueStrings(values: unknown[]): string[] {

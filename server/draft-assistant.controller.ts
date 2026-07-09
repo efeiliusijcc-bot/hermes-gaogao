@@ -6,11 +6,9 @@ import { DraftAssistantService } from './draft-assistant.service.js';
 import type { DraftAnalyzeInput, DraftOutlineImportInput, DraftOutlineInput, DraftOutlineManualInput, DraftOutlineRefineInput } from './draft-assistant.types.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { RequirePermissions } from './require-permissions.decorator.js';
-import { Roles, RolesGuard } from './roles.guard.js';
 
 @Controller('/api/draft-assistant')
-@UseGuards(AuthGuard, RolesGuard, PermissionsGuard)
-@Roles('admin', 'operator', 'viewer')
+@UseGuards(AuthGuard, PermissionsGuard)
 export class DraftAssistantController {
   constructor(private readonly draftAssistant: DraftAssistantService) {}
 

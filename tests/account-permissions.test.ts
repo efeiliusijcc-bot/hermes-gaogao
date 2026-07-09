@@ -407,6 +407,9 @@ async function testPermissionProtectedHttpEndpoints() {
 async function testAuthServiceReturnsRbacAccess() {
   const passwordHash = await bcrypt.hash('password123', 4);
   const queries: Array<{ text: string; params?: unknown[] }> = [];
+  let operatorRoleRows = [
+    { role_name: 'operator', resource: 'report', action: 'create' },
+  ];
   const pool = {
     query: async (text: string, params?: unknown[]) => {
       queries.push({ text, params });
@@ -432,6 +435,17 @@ async function testAuthServiceReturnsRbacAccess() {
           is_active: true,
         }] };
       }
+      if (text.includes('FROM users') && params?.[0] === 'operator-1') {
+        return { rows: [{
+          id: 'operator-1',
+          username: 'operator',
+          password_hash: passwordHash,
+          display_name: 'Operator',
+          email: null,
+          role: 'operator',
+          is_active: true,
+        }] };
+      }
       if (text.includes('FROM user_roles') && params?.[0] === 'admin-1') {
         return { rows: [
           { role_name: 'admin', resource: 'report', action: 'delete' },
@@ -439,9 +453,7 @@ async function testAuthServiceReturnsRbacAccess() {
         ] };
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'operator-1') {
-        return { rows: [
-          { role_name: 'operator', resource: 'report', action: 'create' },
-        ] };
+        return { rows: operatorRoleRows };
       }
       return { rows: [] };
     },
@@ -459,6 +471,17 @@ async function testAuthServiceReturnsRbacAccess() {
   assert.deepEqual(operatorLogin.user.roles, ['operator']);
   assert.ok(operatorLogin.user.permissions.includes('report:create'));
   assert.ok(!operatorLogin.user.permissions.includes('report:delete'));
+
+  operatorRoleRows = [
+    { role_name: 'daily_role', resource: 'daily_awareness', action: 'create' },
+    { role_name: 'daily_role', resource: 'daily_awareness', action: 'import' },
+    { role_name: 'daily_role', resource: 'daily_awareness', action: 'read' },
+  ];
+  const refreshedOperator = await service.verifyAccessToken(operatorLogin.access_token);
+  assert.deepEqual(refreshedOperator.roles, ['daily_role']);
+  assert.deepEqual(refreshedOperator.modules, ['daily']);
+  assert.ok(refreshedOperator.permissions.includes('daily_awareness:create'));
+  assert.ok(!refreshedOperator.permissions.includes('report:create'));
   assert.ok(queries.some((query) => query.text.includes('FROM user_roles')));
 }
 

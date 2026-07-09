@@ -7,10 +7,9 @@ import { CurrentUser } from './current-user.decorator.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { RequirePermissions } from './require-permissions.decorator.js';
 import { ResearchKeysService, type UpdateResearchKeysInput } from './research-keys.service.js';
-import { Roles, RolesGuard } from './roles.guard.js';
 
 @Controller('/api/research-keys')
-@UseGuards(AuthGuard, RolesGuard, PermissionsGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
 export class ResearchKeysController {
   constructor(
     @Inject(ResearchKeysService) private readonly researchKeys: ResearchKeysService,
@@ -18,13 +17,12 @@ export class ResearchKeysController {
   ) {}
 
   @Get()
-  @Roles('admin', 'operator', 'viewer')
+  @RequirePermissions('research_key:read')
   getStatus() {
     return this.researchKeys.getStatus();
   }
 
   @Put()
-  @Roles('admin')
   @RequirePermissions('research_key:update')
   async update(@Body() body: UpdateResearchKeysInput, @CurrentUser() user: AuthUser, @Req() request: Request) {
     const result = await this.researchKeys.updateKeys(body || {});

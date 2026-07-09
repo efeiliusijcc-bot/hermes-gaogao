@@ -47,7 +47,7 @@ export function normalizeModules(value) {
 export function modulesFromPermissions(permissions) {
   const permissionSet = new Set(uniqueStrings(permissions))
   return BUSINESS_MODULES.filter((module) => {
-    return MODULE_PERMISSION_HINTS[module].some((permission) => permissionSet.has(permission))
+    return MODULE_PERMISSION_HINTS[module].every((permission) => permissionSet.has(permission))
   })
 }
 

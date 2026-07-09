@@ -20,8 +20,6 @@ let initialized = false
 const isLoggedIn = computed(() => Boolean(accessToken.value && currentUser.value))
 const currentRoles = computed(() => Array.isArray(currentUser.value?.roles) ? currentUser.value.roles : [currentUser.value?.role].filter(Boolean))
 const isAdmin = computed(() => currentRoles.value.includes('admin'))
-const isOperator = computed(() => currentRoles.value.includes('operator'))
-const isViewer = computed(() => currentRoles.value.includes('viewer') && currentRoles.value.length === 1)
 
 function clearAuthState(message = '') {
   clearAuthSession()
@@ -94,8 +92,6 @@ export function useAuth() {
     currentUser,
     isLoggedIn,
     isAdmin,
-    isOperator,
-    isViewer,
     isLoading,
     errorMessage,
     notice,

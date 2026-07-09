@@ -6,11 +6,10 @@ import type { AuthUser } from './auth-user.interface.js';
 import { CurrentUser } from './current-user.decorator.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { RequirePermissions } from './require-permissions.decorator.js';
-import { Roles, RolesGuard } from './roles.guard.js';
 import { VectorSourceService } from './vector-source.service.js';
 
 @Controller('/api/vector-sources')
-@UseGuards(AuthGuard, RolesGuard, PermissionsGuard)
+@UseGuards(AuthGuard, PermissionsGuard)
 export class VectorSourcesController {
   constructor(
     @Inject(VectorSourceService) private readonly vectorSources: VectorSourceService,
@@ -18,19 +17,18 @@ export class VectorSourcesController {
   ) {}
 
   @Get('status')
-  @Roles('admin', 'operator', 'viewer')
+  @RequirePermissions('vector_source:read')
   status() {
     return this.vectorSources.status();
   }
 
   @Get('profiles')
-  @Roles('admin', 'operator', 'viewer')
+  @RequirePermissions('vector_source:read')
   profiles() {
     return this.vectorSources.profiles();
   }
 
   @Post('profile')
-  @Roles('admin')
   @RequirePermissions('vector_source:update')
   async switchProfile(@Body() body: { profile?: string } = {}, @CurrentUser() user: AuthUser, @Req() request: Request) {
     const result = await this.vectorSources.switchProfile(String(body?.profile || ''));
@@ -39,7 +37,6 @@ export class VectorSourcesController {
   }
 
   @Post('reindex')
-  @Roles('admin')
   @RequirePermissions('vector_source:update')
   async reindex(@Body() body: { limit?: number } = {}, @CurrentUser() user: AuthUser, @Req() request: Request) {
     const result = await this.vectorSources.reindex(Number(body?.limit || 100));

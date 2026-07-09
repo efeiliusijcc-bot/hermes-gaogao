@@ -245,7 +245,7 @@ async function testDraftOwnerIsolation() {
   assert.equal((await service.getEvent('event-b', admin)).event.eventId, 'event-b');
 }
 
-function makeBrief(ownerId: string, briefId = `brief-${ownerId}`) {
+function makeBrief(ownerId: string | null, briefId = `brief-${ownerId || 'legacy'}`) {
   return {
     brief_id: briefId,
     owner_id: ownerId,
@@ -258,7 +258,7 @@ function makeBrief(ownerId: string, briefId = `brief-${ownerId}`) {
     categories: ['测试'],
     content_json: { events: [] },
     created_at: '2026-07-06T00:00:00.000Z',
-    owner_username: `operator-${ownerId}`,
+    owner_username: ownerId ? `operator-${ownerId}` : '',
   };
 }
 
@@ -284,7 +284,7 @@ function makeDailyEvent(ownerId: string, briefId: string, itemId = `item-${owner
 }
 
 function createDailyPool(): Pool {
-  const briefs = [makeBrief('user-a', 'brief-a'), makeBrief('user-b', 'brief-b')];
+  const briefs = [makeBrief('user-a', 'brief-a'), makeBrief('user-b', 'brief-b'), makeBrief(null, 'brief-legacy')];
   const events = [makeDailyEvent('user-a', 'brief-a'), makeDailyEvent('user-b', 'brief-b')];
   return {
     query: async (text: string, params?: unknown[]) => {
@@ -322,12 +322,13 @@ async function testDailyOwnerIsolation() {
   const admin = authUser('admin-1', 'admin', ['daily_awareness:read'], ['daily']);
 
   assert.deepEqual((await service.listBriefs({}, userA)).items.map((item) => item.briefId), ['brief-a']);
-  assert.equal((await service.listBriefs({}, admin)).items.length, 2);
+  assert.equal((await service.listBriefs({}, admin)).items.length, 3);
   await assert.rejects(
     () => service.getBrief('brief-b', userA),
     (error) => /No permission to access this daily brief/.test(errorText(error)),
   );
   assert.equal((await service.getBrief('brief-b', admin)).brief.briefId, 'brief-b');
+  assert.equal((await service.getBrief('brief-legacy', admin)).brief.briefId, 'brief-legacy');
 }
 
 function makeCrawlerTask(ownerId: string | null, taskId = `task-${ownerId || 'legacy'}`) {
@@ -397,7 +398,7 @@ async function testMissingModulePermissionReturns403() {
     report: authUser('user-a', 'operator', ['report:create', 'report:read'], ['report']),
     qa: authUser('user-a', 'operator', ['chat:execute', 'chat:read'], ['qa']),
     draft: authUser('user-a', 'operator', ['draft_assistant:create', 'draft_assistant:read'], ['draft']),
-    daily: authUser('user-a', 'operator', ['daily_awareness:create', 'daily_awareness:read'], ['daily']),
+    daily: authUser('user-a', 'operator', ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import'], ['daily']),
     crawler: authUser('user-a', 'operator', ['crawler:create'], ['report']),
   };
 
@@ -480,6 +481,7 @@ async function testMissingModulePermissionReturns403() {
 
     const dailyBody = JSON.stringify({ date: '2026-07-06' });
     await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: dailyBody }), 403);
+    await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer daily' }, body: dailyBody }), 201);
 
     const crawlerBody = JSON.stringify({ jobId: 'job-a', crawlerPlan: { enabled: false } });
     await assertStatus(await fetch(`${baseUrl}/api/crawler/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: crawlerBody }), 403);

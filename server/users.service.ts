@@ -27,6 +27,7 @@ export interface UserResponse {
   email: string | null;
   role: UserRole;
   roles: string[];
+  isSuperAdmin: boolean;
   modules: string[];
   permissions: string[];
   isActive: boolean;
@@ -100,7 +101,7 @@ export class UsersService implements OnModuleDestroy {
     const password = String(input.password || '');
     if (!username) throw new BadRequestException({ error: 'username is required' });
     this.validatePasswordStrength(password);
-    const roleNames = this.resolveRequestedRoles(input, 'viewer');
+    const roleNames = this.resolveRequestedRoles(input, '');
     const roleRows = await this.resolveRoleRows(roleNames);
     const role = this.compatRole(roleNames, input.role);
     const passwordHash = await bcrypt.hash(password, 12);
@@ -273,9 +274,11 @@ export class UsersService implements OnModuleDestroy {
 
   private toUserResponse(row: Record<string, unknown>): UserResponse {
     const role = this.isUserRole(row.role) ? row.role : 'viewer';
-    const roles = Array.isArray(row.roles) && row.roles.length ? row.roles.map((item) => String(item)) : [role];
+    const rawRoles = Array.isArray(row.roles) ? row.roles.map((item) => String(item)).filter(Boolean) : [];
+    const roles = rawRoles.length ? rawRoles : role === 'admin' ? ['admin'] : [];
     const rawPermissions = Array.isArray(row.permissions) ? row.permissions.map((item) => String(item)).filter(Boolean) : [];
-    const permissions = roles.includes('admin') ? SYSTEM_ROLE_PERMISSIONS.admin : rawPermissions;
+    const isSuperAdmin = roles.includes('admin');
+    const permissions = isSuperAdmin ? SYSTEM_ROLE_PERMISSIONS.admin : rawPermissions;
     return {
       id: String(row.id || ''),
       username: String(row.username || ''),
@@ -283,6 +286,7 @@ export class UsersService implements OnModuleDestroy {
       email: row.email ? String(row.email) : null,
       role,
       roles,
+      isSuperAdmin,
       modules: modulesFromPermissions(permissions),
       permissions,
       isActive: row.is_active === true || String(row.is_active).toLowerCase() === 'true',
@@ -325,7 +329,7 @@ export class UsersService implements OnModuleDestroy {
   private resolveRequestedRoles(input: { role?: string; roles?: string[] }, fallback: string): string[] {
     const raw = Array.isArray(input.roles) && input.roles.length ? input.roles : [input.role || fallback];
     const roles = Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)));
-    if (!roles.length) return ['viewer'];
+    if (!roles.length) return [];
     roles.forEach((role) => {
       if (role.length > 64 || !/^[A-Za-z0-9_-]+$/.test(role)) {
         throw new BadRequestException({ error: 'roles contain invalid role name' });

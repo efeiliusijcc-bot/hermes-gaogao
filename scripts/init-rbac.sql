@@ -30,9 +30,7 @@ CREATE TABLE IF NOT EXISTS role_permissions (
 
 INSERT INTO roles (name, description, is_system)
 VALUES
-  ('admin', 'System administrator with all permissions', true),
-  ('operator', 'Operator who can create and manage own work products', true),
-  ('viewer', 'Viewer with read-oriented access', true)
+  ('admin', 'System administrator with all permissions', true)
 ON CONFLICT (name) DO UPDATE
 SET
   description = EXCLUDED.description,
@@ -76,35 +74,10 @@ USING roles r
 WHERE rp.role_id = r.id
   AND r.name = 'admin';
 
-WITH business_permissions(permission_key) AS (
-  VALUES
-    ('report:create'),
-    ('report:read'),
-    ('report:update'),
-    ('chat:execute'),
-    ('chat:read'),
-    ('draft_assistant:create'),
-    ('draft_assistant:read'),
-    ('draft_assistant:update'),
-    ('daily_awareness:create'),
-    ('daily_awareness:read'),
-    ('daily_awareness:import'),
-    ('preference:read'),
-    ('preference:update'),
-    ('template:create'),
-    ('template:read'),
-    ('template:update'),
-    ('template:delete'),
-    ('crawler:create'),
-    ('crawler:execute'),
-    ('crawler:read')
-)
 DELETE FROM role_permissions rp
-USING roles r, permissions p
+USING roles r
 WHERE rp.role_id = r.id
-  AND rp.permission_id = p.id
-  AND r.name IN ('operator', 'viewer')
-  AND concat(p.resource, ':', p.action) NOT IN (SELECT permission_key FROM business_permissions);
+  AND r.name IN ('operator', 'viewer');
 
 WITH admin_permissions(permission_key) AS (
   VALUES
@@ -149,72 +122,9 @@ SELECT role_id, permission_id
 FROM resolved
 ON CONFLICT DO NOTHING;
 
-WITH operator_permissions(permission_key) AS (
-  VALUES
-    ('report:create'),
-    ('report:read'),
-    ('report:update'),
-    ('chat:execute'),
-    ('chat:read'),
-    ('draft_assistant:create'),
-    ('draft_assistant:read'),
-    ('draft_assistant:update'),
-    ('daily_awareness:create'),
-    ('daily_awareness:read'),
-    ('daily_awareness:import'),
-    ('preference:read'),
-    ('preference:update'),
-    ('template:create'),
-    ('template:read'),
-    ('template:update'),
-    ('template:delete'),
-    ('crawler:create'),
-    ('crawler:execute'),
-    ('crawler:read')
-),
-resolved AS (
-  SELECT r.id AS role_id, p.id AS permission_id
-  FROM roles r
-  JOIN operator_permissions op ON true
-  JOIN permissions p ON concat(p.resource, ':', p.action) = op.permission_key
-  WHERE r.name = 'operator'
-    AND NOT EXISTS (
-      SELECT 1
-      FROM role_permissions existing
-      WHERE existing.role_id = r.id
-    )
-)
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT role_id, permission_id
-FROM resolved
-ON CONFLICT DO NOTHING;
-
-WITH viewer_permissions(permission_key) AS (
-  VALUES
-    ('chat:execute'),
-    ('chat:read'),
-    ('daily_awareness:read')
-),
-resolved AS (
-  SELECT r.id AS role_id, p.id AS permission_id
-  FROM roles r
-  JOIN viewer_permissions vp ON true
-  JOIN permissions p ON concat(p.resource, ':', p.action) = vp.permission_key
-  WHERE r.name = 'viewer'
-    AND NOT EXISTS (
-      SELECT 1
-      FROM role_permissions existing
-      WHERE existing.role_id = r.id
-    )
-)
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT role_id, permission_id
-FROM resolved
-ON CONFLICT DO NOTHING;
-
 INSERT INTO user_roles (user_id, role_id)
 SELECT u.id, r.id
 FROM users u
 JOIN roles r ON r.name = u.role
-WHERE u.role IN ('admin', 'operator', 'viewer')
+WHERE u.role = 'admin'
 ON CONFLICT DO NOTHING;

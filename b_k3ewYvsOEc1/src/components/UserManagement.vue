@@ -24,8 +24,6 @@ const emit = defineEmits(['back'])
 
 const fallbackRoles = [
   { id: 'admin', name: 'admin', description: '管理员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
-  { id: 'operator', name: 'operator', description: '操作员', isSystem: true, modules: [], permissions: [] },
-  { id: 'viewer', name: 'viewer', description: '观察员', isSystem: true, modules: [], permissions: [] },
 ]
 
 const roleLabels = {
@@ -63,13 +61,13 @@ const createForm = reactive({
   password: '',
   displayName: '',
   email: '',
-  roles: ['viewer'],
+  roles: [],
 })
 
 const editForm = reactive({
   displayName: '',
   email: '',
-  roles: ['viewer'],
+  roles: [],
   isActive: true,
 })
 
@@ -216,7 +214,6 @@ function toggleRole(target, roleName) {
   if (next.has(roleName)) next.delete(roleName)
   else next.add(roleName)
   target.roles = Array.from(next)
-  if (!target.roles.length) target.roles = ['viewer']
 }
 
 function roleChecked(target, roleName) {
@@ -228,7 +225,7 @@ function resetCreateForm() {
   createForm.password = ''
   createForm.displayName = ''
   createForm.email = ''
-  createForm.roles = ['viewer']
+  createForm.roles = []
 }
 
 function selectRole(role) {
@@ -252,8 +249,6 @@ function roleCreatedAt(role) {
 
 function roleUsageHint(role) {
   if (role?.name === 'admin') return '系统最高权限角色，拥有所有功能模块和系统管理权限，可进行用户、角色、模块及系统设置管理。'
-  if (role?.name === 'operator') return '系统业务角色，可根据需要调整业务模块权限，但不能获得系统管理权限。'
-  if (role?.name === 'viewer') return '系统观察角色，可根据需要分配部分业务模块，不能获得系统管理权限。'
   return '该角色由管理员创建，可根据业务需要配置功能模块权限。'
 }
 
@@ -480,7 +475,7 @@ async function confirmDeleteRole(role) {
         <form class="user-management__create panel" @submit.prevent="submitCreateUser">
           <div class="user-management__section-title">
             <span>新增用户</span>
-            <small>默认启用，角色默认观察员</small>
+            <small>默认启用，可绑定一个或多个角色</small>
           </div>
           <div class="user-management__form-grid">
             <label>

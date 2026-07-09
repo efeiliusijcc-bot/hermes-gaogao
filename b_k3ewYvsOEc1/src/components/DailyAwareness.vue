@@ -64,12 +64,12 @@ const RECOVERY_POLL_ATTEMPTS = 6
 const RECOVERY_POLL_INTERVAL_MS = 1500
 
 const isLoggedIn = computed(() => Boolean(props.currentUser))
-const userPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
-const canGenerate = computed(() => isLoggedIn.value && userPermissions.value.includes('daily_awareness:create'))
-const canImportToDraft = computed(() => isLoggedIn.value && userPermissions.value.includes('daily_awareness:import'))
+const userModules = computed(() => Array.isArray(props.currentUser?.modules) ? props.currentUser.modules : [])
+const canGenerate = computed(() => isLoggedIn.value && userModules.value.includes('daily'))
+const canImportToDraft = computed(() => isLoggedIn.value && userModules.value.includes('daily') && userModules.value.includes('draft'))
 const permissionHint = computed(() => {
   if (!isLoggedIn.value) return '请先登录后查看或生成每日简报。'
-  if (!canGenerate.value) return '当前账号仅可查看简报，不能生成每日简报。'
+  if (!canGenerate.value) return '当前账号暂无每日动态感知权限，请联系管理员分配权限。'
   return ''
 })
 const categoryStats = computed(() => {

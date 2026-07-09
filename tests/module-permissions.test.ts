@@ -28,10 +28,10 @@ function testPermissionModuleMappings() {
   const dailyPermissions = permissionsFromModules(['daily']);
   sameMembers(dailyPermissions, ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import']);
 
-  sameMembers(modulesFromPermissions(['report:read']), ['report']);
-  sameMembers(modulesFromPermissions(['chat:execute']), ['qa']);
-  sameMembers(modulesFromPermissions(['draft_assistant:read']), ['draft']);
-  sameMembers(modulesFromPermissions(['daily_awareness:create']), ['daily']);
+  sameMembers(modulesFromPermissions(['report:read']), []);
+  sameMembers(modulesFromPermissions(['chat:execute']), []);
+  sameMembers(modulesFromPermissions(['draft_assistant:read']), []);
+  sameMembers(modulesFromPermissions(['daily_awareness:create']), []);
   sameMembers(modulesFromPermissions(permissionsFromModules(['daily'])), ['daily']);
   sameMembers(modulesFromPermissions(permissionsFromModules(['draft'])), ['draft']);
   sameMembers(modulesFromPermissions(permissionsFromModules(['report', 'draft'])), ['report', 'draft']);
@@ -125,7 +125,7 @@ async function testRolesServiceAcceptsModulesAndProtectsAdmin() {
     permissions: ['chat:read', 'user:manage', 'role:manage', 'report:delete'],
   });
   sameMembers(legacyCreated.permissions, ['chat:read']);
-  sameMembers(legacyCreated.modules, ['qa']);
+  sameMembers(legacyCreated.modules, []);
 
   const updatedAdmin = await service.updateRole('role-admin', { modules: ['report'] });
   sameMembers(updatedAdmin.modules, ['report', 'qa', 'draft', 'daily']);
@@ -178,20 +178,42 @@ async function testUsersAndAuthExposeModules() {
           created_at: '2026-07-06T00:00:00.000Z',
           updated_at: '2026-07-06T00:00:00.000Z',
           roles: ['editor'],
-          permissions: ['report:read', 'chat:execute', 'daily_awareness:read'],
+          permissions: [
+            ...permissionsFromModules(['report']),
+            ...permissionsFromModules(['qa']),
+            ...permissionsFromModules(['daily']),
+          ],
         }] };
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'user-1') {
         return { rows: [
-          { role_name: 'test3', resource: 'daily_awareness', action: 'read' },
           { role_name: 'test3', resource: 'daily_awareness', action: 'create' },
+          { role_name: 'test3', resource: 'daily_awareness', action: 'import' },
+          { role_name: 'test3', resource: 'daily_awareness', action: 'read' },
         ] };
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'user-2') {
         return { rows: [
+          { role_name: 'report_only', resource: 'crawler', action: 'create' },
+          { role_name: 'report_only', resource: 'crawler', action: 'execute' },
+          { role_name: 'report_only', resource: 'crawler', action: 'read' },
+          { role_name: 'report_only', resource: 'preference', action: 'read' },
+          { role_name: 'report_only', resource: 'preference', action: 'update' },
+          { role_name: 'report_only', resource: 'report', action: 'create' },
           { role_name: 'report_only', resource: 'report', action: 'read' },
-          { role_name: 'daily_only', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'report_only', resource: 'report', action: 'update' },
+          { role_name: 'report_only', resource: 'template', action: 'create' },
+          { role_name: 'report_only', resource: 'template', action: 'delete' },
+          { role_name: 'report_only', resource: 'template', action: 'read' },
+          { role_name: 'report_only', resource: 'template', action: 'update' },
           { role_name: 'daily_only', resource: 'daily_awareness', action: 'create' },
+          { role_name: 'daily_only', resource: 'daily_awareness', action: 'import' },
+          { role_name: 'daily_only', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'qa_only', resource: 'chat', action: 'execute' },
+          { role_name: 'qa_only', resource: 'chat', action: 'read' },
+          { role_name: 'daily_duplicate', resource: 'daily_awareness', action: 'create' },
+          { role_name: 'daily_duplicate', resource: 'daily_awareness', action: 'import' },
+          { role_name: 'daily_duplicate', resource: 'daily_awareness', action: 'read' },
         ] };
       }
       return { rows: [] };
@@ -208,15 +230,17 @@ async function testUsersAndAuthExposeModules() {
   auth.getPool = async () => pool;
   const login = await auth.login('editor', 'password123');
   sameMembers(login.user.roles, ['test3']);
-  sameMembers(login.user.permissions, ['daily_awareness:create', 'daily_awareness:read']);
+  sameMembers(login.user.permissions, ['daily_awareness:create', 'daily_awareness:import', 'daily_awareness:read']);
   sameMembers(login.user.modules, ['daily']);
+  assert.equal(login.user.isSuperAdmin, false);
   assert.equal(login.user.role, 'viewer');
   const decoded = jwt.decode(login.access_token) as { modules?: string[] };
   sameMembers(decoded.modules || [], ['daily']);
 
   const multiLogin = await auth.login('multi', 'password123');
-  sameMembers(multiLogin.user.roles, ['report_only', 'daily_only']);
-  sameMembers(multiLogin.user.modules, ['report', 'daily']);
+  sameMembers(multiLogin.user.roles, ['daily_duplicate', 'daily_only', 'qa_only', 'report_only']);
+  sameMembers(multiLogin.user.modules, ['report', 'daily', 'qa']);
+  assert.equal(multiLogin.user.modules.filter((module) => module === 'daily').length, 1);
 }
 
 async function testOnlyAdminFallsBackWhenRbacPermissionsAreEmpty() {
@@ -261,6 +285,7 @@ async function testOnlyAdminFallsBackWhenRbacPermissionsAreEmpty() {
   const login = await auth.login('admin', 'password123');
   sameMembers(login.user.roles, ['admin']);
   sameMembers(login.user.modules, ['report', 'qa', 'draft', 'daily']);
+  assert.equal(login.user.isSuperAdmin, true);
   assert.ok(login.user.permissions.includes('user:manage'));
   assert.ok(login.user.permissions.includes('role:manage'));
   assert.ok(login.user.permissions.includes('crawler:delete'));

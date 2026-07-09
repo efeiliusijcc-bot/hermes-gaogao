@@ -18,6 +18,7 @@ interface UserRow {
 
 interface UserAccess {
   roles: string[];
+  isSuperAdmin: boolean;
   modules: string[];
   permissions: string[];
 }
@@ -188,6 +189,7 @@ export class AuthService implements OnModuleDestroy {
       username: user.username,
       role: user.role,
       roles: user.roles,
+      isSuperAdmin: user.isSuperAdmin,
       modules: user.modules,
       permissions: user.permissions,
       typ: 'access',
@@ -217,6 +219,7 @@ export class AuthService implements OnModuleDestroy {
       email: row.email || null,
       role,
       roles: access.roles,
+      isSuperAdmin: access.isSuperAdmin,
       modules: access.modules,
       permissions: access.permissions,
     };
@@ -247,9 +250,9 @@ export class AuthService implements OnModuleDestroy {
       if (roles.length) {
         if (roles.includes('admin')) {
           const adminPermissions = SYSTEM_ROLE_PERMISSIONS.admin;
-          return { roles, modules: modulesFromPermissions(adminPermissions), permissions: adminPermissions };
+          return { roles, isSuperAdmin: true, modules: modulesFromPermissions(adminPermissions), permissions: adminPermissions };
         }
-        return { roles, modules: modulesFromPermissions(permissions), permissions };
+        return { roles, isSuperAdmin: false, modules: modulesFromPermissions(permissions), permissions };
       }
       return this.fallbackAccess(fallbackRole);
     } catch (error) {
@@ -263,13 +266,15 @@ export class AuthService implements OnModuleDestroy {
   private fallbackAccess(role: UserRole): UserAccess {
     if (role !== 'admin') {
       return {
-        roles: [role],
+        roles: [],
+        isSuperAdmin: false,
         modules: [],
         permissions: [],
       };
     }
     return {
       roles: [role],
+      isSuperAdmin: true,
       modules: modulesFromPermissions(SYSTEM_ROLE_PERMISSIONS[role]),
       permissions: SYSTEM_ROLE_PERMISSIONS[role],
     };
