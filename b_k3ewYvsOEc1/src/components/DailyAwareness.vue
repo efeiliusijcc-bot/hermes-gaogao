@@ -393,7 +393,7 @@ function setEvents(nextEvents) {
 
 function normalizeEventForDisplay(event) {
   const sources = Array.isArray(event.sourceInfo) ? event.sourceInfo : []
-  const sourceTitle = sources.find((source) => source?.title)?.title || ''
+  const sourceTitle = sources.find((source) => sanitizeSourceText(source?.title))?.title || ''
   const primary = primarySource(event)
   const candidateTitle = firstText([
     event.title,
@@ -410,7 +410,7 @@ function normalizeEventForDisplay(event) {
     displayTitle,
     originalTitle: originalTitle && originalTitle !== displayTitle ? originalTitle : '',
     sourceCount: event.sourceCount || sources.length,
-    publisher: event.publisher || primary.publisher || '',
+    publisher: sanitizeSourceText(event.publisher) || sanitizeSourceText(primary.publisher) || '',
     publishedAt: event.publishedAt || primary.publishedAt || '',
     sourceUrl: event.sourceUrl || primary.url || '',
     imported: isEventImported(event.itemId),
@@ -423,6 +423,14 @@ function firstText(values) {
   return values.map((value) => String(value || '').trim()).find(Boolean) || ''
 }
 
+function sanitizeSourceText(value) {
+  const text = String(value || '')
+    .replace(/\u0000/g, '')
+    .replace(/^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\]+(?=[\p{L}\p{N}\u4e00-\u9fff])/u, '')
+    .trim()
+  return /^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u.test(text) ? '' : text
+}
+
 function primarySource(event) {
   const sources = Array.isArray(event?.sourceInfo) ? event.sourceInfo : []
   return sources[0] || {}
@@ -433,11 +441,15 @@ function sourceUrl(event) {
 }
 
 function sourcePublisher(event) {
-  return event?.publisher || primarySource(event).publisher || '来源未知'
+  return sanitizeSourceText(event?.publisher) || sanitizeSourceText(primarySource(event).publisher) || '来源未知'
 }
 
 function sourceTime(event) {
   return event?.publishedAt || primarySource(event).publishedAt || ''
+}
+
+function sourceTitle(source) {
+  return sanitizeSourceText(source?.title) || source?.url || '未命名来源'
 }
 
 function newsBrief(event) {
@@ -759,9 +771,9 @@ watch(() => props.currentUser?.id, () => {
               <strong>相关来源</strong>
               <ul>
                 <li v-for="(source, index) in event.sourceInfo || []" :key="`${event.itemId}-${index}`">
-                  <span>{{ source.publisher || '来源未知' }}</span>
-                  <a v-if="source.url" :href="source.url" target="_blank" rel="noreferrer">{{ source.title || source.url }}</a>
-                  <em v-else>{{ source.title || '未命名来源' }}</em>
+                  <span>{{ sanitizeSourceText(source.publisher) || '来源未知' }}</span>
+                  <a v-if="source.url" :href="source.url" target="_blank" rel="noreferrer">{{ sourceTitle(source) }}</a>
+                  <em v-else>{{ sourceTitle(source) }}</em>
                   <small>{{ source.publishedAt || '' }}</small>
                 </li>
               </ul>

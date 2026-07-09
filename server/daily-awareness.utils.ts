@@ -8,6 +8,8 @@ import type {
 
 const LEADING_PREFIX_PATTERN = /^(【[^】]{1,20}】|\[[^\]]{1,20}\]|快讯[:：]?|突发[:：]?|独家[:：]?|最新[:：]?)+/i;
 const SOURCE_SUFFIX_PATTERN = /([_-]\s*)?(bbc|cnn|reuters|ap|法新社|路透社|新华社|央视新闻|环球网|观察者网)$/i;
+const MOJIBAKE_PREFIX_PATTERN = /^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\]+(?=[\p{L}\p{N}\u4e00-\u9fff])/u;
+const MOSTLY_PLACEHOLDER_PATTERN = /^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u;
 
 export function buildDailyMaterialWindow(targetDate: string, lookbackHours = 24) {
   const date = parseDateOnly(targetDate);
@@ -34,6 +36,15 @@ export function normalizeEventTitle(value: unknown): string {
     .replace(/[|｜:：,，.。;；!！?？()[\]{}<>《》、/\-_\s]/g, '')
     .toLowerCase()
     .slice(0, 160);
+}
+
+export function sanitizeSourceText(value: unknown): string {
+  const text = String(value || '')
+    .replace(/\u0000/g, '')
+    .replace(MOJIBAKE_PREFIX_PATTERN, '')
+    .trim();
+  if (!text || MOSTLY_PLACEHOLDER_PATTERN.test(text)) return '';
+  return text;
 }
 
 export function dedupeMaterials(materials: DailyAwarenessMaterial[]): DailyAwarenessMaterial[] {
@@ -214,7 +225,7 @@ export function buildDailyReportMarkdown(input: {
       const rank = Number(item.rank || 0);
       const title = String(item.title || '未命名新闻');
       const briefContent = String(item.briefContent || '暂无简要内容。');
-      const publisher = String(item.publisher || '来源未知');
+      const publisher = sanitizeSourceText(item.publisher) || '来源未知';
       const publishedAt = String(item.publishedAt || '时间未知');
       lines.push(`${rank}. ${title}`);
       lines.push(`   简要内容：${briefContent}`);
@@ -252,8 +263,8 @@ function toChineseSectionNumber(value: number): string {
 
 function materialToSource(material: DailyAwarenessMaterial): DailyAwarenessSourceInfo {
   return {
-    title: material.title,
-    publisher: material.publisher,
+    title: sanitizeSourceText(material.title),
+    publisher: sanitizeSourceText(material.publisher),
     publishedAt: material.publishedAt,
     url: material.url,
   };

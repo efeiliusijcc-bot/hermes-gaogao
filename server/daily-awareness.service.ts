@@ -43,6 +43,7 @@ import {
   dedupeMaterials,
   extractJsonObject,
   rankDailyEvents,
+  sanitizeSourceText,
   selectClassificationCandidates,
 } from './daily-awareness.utils.js';
 import { VectorSourceService } from './vector-source.service.js';
@@ -673,8 +674,8 @@ export class DailyAwarenessService implements OnModuleDestroy {
     const sources = this.normalizeSources(this.asArray(event.sourceInfo));
     const source = sources[0] || { title: '', publisher: '', publishedAt: '', url: '' };
     return {
-      title: source.title || this.text(event.title || event.eventTitle, 512),
-      publisher: this.text(event.publisher, 256) || source.publisher,
+      title: source.title || sanitizeSourceText(this.text(event.title || event.eventTitle, 512)),
+      publisher: sanitizeSourceText(this.text(event.publisher, 256)) || source.publisher,
       publishedAt: this.text(event.publishedAt, 128) || source.publishedAt,
       url: this.text(event.sourceUrl, 2048) || source.url,
     };
@@ -715,8 +716,8 @@ export class DailyAwarenessService implements OnModuleDestroy {
     return this.asArray(value).slice(0, 8).map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       return {
-        title: this.text(raw.title, 512),
-        publisher: this.text(raw.publisher, 256),
+        title: sanitizeSourceText(this.text(raw.title, 512)),
+        publisher: sanitizeSourceText(this.text(raw.publisher, 256)),
         publishedAt: this.text(raw.publishedAt, 128),
         url: this.text(raw.url, 2048),
       };
