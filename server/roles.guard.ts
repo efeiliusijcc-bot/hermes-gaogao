@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, 
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import type { AuthUser, UserRole } from './auth-user.interface.js';
+import { AUTH_PERMISSIONS_KEY } from './require-permissions.decorator.js';
 
 export const AUTH_ROLES_KEY = 'auth:roles';
 export const Roles = (...roles: UserRole[]) => SetMetadata(AUTH_ROLES_KEY, roles);
@@ -16,6 +17,12 @@ export class RolesGuard implements CanActivate {
       context.getClass(),
     ]);
     if (!requiredRoles?.length) return true;
+
+    const requiredPermissions = this.reflector.getAllAndOverride<string[]>(AUTH_PERMISSIONS_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (requiredPermissions?.length) return true;
 
     const request = context.switchToHttp().getRequest<Request & { user?: AuthUser }>();
     const user = request.user;

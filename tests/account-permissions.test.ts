@@ -169,6 +169,12 @@ async function testReportPlansHttpAuthorization() {
     admin: user('admin-1', 'admin'),
     operator: user('operator-1', 'operator'),
     viewer: user('viewer-1', 'viewer'),
+    viewerWithCreate: {
+      ...user('viewer-create-1', 'viewer'),
+      roles: ['viewer', 'test1'],
+      modules: ['report'],
+      permissions: ['report:create', 'report:read'],
+    },
   };
 
   @Module({
@@ -238,6 +244,13 @@ async function testReportPlansHttpAuthorization() {
       body,
     });
     await assertStatus(operator, 201);
+
+    const viewerWithCreate = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer viewerWithCreate' },
+      body,
+    });
+    await assertStatus(viewerWithCreate, 201);
 
     const admin = await fetch(url, {
       method: 'POST',

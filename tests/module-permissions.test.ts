@@ -87,6 +87,38 @@ async function testRolesServiceAcceptsModulesAndProtectsAdmin() {
   assert.ok(created.permissions.includes('chat:execute'));
   assert.ok(!created.permissions.includes('report:delete'));
 
+  const reportOnly = await service.createRole({ name: 'report_only', description: '仅编报', modules: ['report'] });
+  sameMembers(reportOnly.modules, ['report']);
+  assert.ok(reportOnly.permissions.includes('report:create'));
+  assert.ok(reportOnly.permissions.includes('report:read'));
+  assert.ok(reportOnly.permissions.includes('report:update'));
+  assert.ok(!reportOnly.permissions.includes('chat:execute'));
+  assert.ok(!reportOnly.permissions.includes('draft_assistant:create'));
+  assert.ok(!reportOnly.permissions.includes('daily_awareness:create'));
+  assert.ok(!reportOnly.permissions.includes('user:manage'));
+  assert.ok(!reportOnly.permissions.includes('role:manage'));
+
+  const qaOnly = await service.createRole({ name: 'qa_only', description: '仅问答', modules: ['qa'] });
+  sameMembers(qaOnly.modules, ['qa']);
+  sameMembers(qaOnly.permissions, ['chat:execute', 'chat:read']);
+
+  const draftOnly = await service.createRole({ name: 'draft_only', description: '仅拟稿', modules: ['draft'] });
+  sameMembers(draftOnly.modules, ['draft']);
+  sameMembers(draftOnly.permissions, ['draft_assistant:create', 'draft_assistant:read', 'draft_assistant:update']);
+
+  const dailyOnly = await service.createRole({ name: 'daily_only', description: '仅每日动态', modules: ['daily'] });
+  sameMembers(dailyOnly.modules, ['daily']);
+  sameMembers(dailyOnly.permissions, ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import']);
+
+  const reportDaily = await service.createRole({ name: 'report_daily', description: '编报和每日动态', modules: ['report', 'daily'] });
+  sameMembers(reportDaily.modules, ['report', 'daily']);
+  assert.ok(reportDaily.permissions.includes('report:create'));
+  assert.ok(reportDaily.permissions.includes('daily_awareness:create'));
+  assert.ok(!reportDaily.permissions.includes('chat:execute'));
+  assert.ok(!reportDaily.permissions.includes('draft_assistant:create'));
+  assert.ok(!reportDaily.permissions.includes('user:manage'));
+  assert.ok(!reportDaily.permissions.includes('role:manage'));
+
   const legacyCreated = await service.createRole({
     name: 'legacy',
     description: '旧接口兼容',
@@ -124,6 +156,17 @@ async function testUsersAndAuthExposeModules() {
           is_active: true,
         }] };
       }
+      if (text.includes('FROM users') && params?.[0] === 'multi') {
+        return { rows: [{
+          id: 'user-2',
+          username: 'multi',
+          password_hash: passwordHash,
+          display_name: 'Multi',
+          email: null,
+          role: 'viewer',
+          is_active: true,
+        }] };
+      }
       if (text.includes('SELECT u.id, u.username') && !text.includes('WHERE u.id = $1')) {
         return { rows: [{
           id: 'user-1',
@@ -145,6 +188,13 @@ async function testUsersAndAuthExposeModules() {
           { role_name: 'editor', resource: 'daily_awareness', action: 'read' },
         ] };
       }
+      if (text.includes('FROM user_roles') && params?.[0] === 'user-2') {
+        return { rows: [
+          { role_name: 'report_only', resource: 'report', action: 'read' },
+          { role_name: 'daily_only', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'daily_only', resource: 'daily_awareness', action: 'create' },
+        ] };
+      }
       return { rows: [] };
     },
     end: async () => undefined,
@@ -161,6 +211,10 @@ async function testUsersAndAuthExposeModules() {
   sameMembers(login.user.modules, ['report', 'qa', 'daily']);
   const decoded = jwt.decode(login.access_token) as { modules?: string[] };
   sameMembers(decoded.modules || [], ['report', 'qa', 'daily']);
+
+  const multiLogin = await auth.login('multi', 'password123');
+  sameMembers(multiLogin.user.roles, ['report_only', 'daily_only']);
+  sameMembers(multiLogin.user.modules, ['report', 'daily']);
 }
 
 async function testSystemRoleFallsBackWhenRbacPermissionsAreEmpty() {

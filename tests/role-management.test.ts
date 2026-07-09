@@ -111,6 +111,12 @@ async function testRolesServiceCrud() {
       if (text.includes('SELECT id, name, description, is_system') && params?.[0] === 'role-system') {
         return { rows: [{ id: 'role-system', name: 'admin', description: '管理员', is_system: true }] };
       }
+      if (text.includes('SELECT id, name, description, is_system') && params?.[0] === 'role-operator') {
+        return { rows: [{ id: 'role-operator', name: 'operator', description: '操作员', is_system: true }] };
+      }
+      if (text.includes('SELECT id, name, description, is_system') && params?.[0] === 'role-viewer') {
+        return { rows: [{ id: 'role-viewer', name: 'viewer', description: '观察员', is_system: true }] };
+      }
       if (text.includes('SELECT id, name, description, is_system') && params?.[0] === 'role-editor') {
         return { rows: [{ id: 'role-editor', name: 'editor', description: '编报编辑员', is_system: false }] };
       }
@@ -156,6 +162,8 @@ async function testRolesServiceCrud() {
   assert.deepEqual(updated.permissions.sort(), ['daily_awareness:create', 'daily_awareness:import', 'daily_awareness:read'].sort());
 
   await assert.rejects(() => service.deleteRole('role-system'), /System roles cannot be deleted/);
+  await assert.rejects(() => service.deleteRole('role-operator'), /System roles cannot be deleted/);
+  await assert.rejects(() => service.deleteRole('role-viewer'), /System roles cannot be deleted/);
   await assert.rejects(() => service.deleteRole('role-bound'), /仍有用户使用/);
   const deleted = await service.deleteRole('role-editor');
   assert.deepEqual(deleted, { id: 'role-editor', deleted: true });

@@ -5,13 +5,19 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { AuthGuard } from '../server/auth.guard.js';
 import { AuthService } from '../server/auth.service.js';
 import type { AuthUser } from '../server/auth-user.interface.js';
+import { ChatController } from '../server/chat.controller.js';
+import { ChatService } from '../server/chat.service.js';
 import { CrawlerController } from '../server/crawler.controller.js';
 import { CrawlerService } from '../server/crawler.service.js';
+import { DailyAwarenessController } from '../server/daily-awareness.controller.js';
 import { DailyAwarenessService } from '../server/daily-awareness.service.js';
+import { DraftAssistantController } from '../server/draft-assistant.controller.js';
 import { DraftAssistantService } from '../server/draft-assistant.service.js';
 import { PermissionsGuard } from '../server/permissions.guard.js';
 import { QaSessionSourcesService } from '../server/qa-session-sources.service.js';
+import { ReportsController } from '../server/reports.controller.js';
 import { ReportsService } from '../server/reports.service.js';
+import { RolesGuard } from '../server/roles.guard.js';
 
 type Query = { text: string; params?: unknown[] };
 type Pool = { query: (text: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>; end: () => Promise<void> };
@@ -108,10 +114,14 @@ async function testReportOwnerIsolation() {
 
   const result = await service.getResultFromDisk('job-a', userA);
   assert.ok(result?.html.includes('<h1>'));
+  const ownerDownload = await service.getMarkdownFromDisk('job-a', userA);
+  assert.equal(ownerDownload?.markdown, '# A');
   await assert.rejects(
     () => service.getMarkdownFromDisk('job-b', userA),
     (error) => /Insufficient report job permissions/.test(errorText(error)),
   );
+  const adminDownload = await service.getMarkdownFromDisk('job-b', admin);
+  assert.equal(adminDownload?.markdown, '# report');
 }
 
 function createQaPool(ownerRows: Record<string, Record<string, unknown> | null>): Pool & { queries: Query[] } {
@@ -384,11 +394,15 @@ async function assertStatus(response: Response, expected: number) {
 async function testMissingModulePermissionReturns403() {
   const usersByToken: Record<string, AuthUser> = {
     noModule: authUser('user-a', 'operator', [], []),
+    report: authUser('user-a', 'operator', ['report:create', 'report:read'], ['report']),
+    qa: authUser('user-a', 'operator', ['chat:execute', 'chat:read'], ['qa']),
+    draft: authUser('user-a', 'operator', ['draft_assistant:create', 'draft_assistant:read'], ['draft']),
+    daily: authUser('user-a', 'operator', ['daily_awareness:create', 'daily_awareness:read'], ['daily']),
     crawler: authUser('user-a', 'operator', ['crawler:create'], ['report']),
   };
 
   @Module({
-    controllers: [CrawlerController],
+    controllers: [ReportsController, ChatController, DraftAssistantController, DailyAwarenessController, CrawlerController],
     providers: [
       Reflector,
       {
@@ -403,6 +417,40 @@ async function testMissingModulePermissionReturns403() {
       },
       { provide: AuthGuard, useFactory: (auth: AuthService) => new AuthGuard(auth), inject: [AuthService] },
       { provide: PermissionsGuard, useFactory: (reflector: Reflector) => new PermissionsGuard(reflector), inject: [Reflector] },
+      { provide: RolesGuard, useFactory: (reflector: Reflector) => new RolesGuard(reflector), inject: [Reflector] },
+      {
+        provide: ReportsService,
+        useValue: {
+          createJob: async () => ({ jobId: 'job-a', status: 'queued' }),
+          listJobs: async () => ({ items: [], total: 0, page: 1, pageSize: 20, totalPages: 1, statusCounts: { succeeded: 0, running: 0 } }),
+        },
+      },
+      {
+        provide: ChatService,
+        useValue: {
+          complete: async () => ({ sessionId: 'session-a', choices: [] }),
+        },
+      },
+      {
+        provide: QaSessionSourcesService,
+        useValue: {
+          listSessions: async () => ({ items: [] }),
+          getSources: async () => ({ sessionId: 'session-a', updatedAt: null, sourceCount: 0, sources: [] }),
+          upsertSources: async () => ({ sessionId: 'session-a', updatedAt: null, sourceCount: 0, sources: [] }),
+        },
+      },
+      {
+        provide: DraftAssistantService,
+        useValue: {
+          analyze: async () => ({ eventId: 'event-a', analysis: {}, sources: [] }),
+        },
+      },
+      {
+        provide: DailyAwarenessService,
+        useValue: {
+          generate: async () => ({ brief: { briefId: 'brief-a' }, events: [] }),
+        },
+      },
       {
         provide: CrawlerService,
         useValue: {
@@ -417,11 +465,25 @@ async function testMissingModulePermissionReturns403() {
   await app.listen(0);
   const address = app.getHttpServer().address();
   const port = typeof address === 'object' && address ? address.port : 0;
-  const url = `http://127.0.0.1:${port}/api/crawler/tasks`;
-  const body = JSON.stringify({ jobId: 'job-a', crawlerPlan: { enabled: false } });
+  const baseUrl = `http://127.0.0.1:${port}`;
   try {
-    await assertStatus(await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body }), 403);
-    await assertStatus(await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer crawler' }, body }), 201);
+    const reportBody = JSON.stringify({ skill: 'write-hb', payload: { topic: 'test' } });
+    await assertStatus(await fetch(`${baseUrl}/api/report-jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: reportBody }), 403);
+    await assertStatus(await fetch(`${baseUrl}/api/report-jobs`, { headers: { Authorization: 'Bearer noModule' } }), 403);
+    await assertStatus(await fetch(`${baseUrl}/api/report-jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer report' }, body: reportBody }), 201);
+
+    const chatBody = JSON.stringify({ messages: [{ role: 'user', content: 'test' }] });
+    await assertStatus(await fetch(`${baseUrl}/api/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: chatBody }), 403);
+
+    const draftBody = JSON.stringify({ title: '事件', materials: '材料' });
+    await assertStatus(await fetch(`${baseUrl}/api/draft-assistant/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: draftBody }), 403);
+
+    const dailyBody = JSON.stringify({ date: '2026-07-06' });
+    await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: dailyBody }), 403);
+
+    const crawlerBody = JSON.stringify({ jobId: 'job-a', crawlerPlan: { enabled: false } });
+    await assertStatus(await fetch(`${baseUrl}/api/crawler/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: crawlerBody }), 403);
+    await assertStatus(await fetch(`${baseUrl}/api/crawler/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer crawler' }, body: crawlerBody }), 201);
   } finally {
     await app.close();
   }
