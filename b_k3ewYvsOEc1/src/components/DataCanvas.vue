@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
+import { firstSourceDisplayText, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -2746,14 +2747,15 @@ const normalizedSources = computed(() => {
     const status = inferSourceStatus(src)
     const retrievalMode = data?.retrievalMode || ''
     const highValue = index < 8 || retrievalMode === 'vector' || retrievalMode === 'hybrid'
+    const url = firstText(src, ['url', 'source_url', 'data_source_url', 'sourceUrl'], '')
     return {
-      id: `${src.url || src.title || 'source'}-${index}`,
-      title: src.title || src.url || '未命名信源',
+      id: `${url || src.title || 'source'}-${index}`,
+      title: firstSourceDisplayText(src, ['title', 'ch_title', 'headline', 'sourceTitle', 'name'], url || '未命名信源'),
       sourceType: retrievalMode === 'vector' ? '向量召回' : retrievalMode === 'hybrid' ? '混合召回' : '数据库信源',
-      sourceName: src.websiteName || '来源未知',
+      sourceName: firstSourceDisplayText(src, ['websiteName', 'website_name', 'publisher', 'source_name', 'site_name', 'sourceName', 'source'], sourceHostname(url) || '来源未知'),
       publishTime: formatDbSourceTime(src.publishTime) || '时间未知',
-      summary: src.summary || '该来源暂未提供摘要，系统已记录标题和来源信息。',
-      url: src.url || '',
+      summary: firstSourceDisplayText(src, ['summary', 'abstract', 'description', 'snippet', 'content_preview'], '该来源暂未提供摘要，系统已记录标题和来源信息。'),
+      url,
       status,
       relevance: highValue ? '高相关' : '候选',
       method: retrievalMode === 'vector' ? 'PG 向量语义召回' : retrievalMode === 'hybrid' ? '向量与关键词混合召回' : '数据库关键词召回',
@@ -3202,11 +3204,7 @@ function firstText(source, keys, fallback = '') {
 }
 
 function scrubSourceDisplayText(value) {
-  return String(value || '')
-    .replace(/Hermes/gi, '自主智能体')
-    .replace(/Agent|MCP|tool_call|command|rawPayload/gi, '技术信息')
-    .replace(/\bSQL\b/gi, '查询信息')
-    .trim()
+  return sanitizeSourceDisplayText(value)
 }
 
 function inferSourceGroup(source, fallbackGroup = activeSourceType.value) {
@@ -3226,11 +3224,15 @@ function inferSourceGroup(source, fallbackGroup = activeSourceType.value) {
 }
 
 function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType.value) {
-  const title = scrubSourceDisplayText(firstText(source, ['title', 'ch_title', 'headline', 'sourceTitle', 'name'], '未命名信源'))
-  const summary = scrubSourceDisplayText(firstText(source, ['summary', 'abstract', 'description', 'snippet', 'finding', 'claim', 'content_preview'], '当前信源暂无摘要。'))
-  const detail = scrubSourceDisplayText(firstText(source, ['excerpt', 'content_excerpt', 'chunk_text', 'content_chunk', 'body', 'content', 'markdown', 'fullText', 'text', 'detail', 'content_preview'], ''))
   const url = firstText(source, ['url', 'source_url', 'data_source_url', 'sourceUrl'], '')
-  const sourceName = scrubSourceDisplayText(firstText(source, ['publisher', 'website_name', 'source_name', 'site_name', 'sourceName', 'source', 'websiteName'], '来源未知'))
+  const title = firstSourceDisplayText(source, ['title', 'ch_title', 'headline', 'sourceTitle', 'name'], url || '未命名信源')
+  const summary = firstSourceDisplayText(source, ['summary', 'abstract', 'description', 'snippet', 'finding', 'claim', 'content_preview'], '当前信源暂无摘要。')
+  const detail = firstSourceDisplayText(source, ['excerpt', 'content_excerpt', 'chunk_text', 'content_chunk', 'body', 'content', 'markdown', 'fullText', 'text', 'detail', 'content_preview'], '')
+  const sourceName = firstSourceDisplayText(
+    source,
+    ['publisher', 'website_name', 'source_name', 'site_name', 'sourceName', 'source', 'websiteName'],
+    sourceHostname(url) || '来源未知',
+  )
   const publishRaw = firstText(source, ['published_at', 'publish_time', 'pub_time', 'source_time', 'publishTime', 'publishedAt', 'time'], '')
   const sourceGroup = inferSourceGroup(source, fallbackGroup)
   const sourceType = sourceGroup === 'tool_search'
