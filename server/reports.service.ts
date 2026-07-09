@@ -250,6 +250,9 @@ export class ReportsService implements OnModuleDestroy {
       ownerUserId: user.id,
       ownerUsername: user.username,
       ownerRole: user.role,
+      ownerRoles: this.stringArray(user.roles),
+      ownerModules: this.stringArray(user.modules),
+      ownerPermissions: this.stringArray(user.permissions, 200),
       status: 'queued',
       artifacts: {},
       createdAt: now,
@@ -579,6 +582,21 @@ export class ReportsService implements OnModuleDestroy {
 
   canUpdateReport(user: AuthUser): boolean {
     return this.isAdmin(user) || user.permissions?.includes('report:update') === true;
+  }
+
+  private buildJobOwnerUser(job: JobRecord): AuthUser {
+    const role = job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer';
+    const roles = this.stringArray(job.ownerRoles);
+    return {
+      id: job.ownerUserId || '',
+      username: job.ownerUsername || '',
+      displayName: job.ownerUsername || '',
+      email: '',
+      role,
+      roles: roles.length ? roles : [role],
+      modules: this.stringArray(job.ownerModules),
+      permissions: this.stringArray(job.ownerPermissions, 200),
+    };
   }
 
   canAccessJob(job: JobRecord, user: AuthUser): boolean {
@@ -2447,16 +2465,7 @@ export class ReportsService implements OnModuleDestroy {
       const requestUser = this.buildRequestUser(job);
       const enrichedPayload = await this.enrichPayloadWithVectorSources(job);
       const crawlerPayload = await this.enrichPayloadWithCrawlerSources(job, enrichedPayload);
-      const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, crawlerPayload, {
-        id: job.ownerUserId || '',
-        username: job.ownerUsername || '',
-        displayName: job.ownerUsername || '',
-        email: '',
-        role: job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer',
-        roles: [job.ownerRole === 'admin' ? 'admin' : job.ownerRole === 'operator' ? 'operator' : 'viewer'],
-        modules: [],
-        permissions: [],
-      });
+      const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, crawlerPayload, this.buildJobOwnerUser(job));
       const runInput: RunInput = {
         skill: job.skill,
         payload: draftPayload,

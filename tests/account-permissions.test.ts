@@ -510,6 +510,44 @@ async function testReportJobListVisibility() {
   );
 }
 
+async function testReportJobPersistsOwnerAccessSnapshot() {
+  const service = createReportsService() as ReportsService & {
+    jobs: Map<string, Record<string, unknown>>;
+    runJob: (job: unknown) => Promise<void>;
+    writeJobState: (job: unknown) => Promise<void>;
+    buildJobOwnerUser: (job: Record<string, unknown>) => AuthUser;
+  };
+  service.runJob = async () => undefined;
+  service.writeJobState = async () => undefined;
+  const customRoleUser: AuthUser = {
+    id: 'user-custom-role',
+    username: 'user1',
+    displayName: 'user1',
+    email: null,
+    role: 'viewer',
+    roles: ['viewer', 'test1'],
+    modules: ['report'],
+    permissions: ['report:create', 'report:read'],
+  };
+
+  const created = await service.createJob({
+    skill: 'write-hb',
+    payload: { topic: '自定义角色可编报任务', report_type: 'K' },
+  }, customRoleUser);
+  const createdJob = service.jobs.get(created.jobId);
+  assert.ok(createdJob);
+  assert.deepEqual(createdJob.ownerRoles, ['viewer', 'test1']);
+  assert.deepEqual(createdJob.ownerModules, ['report']);
+  assert.deepEqual(createdJob.ownerPermissions, ['report:create', 'report:read']);
+
+  const restoredUser = service.buildJobOwnerUser(createdJob);
+  assert.equal(restoredUser.role, 'viewer');
+  assert.deepEqual(restoredUser.roles, ['viewer', 'test1']);
+  assert.deepEqual(restoredUser.modules, ['report']);
+  assert.deepEqual(restoredUser.permissions, ['report:create', 'report:read']);
+  assert.equal(service.canCreateReport(restoredUser), true);
+}
+
 testReportPlansRequireAdminOrOperator();
 testRolesGuardUsesBoundRoleNames();
 testHighRiskEndpointsDeclarePermissions();
@@ -518,4 +556,5 @@ await testReportPlansHttpAuthorization();
 await testPermissionProtectedHttpEndpoints();
 await testAuthServiceReturnsRbacAccess();
 await testReportJobListVisibility();
+await testReportJobPersistsOwnerAccessSnapshot();
 console.log('account permission tests passed');

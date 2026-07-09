@@ -35,6 +35,9 @@ export interface JobRecord {
   ownerUserId: string | null;
   ownerUsername: string | null;
   ownerRole?: string;
+  ownerRoles?: string[];
+  ownerModules?: string[];
+  ownerPermissions?: string[];
   status: ReportJobStatus;
   stage?: string;
   markdown?: string;
