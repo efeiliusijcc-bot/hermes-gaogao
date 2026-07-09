@@ -79,7 +79,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
   }
 
   async generate(input: DailyAwarenessGenerateInput, user: AuthUser) {
-    if (user.role === 'viewer') throw new ForbiddenException({ error: 'Viewer cannot generate daily briefs' });
+    if (!this.hasPermission(user, 'daily_awareness:create')) throw new ForbiddenException({ error: 'Insufficient daily awareness create permissions' });
     const date = this.requiredDate(input.date);
     const maxItems = this.clampNumber(input.maxEvents ?? input.maxItems, 50, 1, 50);
     const lookbackHours = this.clampNumber(input.lookbackHours, 24, 1, 168);
@@ -173,7 +173,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
        RETURNING *`,
       [user.id, date, title, summary, candidates.length, ranked.length, JSON.stringify(stats), JSON.stringify(contentJson)],
     );
-    const brief = this.toBrief(briefResult.rows[0] as unknown as DailyAwarenessBriefRow, user.role === 'admin');
+    const brief = this.toBrief(briefResult.rows[0] as unknown as DailyAwarenessBriefRow, this.isAdmin(user));
     const events = [];
     for (let index = 0; index < ranked.length; index += 1) {
       const event = ranked[index];
@@ -211,7 +211,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     const offset = (page - 1) * pageSize;
     const params: unknown[] = [];
     const where: string[] = [];
-    if (user.role !== 'admin') {
+    if (!this.isAdmin(user)) {
       params.push(user.id);
       where.push(`b.owner_id = $${params.length}`);
     }
@@ -233,7 +233,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
       [...params, pageSize, offset],
     );
     return {
-      items: rows.rows.map((row) => this.toBrief(row as unknown as DailyAwarenessBriefRow, user.role === 'admin')),
+      items: rows.rows.map((row) => this.toBrief(row as unknown as DailyAwarenessBriefRow, this.isAdmin(user))),
       page,
       pageSize,
       total: Number(countResult.rows[0]?.count || 0),
@@ -272,7 +272,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
   }
 
   async importEventToDraft(itemId: string, user: AuthUser) {
-    if (user.role === 'viewer') throw new ForbiddenException({ error: 'Viewer cannot import daily events to Draft Assistant' });
+    if (!this.hasPermission(user, 'daily_awareness:import')) throw new ForbiddenException({ error: 'Insufficient daily awareness import permissions' });
     const pool = await this.getPool();
     const rows = await pool.query(
       `SELECT e.*, b.brief_date
@@ -283,7 +283,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     );
     const row = rows.rows[0] as unknown as (DailyAwarenessEventRow & { brief_date?: string }) | undefined;
     if (!row) throw new NotFoundException({ error: 'Daily event not found' });
-    if (user.role !== 'admin' && String(row.owner_id) !== user.id) {
+    if (!this.isAdmin(user) && String(row.owner_id) !== user.id) {
       throw new ForbiddenException({ error: 'No permission to import this daily event' });
     }
     const rawInput = {
@@ -469,10 +469,10 @@ export class DailyAwarenessService implements OnModuleDestroy {
     );
     const row = rows.rows[0] as unknown as DailyAwarenessBriefRow | undefined;
     if (!row) throw new NotFoundException({ error: 'Daily brief not found' });
-    if (user.role !== 'admin' && String(row.owner_id) !== user.id) {
+    if (!this.isAdmin(user) && String(row.owner_id) !== user.id) {
       throw new ForbiddenException({ error: 'No permission to access this daily brief' });
     }
-    return this.toBrief(row, user.role === 'admin');
+    return this.toBrief(row, this.isAdmin(user));
   }
 
   private async loadEventsForBrief(briefId: string, user: AuthUser, query: { page?: unknown; pageSize?: unknown; category?: unknown }) {
@@ -481,7 +481,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     const offset = (page - 1) * pageSize;
     const params: unknown[] = [briefId];
     const where = ['brief_id = $1'];
-    if (user.role !== 'admin') {
+    if (!this.isAdmin(user)) {
       params.push(user.id);
       where.push(`owner_id = $${params.length}`);
     }
@@ -796,5 +796,13 @@ export class DailyAwarenessService implements OnModuleDestroy {
       .replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgres://***@')
       .replace(/api[_-]?key[=:]\s*[^,\s]+/gi, 'api_key=***')
       .slice(0, 300);
+  }
+
+  private isAdmin(user: AuthUser): boolean {
+    return user.role === 'admin' || user.roles?.includes('admin') === true;
+  }
+
+  private hasPermission(user: AuthUser, permission: string): boolean {
+    return this.isAdmin(user) || user.permissions?.includes(permission) === true;
   }
 }

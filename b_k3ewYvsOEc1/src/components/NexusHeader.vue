@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { fetchResearchKeys, fetchVectorSourceStatus, switchVectorSourceProfile, updateResearchKeys } from '../lib/api.js'
-import { deriveUserModules } from '../lib/permissionModules.js'
+import { deriveUserModules, displayUserRoleNames } from '../lib/permissionModules.js'
 
 const props = defineProps({
   user: {
@@ -87,7 +87,7 @@ const canManageSystemConfig = computed(() => {
     userPermissions.value.includes('vector_source:update')
 })
 const displayUserName = computed(() => props.user?.displayName || props.user?.username || '')
-const displayRoleName = computed(() => roleLabel(props.user?.role))
+const displayRoleName = computed(() => displayUserRoleNames(props.user))
 const loginExpiredNotice = computed(() => {
   const notice = String(props.authNotice || '')
   return /失效|重新登录|过期/i.test(notice) ? '登录状态已失效，请重新登录。' : ''
@@ -261,13 +261,6 @@ function returnToWorkbench() {
 function openPersonalSettings() {
   closeSettingsMenu()
   emit('open-personal-settings')
-}
-
-function roleLabel(role) {
-  if (role === 'admin') return '管理员'
-  if (role === 'operator') return '操作员'
-  if (role === 'viewer') return '观察员'
-  return role || '--'
 }
 
 function closeKeySettings() {
@@ -622,7 +615,7 @@ watch(() => props.authError, (error) => {
     >
       <div class="settings-account-card">
         <strong>{{ displayUserName }}</strong>
-        <span>{{ displayRoleName }} · {{ user.role || '--' }}</span>
+        <span>绑定角色：{{ displayRoleName }}</span>
         <small>当前模块：{{ currentLocationLabel }}</small>
       </div>
       <div class="settings-dropdown-section">

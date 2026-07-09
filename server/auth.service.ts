@@ -245,9 +245,9 @@ export class AuthService implements OnModuleDestroy {
           }),
       );
       if (roles.length) {
-        if (!permissions.length && roles.includes(fallbackRole)) {
-          const fallbackPermissions = SYSTEM_ROLE_PERMISSIONS[fallbackRole];
-          return { roles, modules: modulesFromPermissions(fallbackPermissions), permissions: fallbackPermissions };
+        if (roles.includes('admin')) {
+          const adminPermissions = SYSTEM_ROLE_PERMISSIONS.admin;
+          return { roles, modules: modulesFromPermissions(adminPermissions), permissions: adminPermissions };
         }
         return { roles, modules: modulesFromPermissions(permissions), permissions };
       }
@@ -261,6 +261,13 @@ export class AuthService implements OnModuleDestroy {
   }
 
   private fallbackAccess(role: UserRole): UserAccess {
+    if (role !== 'admin') {
+      return {
+        roles: [role],
+        modules: [],
+        permissions: [],
+      };
+    }
     return {
       roles: [role],
       modules: modulesFromPermissions(SYSTEM_ROLE_PERMISSIONS[role]),

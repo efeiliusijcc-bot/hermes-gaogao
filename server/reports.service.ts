@@ -566,11 +566,11 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   isAdmin(user: AuthUser): boolean {
-    return user.role === 'admin';
+    return user.role === 'admin' || user.roles?.includes('admin') === true;
   }
 
   canCreateReport(user: AuthUser): boolean {
-    return user.role === 'admin' || user.role === 'operator';
+    return this.isAdmin(user) || user.permissions?.includes('report:create') === true;
   }
 
   canDeleteReport(user: AuthUser): boolean {
@@ -578,7 +578,7 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   canUpdateReport(user: AuthUser): boolean {
-    return this.isAdmin(user) || user.permissions?.includes('report:update') || user.role === 'operator';
+    return this.isAdmin(user) || user.permissions?.includes('report:update') === true;
   }
 
   canAccessJob(job: JobRecord, user: AuthUser): boolean {
@@ -601,7 +601,7 @@ export class ReportsService implements OnModuleDestroy {
     );
     const planRow = planResult.rows[0];
     if (!planRow) throw new NotFoundException({ error: 'Report plan not found' });
-    if (user.role !== 'admin' && String(planRow.owner_id) !== user.id) {
+    if (!this.isAdmin(user) && String(planRow.owner_id) !== user.id) {
       throw new NotFoundException({ error: 'Report plan not found' });
     }
 
@@ -733,7 +733,7 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private canReadAllReports(user: AuthUser): boolean {
-    return user.role === 'admin';
+    return this.isAdmin(user);
   }
 
   private canManageJob(job: JobRecord, user: AuthUser): boolean {

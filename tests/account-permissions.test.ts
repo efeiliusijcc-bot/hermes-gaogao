@@ -108,6 +108,26 @@ function testReportPlansRequireAdminOrOperator() {
   assert.deepEqual(createPermissions, ['report:create']);
 }
 
+function testRolesGuardUsesBoundRoleNames() {
+  const guard = new RolesGuard({
+    getAllAndOverride: (key: string) => key === AUTH_ROLES_KEY ? ['operator'] : undefined,
+  } as unknown as Reflector);
+  const context = {
+    getHandler: () => ({}),
+    getClass: () => ({}),
+    switchToHttp: () => ({
+      getRequest: () => ({
+        user: {
+          ...user('bound-operator-1', 'viewer'),
+          roles: ['test3', 'operator'],
+          permissions: [],
+        },
+      }),
+    }),
+  };
+  assert.equal(guard.canActivate(context as never), true);
+}
+
 function testHighRiskEndpointsDeclarePermissions() {
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.create), ['report:create']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.list), ['report:read']);
@@ -419,7 +439,9 @@ async function testAuthServiceReturnsRbacAccess() {
         ] };
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'operator-1') {
-        return { rows: [] };
+        return { rows: [
+          { role_name: 'operator', resource: 'report', action: 'create' },
+        ] };
       }
       return { rows: [] };
     },
@@ -466,6 +488,7 @@ async function testReportJobListVisibility() {
 }
 
 testReportPlansRequireAdminOrOperator();
+testRolesGuardUsesBoundRoleNames();
 testHighRiskEndpointsDeclarePermissions();
 testModuleControllersDeclarePermissions();
 await testReportPlansHttpAuthorization();

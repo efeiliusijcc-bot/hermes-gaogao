@@ -12,6 +12,7 @@ import {
   manualUpdateDraftOutline,
   refineDraftOutline,
 } from '../lib/api.js'
+import { displayUserRoleNames } from '../lib/permissionModules.js'
 
 const props = defineProps({
   currentUser: {
@@ -87,7 +88,9 @@ const displayOutline = computed(() => normalizeOutlineForDisplay(selectedOutline
 const hasAnalysis = computed(() => Boolean(analysis.value))
 const hasOutline = computed(() => Boolean(selectedOutline.value?.outline && displayOutline.value.outlineItems.length))
 const isVersionConfirmed = computed(() => confirmationMode.value && hasOutline.value && !editMode.value)
-const canImportDraftOutline = computed(() => props.currentUser?.role === 'admin' || props.currentUser?.role === 'operator')
+const userPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
+const canImportDraftOutline = computed(() => userPermissions.value.includes('draft_assistant:create'))
+const displayRoleName = computed(() => displayUserRoleNames(props.currentUser))
 const isImportReady = computed(() => isVersionConfirmed.value && canImportDraftOutline.value && !importedPlan.value)
 const isReportJobReady = computed(() => Boolean(importedPlan.value?.planId) && canImportDraftOutline.value && !editMode.value)
 const importedPlanIdShort = computed(() => importedPlan.value?.planId ? shortId(importedPlan.value.planId) : '')
@@ -132,13 +135,6 @@ const analysisCards = computed(() => {
     { label: '涉我风险摘要', value: compactList(item.riskToUs) },
   ].map((entry) => ({ ...entry, value: entry.value || '暂无' }))
 })
-
-function roleLabel(role) {
-  if (role === 'admin') return '管理员'
-  if (role === 'operator') return '操作员'
-  if (role === 'viewer') return '观察员'
-  return role || ''
-}
 
 function parseLinks(text) {
   return String(text || '')
@@ -347,7 +343,7 @@ function confirmCurrentVersion() {
   if (!hasOutline.value) return
   editMode.value = false
   confirmationMode.value = true
-  resetImportState(canImportDraftOutline.value ? '当前版本已确认，可生成深度编报规划' : '观察员无权导入深度编报')
+  resetImportState(canImportDraftOutline.value ? '当前版本已确认，可生成深度编报规划' : '当前账号无权导入深度编报')
   notice.value = `已确认 ${selectedVersionLabel.value}`
 }
 
@@ -358,7 +354,7 @@ async function importCurrentOutline() {
     return
   }
   if (!canImportDraftOutline.value) {
-    errorMessage.value = '观察员无权导入深度编报'
+    errorMessage.value = '当前账号无权导入深度编报'
     return
   }
   if (!isVersionConfirmed.value) {
@@ -811,7 +807,7 @@ watch(() => props.initialEventId, (eventId) => {
         <p>按事件输入、事件分析、拟稿提纲、版本确认、导入编报推进拟稿流程</p>
       </div>
       <div class="draft-toolbar-actions">
-        <span v-if="currentUser" class="draft-user-chip">{{ currentUser.username }} · {{ roleLabel(currentUser.role) }}</span>
+        <span v-if="currentUser" class="draft-user-chip">{{ currentUser.username }} · {{ displayRoleName }}</span>
         <button class="sci-btn" type="button" @click="emit('back')">返回</button>
       </div>
     </section>
@@ -1345,7 +1341,7 @@ watch(() => props.initialEventId, (eventId) => {
             <div class="draft-import-status" :class="{ ready: isVersionConfirmed || importedPlan }">
               <strong>{{ importedPlan ? importedVersionLabel : selectedVersionLabel }}</strong>
               <span v-if="editMode">请先保存或取消编辑后再导入</span>
-              <span v-else-if="!canImportDraftOutline">观察员无权导入深度编报</span>
+              <span v-else-if="!canImportDraftOutline">当前账号无权导入深度编报</span>
               <span v-else-if="!isVersionConfirmed && !importedPlan">请先确认当前提纲版本</span>
               <span v-else>{{ importStatus }}</span>
             </div>
@@ -1375,7 +1371,7 @@ watch(() => props.initialEventId, (eventId) => {
               {{ isCreatingReportJob ? '创建中...' : '创建深度编报任务' }}
             </button>
             <p v-if="editMode">请先保存或取消编辑后再导入，未保存内容不会进入深度编报。</p>
-            <p v-else-if="!canImportDraftOutline">观察员无权导入深度编报。</p>
+            <p v-else-if="!canImportDraftOutline">当前账号无权导入深度编报。</p>
             <p v-else-if="importedPlan">创建任务后将进入现有编报任务进度页，任务会携带 eventId、outlineId、planId。</p>
             <p v-else>确认当前版本后可生成深度编报规划，不会覆盖原提纲版本。</p>
           </section>

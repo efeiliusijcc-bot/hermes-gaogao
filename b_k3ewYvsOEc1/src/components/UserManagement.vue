@@ -24,8 +24,8 @@ const emit = defineEmits(['back'])
 
 const fallbackRoles = [
   { id: 'admin', name: 'admin', description: '管理员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
-  { id: 'operator', name: 'operator', description: '操作员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
-  { id: 'viewer', name: 'viewer', description: '观察员', isSystem: true, modules: ['qa', 'daily'], permissions: [] },
+  { id: 'operator', name: 'operator', description: '操作员', isSystem: true, modules: [], permissions: [] },
+  { id: 'viewer', name: 'viewer', description: '观察员', isSystem: true, modules: [], permissions: [] },
 ]
 
 const roleLabels = {

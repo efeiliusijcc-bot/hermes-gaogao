@@ -54,8 +54,8 @@ export class QaSessionSourcesService implements OnModuleDestroy {
   async listSessions(user: AuthUser): Promise<{ items: QaSessionSummary[] }> {
     const pool = await this.getPool();
     const params: unknown[] = [];
-    const where = user.role === 'admin' ? '' : 'WHERE owner_id = $1';
-    if (user.role !== 'admin') params.push(user.id);
+    const where = this.isAdmin(user) ? '' : 'WHERE owner_id = $1';
+    if (!this.isAdmin(user)) params.push(user.id);
     const result = await pool.query(
       `SELECT session_id, owner_id, owner_username, title, created_at, updated_at
          FROM chat_sessions
@@ -72,7 +72,7 @@ export class QaSessionSourcesService implements OnModuleDestroy {
     const owner = await this.assertCanAccessSession(safeSessionId, user, { allowAdminLegacy: true });
     if (!owner) {
       const legacyPath = this.legacySourcesFilePath(safeSessionId);
-      if (user.role === 'admin' && await this.remoteFs.exists(legacyPath)) return this.readSourcesFile(safeSessionId, legacyPath);
+      if (this.isAdmin(user) && await this.remoteFs.exists(legacyPath)) return this.readSourcesFile(safeSessionId, legacyPath);
       throw new NotFoundException({ error: 'Chat session not found' });
     }
     const filePath = this.sourcesFilePath(owner.ownerUserId, safeSessionId);
@@ -133,7 +133,7 @@ export class QaSessionSourcesService implements OnModuleDestroy {
     const safeSessionId = this.safeSessionId(sessionId);
     const owner = await this.findSessionOwner(safeSessionId);
     if (!owner) {
-      if (options.allowAdminLegacy && user.role === 'admin') return null;
+      if (options.allowAdminLegacy && this.isAdmin(user)) return null;
       throw new NotFoundException({ error: 'Chat session not found' });
     }
     this.assertOwner(owner, user);
@@ -285,8 +285,12 @@ export class QaSessionSourcesService implements OnModuleDestroy {
   }
 
   private assertOwner(owner: ChatSessionOwner, user: AuthUser): void {
-    if (user.role === 'admin' || owner.ownerUserId === user.id) return;
+    if (this.isAdmin(user) || owner.ownerUserId === user.id) return;
     throw new ForbiddenException({ error: 'Insufficient chat session permissions' });
+  }
+
+  private isAdmin(user: AuthUser): boolean {
+    return user.role === 'admin' || user.roles?.includes('admin') === true;
   }
 
   private async findSessionOwner(sessionId: string): Promise<ChatSessionOwner | null> {

@@ -165,8 +165,8 @@ export class DraftAssistantService implements OnModuleDestroy {
     const offset = (page - 1) * pageSize;
     const pool = await this.getPool();
     const params: unknown[] = [];
-    const where = user.role === 'admin' ? '' : 'WHERE e.owner_id = $1';
-    if (user.role !== 'admin') params.push(user.id);
+    const where = this.isAdmin(user) ? '' : 'WHERE e.owner_id = $1';
+    if (!this.isAdmin(user)) params.push(user.id);
     const countResult = await pool.query(`SELECT count(*)::int AS count FROM events e ${where}`, params);
     const rows = await pool.query(
       `SELECT e.event_id, e.title, e.summary, e.category, e.region, e.importance_score, e.risk_score,
@@ -179,7 +179,7 @@ export class DraftAssistantService implements OnModuleDestroy {
       [...params, pageSize, offset],
     );
     return {
-      items: rows.rows.map((row) => this.toEventSummary(row, user.role === 'admin')),
+      items: rows.rows.map((row) => this.toEventSummary(row, this.isAdmin(user))),
       page,
       pageSize,
       total: Number(countResult.rows[0]?.count || 0),
@@ -282,8 +282,8 @@ export class DraftAssistantService implements OnModuleDestroy {
   }
 
   async importOutlineToReportPlan(input: DraftOutlineImportInput, user: AuthUser) {
-    if (user.role === 'viewer') {
-      throw new ForbiddenException({ error: 'Viewer cannot import draft outlines to deep reports' });
+    if (!this.hasPermission(user, 'draft_assistant:create')) {
+      throw new ForbiddenException({ error: 'Insufficient draft assistant create permissions' });
     }
     const outlineId = this.requiredText(input.outlineId, 'outlineId', 80);
     const outlineRecord = await this.loadOutlineForUser(outlineId, user);
@@ -1007,7 +1007,7 @@ export class DraftAssistantService implements OnModuleDestroy {
     );
     const row = result.rows[0];
     if (!row) throw new NotFoundException({ error: 'Event not found' });
-    if (user.role !== 'admin' && String(row.owner_id) !== user.id) {
+    if (!this.isAdmin(user) && String(row.owner_id) !== user.id) {
       throw new NotFoundException({ error: 'Event not found' });
     }
     return this.toEventDetail(row);
@@ -1026,7 +1026,7 @@ export class DraftAssistantService implements OnModuleDestroy {
     );
     const row = result.rows[0];
     if (!row) throw new NotFoundException({ error: 'Outline not found' });
-    if (user.role !== 'admin' && String(row.owner_id) !== user.id) {
+    if (!this.isAdmin(user) && String(row.owner_id) !== user.id) {
       throw new NotFoundException({ error: 'Outline not found' });
     }
     return this.toOutlineResponse(row);
@@ -1195,6 +1195,14 @@ export class DraftAssistantService implements OnModuleDestroy {
     if (text.includes('高') || text.includes('high')) return 0.8;
     if (text.includes('中') || text.includes('medium')) return 0.55;
     return value.length ? 0.35 : 0;
+  }
+
+  private isAdmin(user: AuthUser): boolean {
+    return user.role === 'admin' || user.roles?.includes('admin') === true;
+  }
+
+  private hasPermission(user: AuthUser, permission: string): boolean {
+    return this.isAdmin(user) || user.permissions?.includes(permission) === true;
   }
 
   private async getPool(): Promise<PgPool> {

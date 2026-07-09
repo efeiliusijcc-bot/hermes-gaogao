@@ -64,10 +64,12 @@ const RECOVERY_POLL_ATTEMPTS = 6
 const RECOVERY_POLL_INTERVAL_MS = 1500
 
 const isLoggedIn = computed(() => Boolean(props.currentUser))
-const canGenerate = computed(() => isLoggedIn.value && props.currentUser.role !== 'viewer')
+const userPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
+const canGenerate = computed(() => isLoggedIn.value && userPermissions.value.includes('daily_awareness:create'))
+const canImportToDraft = computed(() => isLoggedIn.value && userPermissions.value.includes('daily_awareness:import'))
 const permissionHint = computed(() => {
   if (!isLoggedIn.value) return '请先登录后查看或生成每日简报。'
-  if (props.currentUser?.role === 'viewer') return 'viewer 账号仅可查看简报，不能生成每日简报。'
+  if (!canGenerate.value) return '当前账号仅可查看简报，不能生成每日简报。'
   return ''
 })
 const categoryStats = computed(() => {
@@ -331,7 +333,7 @@ function handleKeydown(event) {
 }
 
 async function importToDraft(event) {
-  if (!event?.itemId || props.currentUser?.role === 'viewer') return
+  if (!event?.itemId || !canImportToDraft.value) return
   importingItemId.value = event.itemId
   errorMessage.value = ''
   noticeMessage.value = ''
@@ -725,7 +727,7 @@ watch(() => props.currentUser?.id, () => {
               <button
                 type="button"
                 class="daily-import-btn"
-                :disabled="currentUser?.role === 'viewer' || importingItemId === event.itemId || event.imported"
+                :disabled="!canImportToDraft || importingItemId === event.itemId || event.imported"
                 @click="importToDraft(event)"
               >
                 {{ event.imported ? '已导入' : importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}

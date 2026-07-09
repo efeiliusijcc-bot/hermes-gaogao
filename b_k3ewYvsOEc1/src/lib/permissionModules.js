@@ -2,8 +2,12 @@ export const BUSINESS_MODULES = ['report', 'qa', 'draft', 'daily']
 
 export const SYSTEM_ROLE_MODULES = {
   admin: ['report', 'qa', 'draft', 'daily'],
-  operator: ['report', 'qa', 'draft', 'daily'],
-  viewer: ['qa', 'daily'],
+}
+
+const SYSTEM_ROLE_LABELS = {
+  admin: '管理员',
+  operator: '操作员',
+  viewer: '观察员',
 }
 
 const MODULE_KEYS = new Set(BUSINESS_MODULES)
@@ -58,14 +62,8 @@ export function deriveUserModules(user) {
   const permissionModules = modulesFromPermissions(user?.permissions)
   if (permissionModules.length) return permissionModules
 
-  const roleNames = uniqueStrings([
-    user?.role,
-    ...(Array.isArray(user?.roles) ? user.roles : []),
-  ])
-  for (const roleName of roleNames) {
-    const modules = SYSTEM_ROLE_MODULES[roleName]
-    if (modules?.length) return modules.slice()
-  }
+  const roleNames = uniqueStrings(Array.isArray(user?.roles) ? user.roles : [user?.role])
+  if (roleNames.includes('admin')) return SYSTEM_ROLE_MODULES.admin.slice()
 
   return []
 }
@@ -81,6 +79,15 @@ export function deriveRoleModules(role) {
   const permissionModules = modulesFromPermissions(role?.permissions)
   if (permissionModules.length) return permissionModules
 
-  const modules = SYSTEM_ROLE_MODULES[String(role?.name || '').trim()]
-  return modules?.length ? modules.slice() : []
+  return String(role?.name || '').trim() === 'admin' ? SYSTEM_ROLE_MODULES.admin.slice() : []
+}
+
+export function roleDisplayName(role) {
+  const value = String(role || '').trim()
+  return SYSTEM_ROLE_LABELS[value] || value || '--'
+}
+
+export function displayUserRoleNames(user) {
+  const roles = uniqueStrings(Array.isArray(user?.roles) && user.roles.length ? user.roles : [user?.role])
+  return roles.map((role) => roleDisplayName(role)).join('、') || '--'
 }

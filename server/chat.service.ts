@@ -91,7 +91,7 @@ export class ChatService {
   stream(streamId: string, user: AuthUser) {
     const meta = this.streamOwners.get(streamId);
     if (!meta) return { events: undefined, subject: undefined };
-    if (user.role !== 'admin' && meta.ownerUserId !== user.id) {
+    if (!this.isAdmin(user) && meta.ownerUserId !== user.id) {
       throw new ForbiddenException({ error: 'Insufficient chat stream permissions' });
     }
     return {
@@ -652,5 +652,9 @@ export class ChatService {
 
   private sessionTitle(messages: ChatRequest['messages']): string {
     return this.lastUserMessage(messages).replace(/\s+/g, ' ').trim().slice(0, 256);
+  }
+
+  private isAdmin(user: AuthUser): boolean {
+    return user.role === 'admin' || user.roles?.includes('admin') === true;
   }
 }

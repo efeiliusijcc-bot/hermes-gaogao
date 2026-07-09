@@ -183,9 +183,8 @@ async function testUsersAndAuthExposeModules() {
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'user-1') {
         return { rows: [
-          { role_name: 'editor', resource: 'report', action: 'read' },
-          { role_name: 'editor', resource: 'chat', action: 'execute' },
-          { role_name: 'editor', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'test3', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'test3', resource: 'daily_awareness', action: 'create' },
         ] };
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'user-2') {
@@ -208,16 +207,19 @@ async function testUsersAndAuthExposeModules() {
   const auth = new AuthService() as AuthService & { getPool: () => Promise<typeof pool> };
   auth.getPool = async () => pool;
   const login = await auth.login('editor', 'password123');
-  sameMembers(login.user.modules, ['report', 'qa', 'daily']);
+  sameMembers(login.user.roles, ['test3']);
+  sameMembers(login.user.permissions, ['daily_awareness:create', 'daily_awareness:read']);
+  sameMembers(login.user.modules, ['daily']);
+  assert.equal(login.user.role, 'viewer');
   const decoded = jwt.decode(login.access_token) as { modules?: string[] };
-  sameMembers(decoded.modules || [], ['report', 'qa', 'daily']);
+  sameMembers(decoded.modules || [], ['daily']);
 
   const multiLogin = await auth.login('multi', 'password123');
   sameMembers(multiLogin.user.roles, ['report_only', 'daily_only']);
   sameMembers(multiLogin.user.modules, ['report', 'daily']);
 }
 
-async function testSystemRoleFallsBackWhenRbacPermissionsAreEmpty() {
+async function testOnlyAdminFallsBackWhenRbacPermissionsAreEmpty() {
   const passwordHash = await bcrypt.hash('password123', 4);
   const pool = {
     query: async (text: string, params?: unknown[]) => {
@@ -232,8 +234,22 @@ async function testSystemRoleFallsBackWhenRbacPermissionsAreEmpty() {
           is_active: true,
         }] };
       }
+      if (text.includes('FROM users') && params?.[0] === 'operator') {
+        return { rows: [{
+          id: 'operator-1',
+          username: 'operator',
+          password_hash: passwordHash,
+          display_name: 'Operator',
+          email: null,
+          role: 'operator',
+          is_active: true,
+        }] };
+      }
       if (text.includes('FROM user_roles') && params?.[0] === 'admin-1') {
         return { rows: [{ role_name: 'admin', resource: null, action: null }] };
+      }
+      if (text.includes('FROM user_roles') && params?.[0] === 'operator-1') {
+        return { rows: [{ role_name: 'operator', resource: null, action: null }] };
       }
       return { rows: [] };
     },
@@ -250,11 +266,16 @@ async function testSystemRoleFallsBackWhenRbacPermissionsAreEmpty() {
   assert.ok(login.user.permissions.includes('crawler:delete'));
   assert.ok(login.user.permissions.includes('research_key:read'));
   assert.ok(login.user.permissions.includes('vector_source:read'));
+
+  const operatorLogin = await auth.login('operator', 'password123');
+  sameMembers(operatorLogin.user.roles, ['operator']);
+  sameMembers(operatorLogin.user.modules, []);
+  sameMembers(operatorLogin.user.permissions, []);
 }
 
 testPermissionModuleMappings();
 await testRolesServiceAcceptsModulesAndProtectsAdmin();
 await testUsersAndAuthExposeModules();
-await testSystemRoleFallsBackWhenRbacPermissionsAreEmpty();
+await testOnlyAdminFallsBackWhenRbacPermissionsAreEmpty();
 
 console.log('module permissions tests passed');

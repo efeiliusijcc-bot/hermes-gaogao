@@ -275,7 +275,7 @@ export class UsersService implements OnModuleDestroy {
     const role = this.isUserRole(row.role) ? row.role : 'viewer';
     const roles = Array.isArray(row.roles) && row.roles.length ? row.roles.map((item) => String(item)) : [role];
     const rawPermissions = Array.isArray(row.permissions) ? row.permissions.map((item) => String(item)).filter(Boolean) : [];
-    const permissions = rawPermissions.length || !roles.includes(role) ? rawPermissions : SYSTEM_ROLE_PERMISSIONS[role];
+    const permissions = roles.includes('admin') ? SYSTEM_ROLE_PERMISSIONS.admin : rawPermissions;
     return {
       id: String(row.id || ''),
       username: String(row.username || ''),
