@@ -65,6 +65,7 @@ export interface DraftAnalysisJson {
   keyActors: unknown[];
   mainFacts: unknown[];
   attitudes: DraftAttitude[];
+  riskSummary?: unknown;
   riskToUs: unknown[];
   importanceJudgement: string;
   uncertainties: unknown[];

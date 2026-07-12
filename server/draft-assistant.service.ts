@@ -82,6 +82,12 @@ const DEFAULT_ANALYSIS: DraftAnalysisJson = {
   keyActors: [],
   mainFacts: [],
   attitudes: [],
+  riskSummary: {
+    overallLevel: 'unknown',
+    risks: [],
+    pendingVerifications: [],
+    sourceStatus: 'unverified',
+  },
   riskToUs: [],
   importanceJudgement: '',
   uncertainties: [],
@@ -103,7 +109,7 @@ export class DraftAssistantService implements OnModuleDestroy {
   private llm: OpenAI | null = null;
 
   constructor(
-    private readonly vectorSources: VectorSourceService,
+    @Inject(VectorSourceService) private readonly vectorSources: VectorSourceService,
     @Optional() @Inject(UserPreferencesService) private readonly userPreferences?: UserPreferencesService,
   ) {}
 
@@ -481,6 +487,7 @@ export class DraftAssistantService implements OnModuleDestroy {
             '必须填充 oneSentenceSummary、basicSituation、mainFacts、uncertainties。',
             '证据不足时不要编造事实，应明确写“待核实”。',
             '即使只有标题，也要输出基于标题的待核实分析框架。',
+            'riskSummary 必须输出结构化对象，不要输出 JSON 字符串或 Markdown 代码块。',
           ],
           requiredShape: DEFAULT_ANALYSIS,
           attitudeShape: {
@@ -494,11 +501,19 @@ export class DraftAssistantService implements OnModuleDestroy {
             confidence: 0,
           },
           riskShape: {
-            riskType: '',
-            riskLevel: '',
-            description: '',
-            basis: '',
-            uncertainty: '',
+            overallLevel: 'medium',
+            risks: [
+              {
+                riskType: '技术竞争',
+                riskLevel: 'medium',
+                title: '工艺突破可能增强竞争优势',
+                description: '',
+                basis: '',
+                uncertainty: '',
+              },
+            ],
+            pendingVerifications: [],
+            sourceStatus: 'unverified',
           },
           eventInput: {
             title: input.title,
@@ -661,6 +676,7 @@ export class DraftAssistantService implements OnModuleDestroy {
       keyActors: this.arrayValue(raw.keyActors),
       mainFacts: this.arrayValue(raw.mainFacts),
       attitudes: this.arrayValue(raw.attitudes).map((item) => this.normalizeAttitude(item)).filter((item) => item.actor && item.attitudeSummary),
+      riskSummary: raw.riskSummary ?? raw.risks ?? raw.riskToUs ?? null,
       riskToUs: this.arrayValue(raw.riskToUs),
       importanceJudgement: this.text(raw.importanceJudgement, 4000),
       uncertainties: this.arrayValue(raw.uncertainties),
@@ -826,7 +842,7 @@ export class DraftAssistantService implements OnModuleDestroy {
         JSON.stringify(analysis.timeline),
         JSON.stringify(analysis.keyActors),
         this.scoreFromAnalysis(analysis.importanceJudgement),
-        this.scoreFromRisk(analysis.riskToUs),
+        this.scoreFromRisk(analysis.riskSummary ?? analysis.riskToUs),
         JSON.stringify(analysis),
       ],
     );
@@ -1190,11 +1206,16 @@ export class DraftAssistantService implements OnModuleDestroy {
     return 0;
   }
 
-  private scoreFromRisk(value: unknown[]): number {
+  private scoreFromRisk(value: unknown): number {
     const text = JSON.stringify(value).toLowerCase();
     if (text.includes('高') || text.includes('high')) return 0.8;
     if (text.includes('中') || text.includes('medium')) return 0.55;
-    return value.length ? 0.35 : 0;
+    if (Array.isArray(value)) return value.length ? 0.35 : 0;
+    if (value && typeof value === 'object') {
+      const risks = (value as Record<string, unknown>).risks;
+      return Array.isArray(risks) && risks.length ? 0.35 : 0;
+    }
+    return 0;
   }
 
   private isAdmin(user: AuthUser): boolean {

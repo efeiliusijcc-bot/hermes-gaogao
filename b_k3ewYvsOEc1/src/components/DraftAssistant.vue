@@ -13,6 +13,7 @@ import {
   refineDraftOutline,
 } from '../lib/api.js'
 import { displayUserRoleNames } from '../lib/permissionModules.js'
+import { normalizeRiskSummary, riskSummaryTitle } from '../lib/riskSummary.js'
 
 const props = defineProps({
   currentUser: {
@@ -58,6 +59,7 @@ const importedPlan = ref(null)
 const isImportingOutline = ref(false)
 const isCreatingReportJob = ref(false)
 const createdReportJob = ref(null)
+const showAllRiskVerifications = ref(false)
 
 const outlineEdit = reactive({
   reportTitle: '',
@@ -132,9 +134,23 @@ const analysisCards = computed(() => {
     { label: '基本情况', value: item.basicSituation || item.background || '' },
     { label: '主要事实', value: compactList(item.mainFacts) },
     { label: '各方态度摘要', value: compactAttitudes(attitudes.value) },
-    { label: '涉我风险摘要', value: compactList(item.riskToUs) },
   ].map((entry) => ({ ...entry, value: entry.value || '暂无' }))
 })
+const riskSummary = computed(() => {
+  const item = analysis.value || {}
+  return normalizeRiskSummary(item.riskSummary ?? item.risks ?? item.riskToUs)
+})
+const riskTitle = computed(() => riskSummaryTitle({
+  ...(analysis.value || {}),
+  analysis: analysis.value || {},
+  event: eventResult.value?.event || eventResult.value || {},
+}))
+const visibleRiskVerifications = computed(() => (
+  showAllRiskVerifications.value
+    ? riskSummary.value.pendingVerifications
+    : riskSummary.value.pendingVerifications.slice(0, 5)
+))
+const riskVerificationHasMore = computed(() => riskSummary.value.pendingVerifications.length > 5)
 
 function parseLinks(text) {
   return String(text || '')
@@ -176,6 +192,7 @@ async function runAnalyze() {
     return
   }
   isAnalyzing.value = true
+  showAllRiskVerifications.value = false
   selectedOutline.value = null
   outlineVersions.value = []
   editMode.value = false
@@ -203,6 +220,7 @@ async function openEvent(eventId) {
   if (!eventId) return
   editMode.value = false
   confirmationMode.value = false
+  showAllRiskVerifications.value = false
   resetImportState('待确认当前提纲版本')
   try {
     eventResult.value = await getDraftEvent(eventId)
@@ -910,6 +928,78 @@ watch(() => props.initialEventId, (eventId) => {
                 <p>{{ item.value }}</p>
               </article>
             </div>
+
+            <section class="draft-risk-section" aria-label="风险研判">
+              <div class="draft-risk-head">
+                <h3>{{ riskTitle }}</h3>
+                <span>AI 初步研判</span>
+              </div>
+
+              <div v-if="riskSummary.note === 'parse_failed'" class="draft-risk-state">
+                <strong>风险信息暂时无法结构化展示</strong>
+                <p>系统已保留原始分析结果，可重新运行分析或检查模型输出格式。</p>
+              </div>
+
+              <template v-else-if="riskSummary.items.length">
+                <div class="draft-risk-overview">
+                  <span>综合风险：{{ riskSummary.overallLevelLabel }}</span>
+                  <p>
+                    当前识别出 {{ riskSummary.items.length }} 项潜在风险，{{ riskSummary.pendingVerifications.length }} 项关键信息仍待核验。
+                  </p>
+                  <small>以下内容基于当前资料自动分析，不代表相关事实已经得到确认。</small>
+                </div>
+
+                <div class="draft-risk-list">
+                  <article v-for="item in riskSummary.items" :key="item.id" class="draft-risk-card">
+                    <div class="draft-risk-card-head">
+                      <span class="draft-risk-badge" :class="item.riskLevel">{{ item.riskLevelLabel }}</span>
+                      <div>
+                        <h4>{{ item.title || item.riskType }}</h4>
+                        <small v-if="item.title && item.riskType">{{ item.riskType }}</small>
+                      </div>
+                    </div>
+                    <div v-if="item.description" class="draft-risk-block">
+                      <strong>风险说明</strong>
+                      <p>{{ item.description }}</p>
+                    </div>
+                    <div v-if="item.basis" class="draft-risk-block muted">
+                      <strong>判断依据</strong>
+                      <p>{{ item.basis }}</p>
+                    </div>
+                    <div v-if="item.uncertainty" class="draft-risk-block muted">
+                      <strong>不确定性</strong>
+                      <p>{{ item.uncertainty }}</p>
+                    </div>
+                  </article>
+                </div>
+
+                <div v-if="riskSummary.pendingVerifications.length" class="draft-risk-verifications">
+                  <div class="draft-risk-subhead">
+                    <h4>待核验事项</h4>
+                    <button
+                      v-if="riskVerificationHasMore"
+                      class="draft-risk-more"
+                      type="button"
+                      @click="showAllRiskVerifications = !showAllRiskVerifications"
+                    >
+                      {{ showAllRiskVerifications ? '收起' : '查看全部' }}
+                    </button>
+                  </div>
+                  <ol>
+                    <li v-for="(item, index) in visibleRiskVerifications" :key="`${index}-${item}`">
+                      <span>{{ index + 1 }}</span>
+                      <b>{{ item }}</b>
+                    </li>
+                  </ol>
+                </div>
+              </template>
+
+              <div v-else class="draft-risk-state">
+                <strong>暂未识别到明确风险</strong>
+                <p v-if="riskSummary.pendingVerifications.length">暂未发现明确风险，但仍有若干事实需要进一步核实。</p>
+                <p v-else>当前资料不足以形成可靠的风险判断。建议补充官方公告、企业新闻、行业资料或相关链接后重新分析。</p>
+              </div>
+            </section>
           </div>
 
           <div v-else-if="editMode && selectedOutline" class="draft-state-card draft-editor-card">
@@ -1894,6 +1984,228 @@ watch(() => props.initialEventId, (eventId) => {
   line-height: 1.8;
 }
 
+.draft-risk-section {
+  margin-top: 22px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  padding-top: 20px;
+}
+
+.draft-risk-head,
+.draft-risk-card-head,
+.draft-risk-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.draft-risk-head {
+  margin-bottom: 14px;
+}
+
+.draft-risk-head h3,
+.draft-risk-subhead h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.45;
+}
+
+.draft-risk-head span {
+  flex: 0 0 auto;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.draft-risk-overview,
+.draft-risk-state {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.draft-risk-overview span,
+.draft-risk-state strong {
+  display: block;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.draft-risk-overview p,
+.draft-risk-overview small,
+.draft-risk-state p {
+  display: block;
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.draft-risk-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.draft-risk-card {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: #fff;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.draft-risk-card-head {
+  justify-content: flex-start;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.draft-risk-card-head h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.draft-risk-card-head small {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.draft-risk-badge {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.draft-risk-badge.high {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.draft-risk-badge.medium {
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.draft-risk-badge.low {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.draft-risk-badge.unknown {
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.draft-risk-block {
+  margin-top: 10px;
+}
+
+.draft-risk-block strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.draft-risk-block p {
+  margin: 0;
+  color: #1e293b;
+  font-size: 14px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.draft-risk-block.muted p {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.draft-risk-verifications {
+  margin-top: 14px;
+  border: 1px solid #fed7aa;
+  background: #fffaf3;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.draft-risk-subhead {
+  margin-bottom: 10px;
+}
+
+.draft-risk-subhead h4 {
+  font-size: 15px;
+}
+
+.draft-risk-more {
+  border: 0;
+  background: transparent;
+  color: #1d4ed8;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.draft-risk-verifications ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.draft-risk-verifications li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.draft-risk-verifications li span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #ffedd5;
+  color: #c2410c;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.draft-risk-verifications li b {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
 .draft-outline-version-chip {
   display: flex;
   flex-direction: column;
@@ -2647,7 +2959,9 @@ watch(() => props.initialEventId, (eventId) => {
   .draft-login-gate,
   .draft-main-head,
   .draft-editor-commandbar,
-  .draft-preview-banner {
+  .draft-preview-banner,
+  .draft-risk-head,
+  .draft-risk-subhead {
     align-items: stretch;
     flex-direction: column;
   }
