@@ -15,7 +15,9 @@ import {
 import { displayUserRoleNames } from '../lib/permissionModules.js'
 import { normalizeRiskSummary, riskSummaryTitle } from '../lib/riskSummary.js'
 import DraftEditorToolbar from './DraftEditorToolbar.vue'
+import DraftHistorySidebar from './DraftHistorySidebar.vue'
 import StrategyTabs from './StrategyTabs.vue'
+import { useCollapsibleHistorySidebar } from '../composables/useCollapsibleHistorySidebar.js'
 
 const props = defineProps({
   currentUser: {
@@ -66,7 +68,8 @@ const leftPanelOpen = ref(false)
 const rightPanelOpen = ref(false)
 const lastSavedAt = ref(null)
 const saveFailed = ref(false)
-const eventSearch = ref('')
+const historySearchFocused = ref(false)
+const draftLifecycleStatus = ref('idle')
 
 const outlineEdit = reactive({
   reportTitle: '',
@@ -139,6 +142,26 @@ const currentStepKey = computed(() => {
 })
 
 const currentStepIndex = computed(() => stepDefinitions.findIndex((step) => step.key === currentStepKey.value))
+const currentStepNumber = computed(() => currentStepIndex.value + 1)
+const historyEditorMode = computed(() => editMode.value ? 'edit' : confirmationMode.value ? 'confirm' : '')
+const {
+  collapsed: historySidebarCollapsed,
+  preference: historySidebarPreference,
+  autoCollapseNoticeVisible,
+  toggle: toggleHistorySidebarPreference,
+  useAutomaticPreference: useAutomaticHistoryPreference,
+} = useCollapsibleHistorySidebar({
+  currentEventId,
+  currentStep: currentStepNumber,
+  draftStatus: draftLifecycleStatus,
+  editorMode: historyEditorMode,
+  searchFocused: historySearchFocused,
+})
+const historyNavigationMode = computed(() => (
+  historySidebarPreference.value === 'collapsed'
+  || hasOutline.value
+  || currentStepNumber.value >= 4
+))
 const expandedStrategyCards = reactive({
   writingFocus: false,
   sourceRequirements: false,
@@ -177,11 +200,6 @@ const visibleRiskVerifications = computed(() => (
     : riskSummary.value.pendingVerifications.slice(0, 5)
 ))
 const riskVerificationHasMore = computed(() => riskSummary.value.pendingVerifications.length > 5)
-const filteredEventList = computed(() => {
-  const query = eventSearch.value.trim().toLowerCase()
-  if (!query) return eventList.value
-  return eventList.value.filter((item) => String(item.title || '').toLowerCase().includes(query))
-})
 
 function parseLinks(text) {
   return String(text || '')
@@ -223,6 +241,7 @@ async function runAnalyze() {
     return
   }
   isAnalyzing.value = true
+  draftLifecycleStatus.value = 'idle'
   showAllRiskVerifications.value = false
   selectedOutline.value = null
   outlineVersions.value = []
@@ -251,6 +270,7 @@ async function openEvent(eventId) {
   if (!eventId) return
   editMode.value = false
   confirmationMode.value = false
+  draftLifecycleStatus.value = 'idle'
   showAllRiskVerifications.value = false
   resetImportState('待确认当前提纲版本')
   try {
@@ -273,6 +293,7 @@ async function createOutline() {
     return
   }
   isGeneratingOutline.value = true
+  draftLifecycleStatus.value = 'generating'
   editMode.value = false
   confirmationMode.value = false
   resetImportState('待确认当前提纲版本')
@@ -284,7 +305,9 @@ async function createOutline() {
     await refreshOutlineVersions()
     syncOutlineEdit()
     notice.value = `已生成 V${selectedOutline.value.versionNo} 提纲`
+    draftLifecycleStatus.value = 'generated'
   } catch (error) {
+    draftLifecycleStatus.value = 'failed'
     showError(error)
   } finally {
     isGeneratingOutline.value = false
@@ -413,6 +436,21 @@ function closeResponsivePanels() {
   rightPanelOpen.value = false
 }
 
+function toggleHistorySidebar() {
+  const wasCollapsed = historySidebarCollapsed.value
+  toggleHistorySidebarPreference()
+  if (typeof window !== 'undefined' && window.innerWidth < 1100) {
+    leftPanelOpen.value = wasCollapsed
+  } else {
+    leftPanelOpen.value = false
+  }
+}
+
+function selectHistoryEvent(eventId) {
+  leftPanelOpen.value = false
+  void openEvent(eventId)
+}
+
 function startNewEvent() {
   if (hasEditChanges.value && !window.confirm('当前修改尚未保存，确定新建事件吗？')) return
   eventResult.value = null
@@ -420,6 +458,7 @@ function startNewEvent() {
   outlineVersions.value = []
   editMode.value = false
   confirmationMode.value = false
+  draftLifecycleStatus.value = 'idle'
   form.title = ''
   form.materials = ''
   form.linksText = ''
@@ -939,44 +978,29 @@ watch(() => props.initialEventId, (eventId) => {
       <div v-if="errorMessage" class="draft-error">{{ errorMessage }}</div>
       <div v-if="notice" class="draft-notice">{{ notice }}</div>
 
-      <section class="draft-workspace-grid" :class="{ 'editor-active': editMode }">
+      <section
+        class="draft-workspace-grid"
+        :class="{
+          'editor-active': historyNavigationMode,
+          'history-collapsed': historyNavigationMode && historySidebarCollapsed,
+        }"
+      >
         <button v-if="leftPanelOpen || rightPanelOpen" class="draft-panel-backdrop" type="button" aria-label="关闭侧栏" @click="closeResponsivePanels"></button>
-        <aside class="draft-panel draft-left" :class="{ open: leftPanelOpen }">
+        <DraftHistorySidebar
+          v-if="historyNavigationMode"
+          :class="{ open: leftPanelOpen }"
+          :collapsed="historySidebarCollapsed"
+          :preference="historySidebarPreference"
+          :current-event-id="currentEventId"
+          :events="eventList"
+          @toggle="toggleHistorySidebar"
+          @select-event="selectHistoryEvent"
+          @create-event="startNewEvent"
+          @search-focus-change="historySearchFocused = $event"
+          @use-auto="useAutomaticHistoryPreference"
+        />
+        <aside v-else class="draft-panel draft-left" :class="{ open: leftPanelOpen }">
           <button class="draft-panel-close" type="button" aria-label="关闭事件栏" @click="leftPanelOpen = false">×</button>
-          <template v-if="editMode">
-            <div class="draft-panel-head draft-event-nav-head">
-              <div>
-                <h2>事件输入</h2>
-                <span>当前提纲所属事件</span>
-              </div>
-              <button class="sci-btn draft-small-btn" type="button" @click="startNewEvent">+ 新建事件</button>
-            </div>
-            <label class="draft-event-search">
-              <span>搜索事件</span>
-              <input v-model="eventSearch" class="sci-input" placeholder="搜索事件标题" />
-            </label>
-            <div class="draft-event-filter-tabs" role="tablist" aria-label="事件列表范围">
-              <button class="active" type="button" role="tab" aria-selected="true">最近编辑</button>
-              <button type="button" role="tab" aria-selected="false">全部事件</button>
-            </div>
-            <div class="draft-history draft-editor-event-list">
-              <button
-                v-for="item in filteredEventList"
-                :key="item.eventId"
-                class="draft-history-item"
-                :class="{ selected: item.eventId === currentEventId }"
-                type="button"
-                @click="openEvent(item.eventId); leftPanelOpen = false"
-              >
-                <strong>{{ item.title }}</strong>
-                <span>{{ formatTime(item.createdAt) }}</span>
-                <small>{{ item.eventId === currentEventId ? '正在编辑' : '已有分析' }}</small>
-              </button>
-              <div v-if="!filteredEventList.length" class="draft-empty">没有匹配的事件</div>
-            </div>
-          </template>
-
-          <template v-else>
           <div class="draft-panel-head">
             <h2>事件源输入</h2>
             <button class="sci-btn draft-small-btn" type="button" :disabled="isLoadingEvents" @click="loadEvents">刷新</button>
@@ -1023,8 +1047,12 @@ watch(() => props.initialEventId, (eventId) => {
             </button>
             <div v-if="!eventList.length" class="draft-empty">暂无事件分析</div>
           </div>
-          </template>
         </aside>
+
+        <div v-if="autoCollapseNoticeVisible" class="draft-history-auto-notice" role="status">
+          <span>提纲已生成，历史事件已收起，以扩大编辑区域。</span>
+          <button type="button" @click="toggleHistorySidebar">展开历史记录</button>
+        </div>
 
         <section class="draft-main-workarea">
           <div v-if="currentStepKey === 'input'" class="draft-state-card draft-empty-state">
@@ -1774,9 +1802,14 @@ watch(() => props.initialEventId, (eventId) => {
 }
 
 .draft-workspace-grid.editor-active {
-  grid-template-columns: 250px minmax(720px, 1fr) 280px;
+  grid-template-columns: 250px minmax(720px, 1fr) 270px;
   align-items: stretch;
   min-height: 0;
+  transition: grid-template-columns 210ms ease;
+}
+
+.draft-workspace-grid.editor-active.history-collapsed {
+  grid-template-columns: 64px minmax(720px, 1fr) 270px;
 }
 
 .draft-panel,
@@ -1800,6 +1833,34 @@ watch(() => props.initialEventId, (eventId) => {
 .draft-panel-backdrop {
   display: none;
 }
+
+.draft-workspace-grid > .draft-history-sidebar {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 220px);
+  min-height: 480px;
+}
+
+.draft-history-auto-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid #bfdbfe;
+  background: #fff;
+  color: #334155;
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.16);
+  transform: translateX(-50%);
+  font-size: 12px;
+}
+.draft-history-auto-notice button { border: 0; background: transparent; color: #1d4ed8; cursor: pointer; font-weight: 900; white-space: nowrap; }
+.draft-history-auto-notice button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.22); outline-offset: 2px; }
 
 .draft-right {
   display: flex;
@@ -3257,11 +3318,17 @@ watch(() => props.initialEventId, (eventId) => {
     grid-template-columns: 230px minmax(720px, 1fr) 250px;
     gap: 14px;
   }
+  .draft-workspace-grid.editor-active.history-collapsed {
+    grid-template-columns: 64px minmax(720px, 1fr) 250px;
+  }
 }
 
 @media (max-width: 1359px) {
   .draft-workspace-grid.editor-active {
     grid-template-columns: 230px minmax(720px, 1fr);
+  }
+  .draft-workspace-grid.editor-active.history-collapsed {
+    grid-template-columns: 64px minmax(720px, 1fr);
   }
 
   .editor-active .draft-right {
@@ -3318,8 +3385,10 @@ watch(() => props.initialEventId, (eventId) => {
 
 @media (max-width: 1099px) {
   .draft-workspace-grid.editor-active { grid-template-columns: minmax(0, 1fr); }
+  .draft-workspace-grid.editor-active.history-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
   .editor-active .draft-main-workarea { min-width: min(720px, 100%); }
-  .editor-active .draft-left {
+  .editor-active .draft-left,
+  .editor-active .draft-history-sidebar:not(.collapsed) {
     position: fixed;
     z-index: 42;
     top: 84px;
@@ -3331,8 +3400,19 @@ watch(() => props.initialEventId, (eventId) => {
     transition: transform 160ms ease;
     box-shadow: 0 22px 48px rgba(15, 23, 42, 0.2);
   }
-  .editor-active .draft-left.open { transform: translateX(0); }
+  .editor-active .draft-left.open,
+  .editor-active .draft-history-sidebar:not(.collapsed).open { transform: translateX(0); }
   .editor-active .draft-left .draft-panel-close { display: inline-flex; }
+  .editor-active .draft-history-sidebar.collapsed {
+    position: sticky;
+    top: 0;
+    left: auto;
+    bottom: auto;
+    width: auto;
+    max-height: calc(100vh - 220px);
+    transform: none;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+  }
 }
 
 @media (max-width: 860px) {
@@ -3394,5 +3474,9 @@ watch(() => props.initialEventId, (eventId) => {
   .draft-event-basic-head { flex-direction: column; }
   .draft-event-basic-head h2 { font-size: 21px; }
   .draft-editor-card { padding: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .draft-workspace-grid.editor-active { transition: none; }
 }
 </style>
