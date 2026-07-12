@@ -46,6 +46,13 @@ function jwtSecret(): string {
   return DEFAULT_JWT_SECRET;
 }
 
+/** Refuse to run a production API with tokens signed by a known development key. */
+export function assertProductionJwtSecret(): void {
+  if (process.env.NODE_ENV === 'production' && !String(process.env.JWT_SECRET || '').trim()) {
+    throw new Error('JWT_SECRET must be configured when NODE_ENV=production.');
+  }
+}
+
 @Injectable()
 export class AuthService implements OnModuleDestroy {
   private pool: PgPool | null = null;

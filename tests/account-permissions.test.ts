@@ -141,6 +141,7 @@ function testHighRiskEndpointsDeclarePermissions() {
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.eventLog), ['report:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.events), ['report:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.result), ['report:read']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.artifacts), ['report:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.databaseSources), ['report:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.sources), ['report:read']);
   assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, ReportsController.prototype.download), ['report:read']);

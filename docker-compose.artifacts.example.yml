@@ -1,0 +1,31 @@
+services:
+  api:
+    build:
+      context: .
+    image: hermes-api:latest
+    environment:
+      NODE_ENV: production
+      PORT: 1555
+      HERMES_RUN_MODE: runs
+      HERMES_BASE_URL: http://hermes:8642/v1
+      HERMES_HEALTH_URL: http://hermes:8642/health
+      HERMES_RUNS_URL: http://hermes:8642/v1/runs
+      ARTIFACT_STORAGE_MODE: local
+      ARTIFACT_LOCAL_ROOT: /app/storage/artifacts
+      HERMES_ARTIFACT_TRANSPORT: shared_volume
+      HERMES_REMOTE_REPORT_ROOT: /opt/data/workspace/report-agent/reports
+      HERMES_SHARED_REPORT_ROOT: /app/hermes-inbox
+    ports:
+      - "1556:1555"
+    volumes:
+      - report-artifacts:/app/storage/artifacts
+      - hermes-reports:/app/hermes-inbox:ro
+
+  hermes:
+    image: hermes-agent:latest
+    volumes:
+      - hermes-reports:/opt/data/workspace/report-agent/reports
+
+volumes:
+  report-artifacts:
+  hermes-reports:

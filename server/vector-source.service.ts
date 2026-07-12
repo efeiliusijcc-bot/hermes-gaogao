@@ -1,4 +1,4 @@
-﻿import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+﻿import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import crypto from 'crypto';
 import { createRequire } from 'module';
 import OpenAI from 'openai';
@@ -191,7 +191,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
   private lastIndexedAt: string | null = null;
   private lastIndexStats = { indexed: 0, skipped: 0 };
 
-  constructor(private readonly researchKeys: ResearchKeysService) {}
+  constructor(@Inject(ResearchKeysService) private readonly researchKeys: ResearchKeysService) {}
 
   onModuleInit() {
     if (!this.databaseUrl()) return;

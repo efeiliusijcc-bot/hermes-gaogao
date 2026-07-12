@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import fs from 'fs/promises';
 import path from 'path';
-import { HERMES_STATE_DIR } from './config.js';
+import { HERMES_RESEARCH_KEYS_DIR } from './config.js';
 
 type ResearchKeyName = 'tavilyApiKey' | 'exaApiKey' | 'firecrawlApiKey' | 'openaiEmbeddingApiKey';
 type ResearchKeyArrayName = `${ResearchKeyName}s`;
@@ -37,7 +37,7 @@ export interface UpdateResearchKeysInput {
   openaiEmbeddingApiKeys?: string | string[] | null;
 }
 
-const CONFIG_DIR = path.join(HERMES_STATE_DIR, 'workspace', 'report-agent', 'config');
+const CONFIG_DIR = HERMES_RESEARCH_KEYS_DIR;
 const KEYS_JSON_PATH = path.join(CONFIG_DIR, 'research-keys.json');
 const KEYS_ENV_PATH = path.join(CONFIG_DIR, 'research-keys.env');
 

@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Res } from '@nestjs/common';
+import { Controller, Get, HttpCode, Inject, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
 import { HermesService } from './hermes.service.js';
@@ -6,8 +6,8 @@ import { HermesService } from './hermes.service.js';
 @Controller('/api/hermes')
 export class HealthController {
   constructor(
-    private readonly hermes: HermesService,
-    private readonly gatewayDevice: HermesGatewayDeviceService,
+    @Inject(HermesService) private readonly hermes: HermesService,
+    @Inject(HermesGatewayDeviceService) private readonly gatewayDevice: HermesGatewayDeviceService,
   ) {}
 
   @Get('health')

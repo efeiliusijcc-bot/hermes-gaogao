@@ -2,7 +2,9 @@ import 'reflect-metadata';
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface.js';
+import { pathToFileURL } from 'url';
 import { AppModule } from './app.module.js';
+import { assertProductionJwtSecret } from './auth.service.js';
 import {
   HEALTH_TIMEOUT_MS,
   HERMES_BASE_URL,
@@ -14,6 +16,7 @@ import {
   REPORT_AGENT_MODEL,
   REPORT_AGENT_PROVIDER,
   REPORT_TIMEOUT_MS,
+  assertArtifactStorageConfig,
 } from './config.js';
 
 function isClientDisconnectError(error: unknown): boolean {
@@ -50,6 +53,7 @@ export function buildCorsOptions(): CorsOptions {
   }
   return {
     credentials: true,
+    exposedHeaders: ['Content-Disposition', 'Content-Length', 'ETag', 'X-Artifact-SHA256'],
     origin(origin, callback) {
       if (!origin) {
         callback(null, true);
@@ -65,6 +69,8 @@ export function buildCorsOptions(): CorsOptions {
 }
 
 async function bootstrap() {
+  assertProductionJwtSecret();
+  assertArtifactStorageConfig();
   const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
   app.enableCors(buildCorsOptions());
 
@@ -83,4 +89,6 @@ async function bootstrap() {
   console.log(`Hermes timeouts: health=${HEALTH_TIMEOUT_MS}ms, run=${REPORT_TIMEOUT_MS}ms`);
 }
 
-void bootstrap();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void bootstrap();
+}

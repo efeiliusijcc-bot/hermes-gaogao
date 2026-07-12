@@ -5,6 +5,8 @@ import {
   sourceHostname,
 } from '../b_k3ewYvsOEc1/src/lib/sourceDisplay.js';
 
+const sourceDisplayModule = await import('../b_k3ewYvsOEc1/src/lib/sourceDisplay.js');
+
 assert.equal(sanitizeSourceDisplayText('?????(?)'), '');
 assert.equal(sanitizeSourceDisplayText('??????Fox News'), 'Fox News');
 assert.equal(sanitizeSourceDisplayText('Reuters????'), 'Reuters');
@@ -27,5 +29,23 @@ assert.equal(
   ),
   'example.com',
 );
+
+assert.equal(typeof sourceDisplayModule.filterAcceptedReportReferences, 'function');
+const acceptedReportReferences = sourceDisplayModule.filterAcceptedReportReferences?.([
+  { citationNo: 1, title: 'Accepted', url: 'https://example.com/accepted', matchStatus: 'matched' },
+  { citationNo: 2, title: 'Information gap', url: '', matchStatus: 'raw_only' },
+  { citationNo: 3, title: 'Rejected', url: 'https://example.com/rejected', matchStatus: 'failed' },
+]);
+assert.deepEqual(acceptedReportReferences?.map((item) => item.citationNo), [1]);
+
+assert.equal(typeof sourceDisplayModule.resolveSourceGroup, 'function');
+assert.equal(sourceDisplayModule.resolveSourceGroup?.({
+  sourceGroup: 'candidate_hits',
+  sourceOrigin: 'database_recall',
+}), 'candidate_hits');
+assert.equal(sourceDisplayModule.resolveSourceGroup?.({
+  sourceGroup: 'report_refs',
+  sourceOrigin: 'tool_search',
+}), 'report_refs');
 
 console.log('source display tests passed');

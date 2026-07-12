@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Header, HttpException, HttpStatus, Inject, Param, Post, Query, Sse, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Query, Res, Sse, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import { Observable } from 'rxjs';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
@@ -196,6 +197,16 @@ export class ReportsController {
     return result;
   }
 
+  @Get(':jobId/artifacts')
+  @RequirePermissions('report:read')
+  async artifacts(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    const result = await this.reports.getArtifacts(jobId, user);
+    if (result === undefined) {
+      throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
+    }
+    return result;
+  }
+
   @Get(':jobId/database-sources')
   @RequirePermissions('report:read')
   async databaseSources(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
@@ -223,9 +234,13 @@ export class ReportsController {
   }
 
   @Get(':jobId/download')
-  @Header('Content-Type', 'text/markdown; charset=utf-8')
   @RequirePermissions('report:read')
-  async download(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser, @Query('format') format = 'md') {
+  async download(
+    @Param('jobId') jobId: string,
+    @CurrentUser() user: AuthUser,
+    @Res({ passthrough: true }) res: Response,
+    @Query('format') format = 'md',
+  ) {
     const result = await this.reports.getMarkdownFromDisk(jobId, user);
     if (result === undefined) {
       throw new HttpException({ error: 'Job not found' }, HttpStatus.NOT_FOUND);
@@ -234,6 +249,16 @@ export class ReportsController {
       throw new HttpException({ error: 'Report not ready' }, HttpStatus.CONFLICT);
     }
     void format;
+    const artifact = result.artifact && typeof result.artifact === 'object' ? result.artifact as Record<string, unknown> : {};
+    const sha256 = typeof artifact.sha256 === 'string' ? artifact.sha256 : '';
+    const fileName = typeof artifact.fileName === 'string' && artifact.fileName ? artifact.fileName : `${jobId}.md`;
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/["\\\r\n]/g, '_')}"`);
+    res.setHeader('Content-Length', String(Buffer.byteLength(result.markdown, 'utf8')));
+    if (sha256) {
+      res.setHeader('ETag', `"sha256-${sha256}"`);
+      res.setHeader('X-Artifact-SHA256', sha256);
+    }
     return result.markdown;
   }
 }

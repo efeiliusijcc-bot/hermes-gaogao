@@ -5,12 +5,26 @@ import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { HERMES_RUN_MODE, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL, REPORT_AGENT_PROVIDER } from './config.js';
 import { CrawlerService } from './crawler.service.js';
+import { ArtifactPathResolver } from './artifact-path-resolver.service.js';
+import { ArtifactSyncService, type ArtifactSyncResult } from './artifact-storage/artifact-sync.service.js';
 import type { CrawlerItemResponse, CrawlerTaskResponse } from './crawler.types.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
 import { UserPreferencesService } from './user-preferences.service.js';
+import { buildRuleBasedEntityPolicy, parseEntityPolicy, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
+import { filterSourcesByEntityPolicy, type SourceEntityMatch, type SourceFilterDiagnostics, type SourceFilterResult } from './source-entity-guard.js';
+import {
+  WebSupplementService,
+  assessSourceQuality,
+  buildSupplementQueries,
+  decideWebSupplementTrigger,
+  dedupeSupplementSources,
+  sourcePriority,
+  WEB_SUPPLEMENT_LIMITS,
+  type WebSearchSource,
+} from './web-supplement.service.js';
 import type { CreateJobRequest } from '../src/types/report.js';
 import type { AuthUser } from './auth-user.interface.js';
 import type {
@@ -92,6 +106,11 @@ interface DatabaseSourceItem {
   summary: string;
   websiteName: string;
   publishTime: string;
+  contentExcerpt?: string;
+  similarity?: number;
+  relevanceScore?: number;
+  sourceType?: string;
+  entityMatch?: SourceEntityMatch;
 }
 
 interface DatabaseQueryPlanSummary {
@@ -120,14 +139,43 @@ interface VectorQueryPlanSummary {
 }
 
 interface DatabaseSourcesResponse {
-  status: 'hit' | 'empty' | 'fallback' | 'unavailable';
+  status: 'hit' | 'empty' | 'fallback' | 'unavailable' | 'error';
   sources: DatabaseSourceItem[];
+  acceptedSources?: DatabaseSourceItem[];
+  uncertainSources?: DatabaseSourceItem[];
+  rejectedSources?: DatabaseSourceItem[];
+  diagnostics?: SourceFilterDiagnostics & { entityPolicy?: EntityPolicy };
+  message?: string;
   fallbackReason: string;
   totalHits: number;
   updatedAt: string | null;
   queryPlan: DatabaseQueryPlanSummary;
   retrievalMode?: 'keyword' | 'vector' | 'hybrid';
   vectorPlan?: VectorQueryPlanSummary;
+}
+
+interface SupplementChannelResult {
+  acceptedWebSources: Record<string, unknown>[];
+  uncertainWebSources: Record<string, unknown>[];
+  rejectedWebSources: Record<string, unknown>[];
+  acceptedCrawlerSources: Record<string, unknown>[];
+  uncertainCrawlerSources: Record<string, unknown>[];
+  rejectedCrawlerSources: Record<string, unknown>[];
+  diagnostics: {
+    triggered: boolean;
+    triggerReason: string;
+    queries: string[];
+    searchResultCount: number;
+    searchValidatedCount: number;
+    fetchedCount: number;
+    acceptedCount: number;
+    uncertainCount: number;
+    rejectedCount: number;
+    minimumAcceptedDatabaseSources: number;
+    queryDiagnostics?: Array<Record<string, unknown>>;
+    retrievalMetrics?: Record<string, unknown>;
+    deduplication?: Record<string, unknown>;
+  };
 }
 
 type ReportSourceListType = 'all' | 'database_recall' | 'crawler' | 'tool_search' | 'report_refs' | 'structured_sources' | 'candidate_hits' | 'extract_failed';
@@ -165,6 +213,7 @@ interface ReportSourceListItem {
   excerpt?: string;
   sourceType?: string;
   relevanceScore?: number;
+  sourcePriority?: number;
   status?: string;
   method?: string;
   failedReason?: string;
@@ -212,11 +261,14 @@ export class ReportsService implements OnModuleDestroy {
   private pool: PgPool | null = null;
 
   constructor(
-    private readonly hermes: HermesService,
-    private readonly remoteFs: RemoteFileService,
-    private readonly vectorSources: VectorSourceService,
+    @Inject(HermesService) private readonly hermes: HermesService,
+    @Inject(RemoteFileService) private readonly remoteFs: RemoteFileService,
+    @Inject(VectorSourceService) private readonly vectorSources: VectorSourceService,
     @Optional() @Inject(UserPreferencesService) private readonly userPreferences?: UserPreferencesService,
     @Optional() @Inject(CrawlerService) private readonly crawler?: CrawlerService,
+    @Optional() @Inject(WebSupplementService) private readonly webSupplement?: WebSupplementService,
+    @Optional() @Inject(ArtifactPathResolver) private readonly artifactResolver?: ArtifactPathResolver,
+    @Optional() @Inject(ArtifactSyncService) private readonly artifactSync?: ArtifactSyncService,
   ) {
     this.jobsReady = this.loadPersistedJobs();
   }
@@ -1138,7 +1190,7 @@ export class ReportsService implements OnModuleDestroy {
   async getResult(jobId: string, user: AuthUser) {
     const job = this.assertCanAccessJob(jobId, user);
     if (job.status !== 'succeeded') return null;
-    return { html: await this.renderMarkdownToHtml(job.markdown ?? ''), artifacts: job.artifacts };
+    return { html: await this.renderMarkdownToHtml(job.markdown ?? ''), artifacts: this.sanitizedArtifactMetadata(job.artifacts) };
   }
 
   async getResultFromDisk(jobId: string, user: AuthUser) {
@@ -1147,6 +1199,14 @@ export class ReportsService implements OnModuleDestroy {
       await this.recoverJobFromExistingReport(job, 'result_lookup');
     }
     if (job.status !== 'succeeded') return null;
+    const storedMarkdown = await this.readStoredReportMarkdown(job);
+    if (storedMarkdown) {
+      return {
+        html: await this.renderMarkdownToHtml(storedMarkdown.markdown),
+        artifacts: this.sanitizedArtifactMetadata(job.artifacts),
+        resultPath: this.publicResultPath(storedMarkdown.storageKey),
+      };
+    }
 
     const reportDir = this.remoteFs.remoteDir;
     const jobScopedPath = this.remoteFs.joinPath(reportDir, `${job.jobId}.md`);
@@ -1163,9 +1223,13 @@ export class ReportsService implements OnModuleDestroy {
       }
     }
 
-    const direct = await this.readMarkdownFile(hasJobScopedFile ? jobScopedPath : resultFilePath);
+    const direct = await this.readMarkdownFile(hasJobScopedFile ? jobScopedPath : resultFilePath, job.jobId);
     if (hasJobScopedFile && direct) {
-      return { html: await this.renderMarkdownToHtml(direct.markdown), artifacts: job.artifacts, resultPath: direct.filePath };
+      return {
+        html: await this.renderMarkdownToHtml(direct.markdown),
+        artifacts: this.sanitizedArtifactMetadata(job.artifacts),
+        resultPath: this.publicResultPath(direct.filePath),
+      };
     }
 
     const fallback = direct ?? (await this.findBestMarkdownFileForJob(job));
@@ -1178,7 +1242,11 @@ export class ReportsService implements OnModuleDestroy {
       await this.writeJobState(job);
     }
 
-    return { html: await this.renderMarkdownToHtml(markdown), artifacts: job.artifacts, resultPath: fallback?.filePath ?? job.resultPath };
+    return {
+      html: await this.renderMarkdownToHtml(markdown),
+      artifacts: this.sanitizedArtifactMetadata(job.artifacts),
+      resultPath: this.publicResultPath(fallback?.filePath ?? job.resultPath),
+    };
   }
 
   async getMarkdownFromDisk(jobId: string, user: AuthUser) {
@@ -1187,9 +1255,66 @@ export class ReportsService implements OnModuleDestroy {
       await this.recoverJobFromExistingReport(job, 'download_lookup');
     }
     if (job.status !== 'succeeded' || !job.resultPath) return null;
+    const storedMarkdown = await this.readStoredReportMarkdown(job);
+    if (storedMarkdown) {
+      return { markdown: storedMarkdown.markdown, artifacts: job.artifacts, resultPath: storedMarkdown.storageKey, artifact: storedMarkdown.artifact };
+    }
 
-    const markdown = await this.remoteFs.readFile(job.resultPath);
-    return { markdown, artifacts: job.artifacts, resultPath: job.resultPath };
+    const resolved = await this.resolveArtifactLocalPath(job, job.resultPath, 'reportMarkdown');
+    if (!resolved) return null;
+    const markdown = await this.remoteFs.readFile(resolved);
+    return { markdown, artifacts: job.artifacts, resultPath: resolved };
+  }
+
+  async getArtifacts(jobId: string, user: AuthUser) {
+    const job = this.assertCanAccessJob(jobId, user);
+    return {
+      jobId: job.jobId,
+      status: job.status,
+      artifacts: this.sanitizedArtifactMetadata(job.artifacts),
+      artifactSyncStatus: this.firstString(this.plainObject(job.artifacts), ['artifactSyncStatus']) || null,
+      artifactSyncDiagnostics: this.plainObject(job.artifacts?.artifactSyncDiagnostics),
+      result: {
+        storageKey: String(job.resultPath || '').startsWith('reports/') ? job.resultPath : null,
+        ready: job.status === 'succeeded' && Boolean(job.resultPath),
+      },
+    };
+  }
+
+  private async readStoredReportMarkdown(job: JobRecord): Promise<{ markdown: string; storageKey: string; artifact?: Record<string, unknown> } | null> {
+    const artifact = this.plainObject(job.artifacts?.reportMarkdown);
+    const storageKey = this.firstString(artifact, ['storageKey', 'storage_key']) ||
+      (String(job.resultPath || '').startsWith('reports/') ? String(job.resultPath) : '');
+    if (!storageKey || !this.artifactSync) return null;
+    try {
+      return { markdown: await this.artifactSync.readText(storageKey), storageKey, artifact };
+    } catch {
+      return null;
+    }
+  }
+
+  private sanitizedArtifactMetadata(artifacts: Record<string, unknown>): Record<string, unknown> {
+    const output: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(artifacts || {})) {
+      const item = this.plainObject(value);
+      if (!item.storageKey && !item.storageProvider && !item.artifactType) continue;
+      output[name] = {
+        storageProvider: this.firstString(item, ['storageProvider']) || null,
+        storageKey: this.firstString(item, ['storageKey']) || null,
+        fileName: this.firstString(item, ['fileName']) || null,
+        artifactType: this.firstString(item, ['artifactType']) || null,
+        mimeType: this.firstString(item, ['mimeType']) || null,
+        sizeBytes: typeof item.sizeBytes === 'number' ? item.sizeBytes : null,
+        sha256: this.firstString(item, ['sha256']) || null,
+        createdAt: this.firstString(item, ['createdAt']) || null,
+      };
+    }
+    return output;
+  }
+
+  private publicResultPath(value: unknown): string | null {
+    const pathValue = String(value || '');
+    return pathValue.startsWith('reports/') ? pathValue : null;
   }
 
   async getDatabaseSources(jobId: string, user?: AuthUser): Promise<DatabaseSourcesResponse | undefined> {
@@ -1200,11 +1325,23 @@ export class ReportsService implements OnModuleDestroy {
     if (!dir) {
       const vectorResult = this.vectorResultFromJob(job);
       const vectorSources = this.normalizeVectorSources(vectorResult?.sources || []).slice(0, 50);
+      const entityPolicy = await this.entityPolicyForJob(job, null);
+      const filtered = this.filterDatabaseSourcesForResponse(vectorSources, entityPolicy);
       if (vectorSources.length) {
+        const status: DatabaseSourcesResponse['status'] = filtered.acceptedSources.length
+          ? 'hit'
+          : filtered.diagnostics.fallbackReason
+            ? 'fallback'
+            : 'empty';
         return {
-          status: 'hit',
-          sources: vectorSources,
-          fallbackReason: '',
+          status,
+          sources: filtered.acceptedSources,
+          acceptedSources: filtered.acceptedSources,
+          uncertainSources: filtered.uncertainSources,
+          rejectedSources: filtered.rejectedSources,
+          diagnostics: { ...filtered.diagnostics, entityPolicy },
+          message: this.databaseSourceMessage(filtered),
+          fallbackReason: filtered.diagnostics.fallbackReason,
           totalHits: Math.max(vectorResult?.totalHits || 0, vectorSources.length),
           updatedAt: vectorResult?.updatedAt || null,
           queryPlan: this.emptyDatabaseQueryPlanSummary(),
@@ -1232,11 +1369,24 @@ export class ReportsService implements OnModuleDestroy {
     const sourcesList = Array.isArray(sourcesRaw) ? sourcesRaw : [];
     const vectorResult = this.vectorResultFromJob(job);
     const vectorSources = this.normalizeVectorSources(vectorResult?.sources || []);
-    const sources = this.mergeDatabaseSources(vectorSources, this.normalizeDatabaseSources(sourcesList)).slice(0, 50);
+    const candidates = this.mergeDatabaseSources(vectorSources, this.normalizeDatabaseSources(sourcesList)).slice(0, 50);
+    const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
+    const contextObject = contextJson && !Array.isArray(contextJson) ? contextJson : null;
+    const entityPolicy = await this.entityPolicyForJob(job, dir, contextObject);
+    const filtered = this.filterDatabaseSourcesForResponse(candidates, entityPolicy);
+    const savedDiagnostics = await this.readDatabaseSourceDiagnostics(dir);
+    const uncertainSources = filtered.uncertainSources.length
+      ? filtered.uncertainSources
+      : this.normalizeDiagnosticDatabaseSources(savedDiagnostics.uncertainSources);
+    const rejectedSources = filtered.rejectedSources.length
+      ? filtered.rejectedSources
+      : this.normalizeDiagnosticDatabaseSources(savedDiagnostics.rejectedSources);
+    const sources = filtered.acceptedSources;
     const queryPlan = this.buildDatabaseQueryPlanSummary(planObject, sources.length);
     const vectorPlan = this.buildVectorQueryPlanSummary(vectorResult);
     const fallbackReason = this.sanitizeLogText(
       this.firstString(planObject, ['database_source_fallback_reason', 'fallbackReason', 'fallback_reason']) ||
+        filtered.diagnostics.fallbackReason ||
         vectorPlan.fallbackReason,
       300,
     );
@@ -1256,7 +1406,7 @@ export class ReportsService implements OnModuleDestroy {
 
     const planTotalHits = this.firstNumber(planObject, ['total_hits', 'totalHits', 'relevant_hits']) || 0;
     const vectorTotalHits = vectorResult?.totalHits || 0;
-    const totalHits = Math.max(planTotalHits + vectorTotalHits, sources.length);
+    const totalHits = Math.max(planTotalHits + vectorTotalHits, candidates.length, sources.length);
     const status: DatabaseSourcesResponse['status'] = sources.length
       ? 'hit'
       : fallbackReason
@@ -1271,7 +1421,25 @@ export class ReportsService implements OnModuleDestroy {
         ? 'vector'
         : 'keyword';
 
-    return { status, sources, fallbackReason, totalHits, updatedAt, queryPlan, retrievalMode, vectorPlan };
+    return {
+      status,
+      sources,
+      acceptedSources: sources,
+      uncertainSources,
+      rejectedSources,
+      diagnostics: { ...filtered.diagnostics, ...savedDiagnostics.diagnostics, entityPolicy },
+      message: this.databaseSourceMessage({
+        ...filtered,
+        uncertainSources,
+        rejectedSources,
+      }),
+      fallbackReason,
+      totalHits,
+      updatedAt,
+      queryPlan,
+      retrievalMode,
+      vectorPlan,
+    };
   }
 
   async getSources(jobId: string, options: ReportSourcesOptions = {}, user: AuthUser): Promise<ReportSourcesResponse | undefined> {
@@ -1292,6 +1460,7 @@ export class ReportsService implements OnModuleDestroy {
 
     const databaseRecall = this.databaseRecallChannelSources(structuredSources, reportRefs);
     const toolSearch = this.toolSearchChannelSources(toolSearchSources, reportRefs, databaseRecall);
+    const sourceDiagnostics = await this.reportSourceDiagnostics(job);
     const summary: ReportSourceSummary = {
       databaseRecallCount: databaseRecall.length,
       crawlerCount: crawlerSources.length,
@@ -1309,7 +1478,9 @@ export class ReportsService implements OnModuleDestroy {
       candidate_hits: candidateResult.items,
       extract_failed: extractFailed,
     };
-    const allItems = type === 'all' ? [...databaseRecall, ...crawlerSources, ...toolSearch] : groups[type] || [];
+    const allItems = type === 'all'
+      ? [...databaseRecall, ...crawlerSources, ...toolSearch].sort((a, b) => this.reportSourcePriority(b) - this.reportSourcePriority(a))
+      : groups[type] || [];
     const total = type === 'candidate_hits'
       ? (candidateResult.total || allItems.length)
       : allItems.length;
@@ -1325,6 +1496,7 @@ export class ReportsService implements OnModuleDestroy {
       hasMore: start + items.length < total && allItems.length > start + items.length,
       meta: {
         summary,
+        sourceDiagnostics,
         ...(type === 'candidate_hits'
           ? {
             detailSaved: candidateResult.detailSaved,
@@ -1357,17 +1529,29 @@ export class ReportsService implements OnModuleDestroy {
       maxRows,
       lookbackDays,
     });
+    const entityPolicy = await this.entityPolicyForJob(job, null, parsed);
+    const filtered = filterSourcesByEntityPolicy(
+      result.sources.map((source) => ({ ...source })),
+      entityPolicy,
+    );
+    const acceptedVectorSources = filtered.acceptedSources.map((source) => this.vectorSourceFromGuardedSource(source));
 
     job.artifacts = {
       ...job.artifacts,
-      vectorDatabaseSources: result.sources,
+      vectorDatabaseCandidateSources: result.sources,
+      vectorDatabaseSources: acceptedVectorSources,
+      vectorDatabaseUncertainSources: filtered.uncertainSources,
+      vectorDatabaseRejectedSources: filtered.rejectedSources,
       vectorDatabaseQueryPlan: result.queryPlan,
       vectorDatabaseSourceStatus: result.status,
+      entityPolicy,
+      databaseSourceDiagnostics: filtered.diagnostics,
     };
     await this.writeJobState(job);
 
     const enrichedContext = {
       ...parsed,
+      entityPolicy,
       vectorDatabaseSourceOptions: {
         enabled: true,
         provider: 'postgres_pgvector',
@@ -1375,28 +1559,597 @@ export class ReportsService implements OnModuleDestroy {
         lookbackDays,
         maxMetadataRows: maxRows,
       },
-      vectorDatabaseSources: result.sources,
+      vectorDatabaseSources: acceptedVectorSources,
       vectorDatabaseQueryPlan: result.queryPlan,
+      sourceDiagnostics: {
+        ...this.plainObject(parsed.sourceDiagnostics),
+        database: {
+          entityPolicy,
+          ...filtered.diagnostics,
+        },
+      },
     };
 
-    await this.writeBackendDatabaseRecallArtifacts(job, enrichedContext, result, {
+    await this.writeBackendDatabaseRecallArtifacts(job, enrichedContext, {
+      ...result,
+      sources: acceptedVectorSources,
+    }, {
       maxRows,
       lookbackDays,
       databaseOptions,
+      entityPolicy,
+      sourceFilter: filtered,
     });
 
-    const liveSources = this.normalizeVectorSources(result.sources).slice(0, 50);
+    const liveSources = this.normalizeVectorSources(acceptedVectorSources).slice(0, 50);
     this.pushEvent(job, {
       type: 'stage',
       stage: 'database_sources',
       message: liveSources.length
         ? `PG vector sources recalled: ${liveSources.length} items.`
-        : 'PG vector source recall completed with no matching sources.',
+        : `数据库检索工具：未找到通过核心实体校验的数据库信源，已过滤 ${filtered.rejectedSources.length + filtered.uncertainSources.length} 条候选。`,
     });
     this.pushEvent(job, { type: 'sources', sources: liveSources.map((source) => ({ ...source })) });
 
     payload.known_context = JSON.stringify(enrichedContext, null, 2);
     return payload;
+  }
+
+  private async enrichPayloadWithWebSupplement(job: JobRecord, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (job.skill !== 'write-hb') return payload;
+    const startedAt = Date.now();
+    const context = this.contextObjectFromPayload(payload);
+    const databaseSources = Array.isArray(context.vectorDatabaseSources)
+      ? context.vectorDatabaseSources.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      : [];
+    const supplementOptions = this.plainObject(context.sourceSupplementOptions);
+    const databaseOptions = this.plainObject(context.databaseSourceOptions);
+    const minimumAcceptedDatabaseSources = this.boundInt(
+      supplementOptions.minimumAcceptedDatabaseSources ?? databaseOptions.minimumAcceptedDatabaseSources ?? 3,
+      3,
+      1,
+      20,
+    );
+    const decision = decideWebSupplementTrigger({
+      acceptedDatabaseCount: databaseSources.length,
+      minimumAcceptedDatabaseSources,
+      context,
+    });
+    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const entityPolicy = await this.entityPolicyForJob(job, jobDir, context);
+    const queries = buildSupplementQueries(entityPolicy);
+    const baseDiagnostics: SupplementChannelResult['diagnostics'] = {
+      triggered: decision.triggered,
+      triggerReason: decision.reason,
+      queries,
+      searchResultCount: 0,
+      searchValidatedCount: 0,
+      fetchedCount: 0,
+      acceptedCount: 0,
+      uncertainCount: 0,
+      rejectedCount: 0,
+      minimumAcceptedDatabaseSources: decision.minimumAcceptedDatabaseSources,
+    };
+
+    if (!decision.triggered) {
+      const retrievalMetrics = this.retrievalMetrics(context, baseDiagnostics, { totalSupplementDurationMs: Date.now() - startedAt });
+      const nextContext = this.withSupplementDiagnostics(context, { ...baseDiagnostics, retrievalMetrics }, {}, {});
+      await this.writeWebSupplementArtifacts(job, nextContext, this.emptySupplementResult(baseDiagnostics));
+      return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
+    }
+
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'web_supplement_started',
+      message: `数据库有效信源不足，启动公开信源补充；使用 ${queries.length} 个精确查询词。`,
+    });
+
+    const webAllowed = this.webSearchAllowed(context);
+    let searchCandidates: WebSearchSource[] = [];
+    let searchDurationMs = 0;
+    let queryDiagnostics: Array<Record<string, unknown>> = [];
+    if (webAllowed && this.webSupplement && queries.length) {
+      try {
+        const searchStartedAt = Date.now();
+        if (typeof (this.webSupplement as unknown as { searchWithDiagnostics?: unknown }).searchWithDiagnostics === 'function') {
+          const result = await (this.webSupplement as unknown as {
+            searchWithDiagnostics(terms: string[], maxResults: number): Promise<{ sources: WebSearchSource[]; queryDiagnostics: Array<Record<string, unknown>>; durationMs: number }>;
+          }).searchWithDiagnostics(queries, WEB_SUPPLEMENT_LIMITS.candidatesPerQuery);
+          searchCandidates = result.sources;
+          queryDiagnostics = result.queryDiagnostics;
+          searchDurationMs = result.durationMs;
+        } else {
+          searchCandidates = await this.webSupplement.search(queries, WEB_SUPPLEMENT_LIMITS.candidatesPerQuery);
+          searchDurationMs = Date.now() - searchStartedAt;
+        }
+      } catch (error) {
+        this.pushEvent(job, {
+          type: 'stage',
+          stage: 'web_supplement_warning',
+          message: `互联网搜索工具：公开信源补充未完成，继续使用现有来源。${this.sanitizeUserVisibleText(error instanceof Error ? error.message : String(error), 160)}`,
+        });
+      }
+    }
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'web_supplement_search',
+      message: `互联网搜索工具：使用 ${queries.length} 个精确查询词，获得 ${searchCandidates.length} 条候选。`,
+    });
+
+    const searchValidationInput = searchCandidates.map((source) => ({
+      ...source,
+      content: '',
+      vectorScore: source.searchScore,
+      validationStage: 'search_result_validation',
+    }));
+    const searchFiltered = filterSourcesByEntityPolicy(searchValidationInput, entityPolicy);
+    const searchAcceptedKeys = new Set(searchFiltered.acceptedSources.map((source) => this.supplementSourceKey(source)).filter(Boolean));
+    const acceptedSearchCandidates = searchCandidates.filter((source) => searchAcceptedKeys.has(this.supplementSourceKey(source)));
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'web_supplement_entity_guard',
+      message: `互联网搜索工具：搜索摘要实体校验通过 ${acceptedSearchCandidates.length} 条。`,
+    });
+
+    const webAccepted: Record<string, unknown>[] = [];
+    const webUncertain: Record<string, unknown>[] = [...searchFiltered.uncertainSources];
+    const webRejected: Record<string, unknown>[] = [...searchFiltered.rejectedSources];
+    const urlsNeedingCrawler: string[] = [];
+    let fetchedCount = 0;
+
+    const fetchStartedAt = Date.now();
+    for (const source of acceptedSearchCandidates.slice(0, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches)) {
+      if (!String(source.content || '').trim()) {
+        if (source.url) urlsNeedingCrawler.push(source.url);
+        else webRejected.push(this.rejectedSupplementSource(source, '正文抓取缺失，无法完成二次校验。'));
+        continue;
+      }
+      fetchedCount += 1;
+      const finalSource = { ...source, validationStage: 'fetched_content_validation', vectorScore: source.searchScore };
+      const bodyOnlyFiltered = filterSourcesByEntityPolicy([{
+        ...finalSource,
+        title: '',
+        summary: '',
+        snippet: '',
+      }], entityPolicy);
+      if (!this.fetchedBodyEntityConsistent(bodyOnlyFiltered)) {
+        webRejected.push(this.rejectedSupplementSource(finalSource, '搜索摘要命中实体，但抓取正文未通过核心实体校验或标题与正文不一致。'));
+        continue;
+      }
+      const finalFiltered = filterSourcesByEntityPolicy([finalSource], entityPolicy);
+      if (!finalFiltered.acceptedSources.length) {
+        webRejected.push(...finalFiltered.rejectedSources, ...finalFiltered.uncertainSources);
+        continue;
+      }
+      const guarded = finalFiltered.acceptedSources[0];
+      const quality = assessSourceQuality(guarded);
+      const enriched = { ...guarded, sourceQuality: quality };
+      enriched.sourcePriority = sourcePriority(enriched);
+      if (quality.status === 'accepted') webAccepted.push(enriched);
+      else if (quality.status === 'uncertain') webUncertain.push(enriched);
+      else webRejected.push(enriched);
+    }
+
+    const fetchDurationMs = Date.now() - fetchStartedAt;
+    const crawlerStartedAt = Date.now();
+    const crawlerCandidates = await this.fetchSupplementUrlsWithCrawler(job, context, urlsNeedingCrawler, queries);
+    const crawlerDurationMs = Date.now() - crawlerStartedAt;
+    fetchedCount += crawlerCandidates.length;
+    const crawlerFiltered = filterSourcesByEntityPolicy(crawlerCandidates, entityPolicy);
+    const crawlerAccepted: Record<string, unknown>[] = [];
+    const crawlerUncertain: Record<string, unknown>[] = [...crawlerFiltered.uncertainSources];
+    const crawlerRejected: Record<string, unknown>[] = [...crawlerFiltered.rejectedSources];
+    for (const source of crawlerFiltered.acceptedSources) {
+      const quality = assessSourceQuality(source);
+      const enriched: Record<string, unknown> = { ...source, sourceQuality: quality };
+      enriched.sourcePriority = sourcePriority(enriched);
+      if (quality.status === 'accepted') crawlerAccepted.push(enriched);
+      else if (quality.status === 'uncertain') crawlerUncertain.push(enriched);
+      else crawlerRejected.push(enriched);
+    }
+
+    const databaseForDedupe = databaseSources.map((source) => ({
+      ...source,
+      sourceChannel: 'database',
+      sourceQuality: this.plainObject(source.sourceQuality).score
+        ? source.sourceQuality
+        : { status: 'accepted', score: 0.68, tier: 'industry', reason: '已通过数据库实体校验。' },
+    }));
+    const acceptedBeforeDedupe = [
+      ...databaseForDedupe,
+      ...webAccepted.map((source) => ({ ...source, sourceChannel: 'web' })),
+      ...crawlerAccepted.map((source) => ({ ...source, sourceChannel: 'crawler' })),
+    ];
+    const acceptedAll = dedupeSupplementSources(acceptedBeforeDedupe);
+    const acceptedDatabaseSources = acceptedAll.filter((source) => source.sourceChannel === 'database').map((source) => this.withoutChannel(source));
+    const acceptedWebSources = acceptedAll.filter((source) => source.sourceChannel === 'web').map((source) => this.withoutChannel(source));
+    const acceptedCrawlerSources = acceptedAll.filter((source) => source.sourceChannel === 'crawler').map((source) => this.withoutChannel(source));
+    const deduplication = {
+      beforeCount: acceptedBeforeDedupe.length,
+      afterCount: acceptedAll.length,
+      removedCount: Math.max(0, acceptedBeforeDedupe.length - acceptedAll.length),
+    };
+    const diagnostics: SupplementChannelResult['diagnostics'] = {
+      ...baseDiagnostics,
+      searchResultCount: searchCandidates.length,
+      searchValidatedCount: acceptedSearchCandidates.length,
+      fetchedCount,
+      acceptedCount: acceptedWebSources.length + acceptedCrawlerSources.length,
+      uncertainCount: webUncertain.length + crawlerUncertain.length,
+      rejectedCount: webRejected.length + crawlerRejected.length,
+      queryDiagnostics,
+      deduplication,
+    };
+    diagnostics.retrievalMetrics = this.retrievalMetrics(context, diagnostics, {
+      webSearchDurationMs: searchDurationMs,
+      fetchDurationMs,
+      crawlerDurationMs,
+      totalSupplementDurationMs: Date.now() - startedAt,
+      crawlerAttemptCount: urlsNeedingCrawler.length,
+      crawlerSuccessCount: crawlerCandidates.length,
+      deduplication,
+    });
+    const result: SupplementChannelResult = {
+      acceptedWebSources,
+      uncertainWebSources: webUncertain,
+      rejectedWebSources: webRejected,
+      acceptedCrawlerSources,
+      uncertainCrawlerSources: crawlerUncertain,
+      rejectedCrawlerSources: crawlerRejected,
+      diagnostics,
+    };
+    const previousCrawler = this.normalizeCrawlerSourceContext(context.crawlerSourceContext);
+    const nextCrawlerItems = dedupeSupplementSources([
+      ...previousCrawler.items.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'),
+      ...acceptedCrawlerSources,
+    ]);
+    const nextContext = this.withSupplementDiagnostics({
+      ...context,
+      vectorDatabaseSources: acceptedDatabaseSources,
+      webSources: acceptedWebSources,
+      crawlerSourceContext: {
+        ...previousCrawler,
+        items: nextCrawlerItems,
+      },
+    }, diagnostics, {
+      acceptedCount: acceptedWebSources.length,
+      uncertainCount: webUncertain.length,
+      rejectedCount: webRejected.length,
+      searchResultCount: searchCandidates.length,
+      fetchedCount,
+      queryDiagnostics,
+    }, {
+      acceptedCount: acceptedCrawlerSources.length,
+      uncertainCount: crawlerUncertain.length,
+      rejectedCount: crawlerRejected.length,
+    });
+
+    job.artifacts = {
+      ...job.artifacts,
+      webSupplementDiagnostics: diagnostics,
+      acceptedWebSources,
+      acceptedCrawlerSources,
+    };
+    await this.writeWebSupplementArtifacts(job, nextContext, result);
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'web_supplement_completed',
+      message: `公开信源补充完成：正文抓取成功 ${fetchedCount} 条，最终 accepted ${diagnostics.acceptedCount} 条，过滤 ${diagnostics.uncertainCount + diagnostics.rejectedCount} 条实体错配或低质量来源。`,
+    });
+    this.pushEvent(job, {
+      type: 'sources',
+      sources: [...acceptedWebSources, ...acceptedCrawlerSources],
+    });
+    return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
+  }
+
+  private emptySupplementResult(diagnostics: SupplementChannelResult['diagnostics']): SupplementChannelResult {
+    return {
+      acceptedWebSources: [],
+      uncertainWebSources: [],
+      rejectedWebSources: [],
+      acceptedCrawlerSources: [],
+      uncertainCrawlerSources: [],
+      rejectedCrawlerSources: [],
+      diagnostics,
+    };
+  }
+
+  private withSupplementDiagnostics(
+    context: Record<string, unknown>,
+    supplement: SupplementChannelResult['diagnostics'],
+    web: Record<string, unknown>,
+    crawler: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const existing = this.plainObject(context.sourceDiagnostics);
+    return {
+      ...context,
+      sourceDiagnostics: {
+        ...existing,
+        web: { ...this.plainObject(existing.web), ...web },
+        crawler: { ...this.plainObject(existing.crawler), ...crawler },
+        supplement: {
+          triggered: supplement.triggered,
+          reason: supplement.triggerReason,
+          queries: supplement.queries,
+          searchResultCount: supplement.searchResultCount,
+          searchValidatedCount: supplement.searchValidatedCount,
+          fetchedCount: supplement.fetchedCount,
+          acceptedCount: supplement.acceptedCount,
+          uncertainCount: supplement.uncertainCount,
+          rejectedCount: supplement.rejectedCount,
+          minimumAcceptedDatabaseSources: supplement.minimumAcceptedDatabaseSources,
+          queryDiagnostics: supplement.queryDiagnostics || [],
+          retrievalMetrics: supplement.retrievalMetrics || {},
+          deduplication: supplement.deduplication || {},
+        },
+      },
+    };
+  }
+
+  private retrievalMetrics(
+    context: Record<string, unknown>,
+    supplement: SupplementChannelResult['diagnostics'],
+    durations: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const database = this.plainObject(this.plainObject(context.sourceDiagnostics).database);
+    const databaseCandidates = Number(database.candidateCount ?? database.totalHits ?? 0);
+    const databaseAccepted = Number(database.acceptedCount ?? (Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources.length : 0));
+    const databaseUncertain = Number(database.uncertainCount ?? 0);
+    const databaseRejected = Number(database.rejectedCount ?? 0);
+    const fetched = supplement.fetchedCount;
+    const sourceDiagnostics = this.plainObject(context.sourceDiagnostics);
+    const webAccepted = Number(this.plainObject(sourceDiagnostics.web).acceptedCount ?? supplement.acceptedCount);
+    const crawlerAccepted = Number(this.plainObject(sourceDiagnostics.crawler).acceptedCount ?? 0);
+    const acceptedTotal = databaseAccepted + webAccepted + crawlerAccepted;
+    const acceptedSources = [
+      ...(Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : []),
+      ...(Array.isArray(context.webSources) ? context.webSources : []),
+      ...this.normalizeCrawlerSourceContext(context.crawlerSourceContext).items,
+    ].filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object');
+    const domains = new Set(acceptedSources.map((source) => this.sourceDomain(this.firstString(source, ['url', 'source_url', 'data_source_url']))).filter(Boolean));
+    const officialCount = acceptedSources.filter((source) => this.plainObject(source.sourceQuality).tier === 'official').length;
+    const mediaCount = acceptedSources.filter((source) => ['mainstream', 'industry'].includes(String(this.plainObject(source.sourceQuality).tier || ''))).length;
+    const crawlerAttempts = Number(durations.crawlerAttemptCount ?? 0);
+    const crawlerSuccess = Number(durations.crawlerSuccessCount ?? 0);
+    return {
+      database: {
+        candidateCount: databaseCandidates,
+        acceptedCount: databaseAccepted,
+        uncertainCount: databaseUncertain,
+        rejectedCount: databaseRejected,
+        acceptanceRate: databaseCandidates ? databaseAccepted / databaseCandidates : 0,
+      },
+      web: {
+        triggered: supplement.triggered,
+        queryCount: supplement.queries.length,
+        searchResultCount: supplement.searchResultCount,
+        searchAcceptedCount: supplement.searchValidatedCount,
+        fetchAttemptCount: Math.min(supplement.searchValidatedCount, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches),
+        fetchSuccessCount: fetched,
+        fetchSuccessRate: Math.min(supplement.searchValidatedCount, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches) ? fetched / Math.min(supplement.searchValidatedCount, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches) : 0,
+        contentAcceptedCount: supplement.acceptedCount - crawlerAccepted,
+        contentRejectedCount: supplement.rejectedCount,
+      },
+      crawler: { attemptCount: crawlerAttempts, successCount: crawlerSuccess, acceptedCount: crawlerAccepted },
+      deduplication: durations.deduplication || { beforeCount: acceptedTotal, afterCount: acceptedTotal, removedCount: 0 },
+      final: {
+        acceptedSourceCount: acceptedTotal,
+        officialSourceCount: officialCount,
+        mediaSourceCount: mediaCount,
+        uniqueDomainCount: domains.size,
+        referencedSourceCount: Number((context as Record<string, unknown>).reportReferencesCount ?? 0),
+      },
+      performance: {
+        databaseDurationMs: Number(database.durationMs ?? 0),
+        webSearchDurationMs: Number(durations.webSearchDurationMs ?? 0),
+        fetchDurationMs: Number(durations.fetchDurationMs ?? 0),
+        crawlerDurationMs: Number(durations.crawlerDurationMs ?? 0),
+        totalSupplementDurationMs: Number(durations.totalSupplementDurationMs ?? 0),
+      },
+      limits: WEB_SUPPLEMENT_LIMITS,
+    };
+  }
+
+  private sourceDomain(value: string): string {
+    try { return new URL(value).hostname.replace(/^www\./i, '').toLowerCase(); } catch { return ''; }
+  }
+
+  private webSearchAllowed(context: Record<string, unknown>): boolean {
+    const options = this.plainObject(context.webSearchOptions || context.internetSearchOptions);
+    return options.enabled !== false && context.internetSearchEnabled !== false && context.webSearchEnabled !== false;
+  }
+
+  private async fetchSupplementUrlsWithCrawler(
+    job: JobRecord,
+    context: Record<string, unknown>,
+    urls: string[],
+    queries: string[],
+  ): Promise<Record<string, unknown>[]> {
+    if (!urls.length || !this.crawler || !job.ownerUserId) return [];
+    const crawlerPlan = this.plainObject(context.crawlerPlan);
+    const supplementOptions = this.plainObject(context.sourceSupplementOptions);
+    const crawlerAllowed = crawlerPlan.enabled === true || supplementOptions.allowCrawlerFetch === true;
+    if (!crawlerAllowed) return [];
+    try {
+      const uniqueUrls = Array.from(new Set(urls)).slice(0, WEB_SUPPLEMENT_LIMITS.maxCrawlerFallbackUrls);
+      const task = await this.crawler.createTask({
+        jobId: job.jobId,
+        ownerId: job.ownerUserId,
+        ownerUsername: job.ownerUsername || '',
+        title: `${String(context.topic || (job.payload as unknown as Record<string, unknown>).topic || '编报')}公开信源正文补充`,
+        goal: `抓取通过搜索摘要实体校验的公开来源正文，查询词：${queries.slice(0, 6).join('；')}`,
+        crawlerPlan: {
+          enabled: true,
+          mode: 'manual',
+          goal: '公开信源正文二次校验',
+          autoGapFilling: false,
+          directions: [],
+          manualUrls: uniqueUrls,
+          manualDomains: [],
+          manualKeywords: queries,
+          maxPages: uniqueUrls.length,
+          maxDepth: 0,
+          language: 'zh-CN',
+          executePhase: 'research',
+          sourcePhase: 'research',
+        },
+        maxPages: uniqueUrls.length,
+        maxDepth: 0,
+      });
+      const result = await this.crawler.runTask(task.taskId);
+      return result.items.map((item) => ({
+        itemId: item.itemId,
+        taskId: item.taskId,
+        title: item.title,
+        url: item.url,
+        publisher: item.publisher,
+        publishedAt: item.publishedAt,
+        fetchedAt: item.fetchedAt,
+        summary: item.contentSummary,
+        content: item.contentText,
+        contentSummary: item.contentSummary,
+        contentText: item.contentText,
+        metadata: item.metadata,
+        relevanceScore: item.relevanceScore,
+        credibilityScore: item.credibilityScore,
+        sourceType: 'crawler',
+        sourcePhase: 'research',
+        validationStage: 'fetched_content_validation',
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  private rejectedSupplementSource(source: Record<string, unknown>, reason: string): Record<string, unknown> {
+    return {
+      ...source,
+      entityMatch: {
+        ...this.plainObject(source.entityMatch || source.entity_match),
+        status: 'rejected',
+        reason,
+      },
+    };
+  }
+
+  private supplementSourceKey(source: Record<string, unknown>): string {
+    const url = this.firstString(source, ['url', 'source_url', 'data_source_url']);
+    if (url) return `url:${this.normalizeSourceUrl(url)}`;
+    const title = this.firstString(source, ['title', 'ch_title']);
+    return title ? `title:${title.toLowerCase().replace(/\s+/g, '')}` : '';
+  }
+
+  private async writeWebSupplementArtifacts(
+    job: JobRecord,
+    context: Record<string, unknown>,
+    result: SupplementChannelResult,
+  ): Promise<void> {
+    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const researchDir = this.remoteFs.joinPath(jobDir, 'research');
+    await this.remoteFs.mkdir(researchDir);
+    const acceptedPath = this.remoteFs.joinPath(researchDir, 'web_sources.json');
+    const diagnosticsPath = this.remoteFs.joinPath(researchDir, 'web_supplement_diagnostics.json');
+    await Promise.all([
+      this.remoteFs.writeFile(this.remoteFs.joinPath(jobDir, 'context.json'), `${JSON.stringify(context, null, 2)}\n`),
+      this.remoteFs.writeFile(acceptedPath, `${JSON.stringify({
+        acceptedWebSources: result.acceptedWebSources,
+        acceptedCrawlerSources: result.acceptedCrawlerSources,
+      }, null, 2)}\n`),
+      this.remoteFs.writeFile(diagnosticsPath, `${JSON.stringify(result, null, 2)}\n`),
+    ]);
+    job.artifacts = {
+      ...job.artifacts,
+      webSourcesPath: acceptedPath,
+      webSupplementDiagnosticsPath: diagnosticsPath,
+    };
+    await this.writeJobState(job);
+  }
+
+  private guardCrawlerSources(items: unknown[], entityPolicy: EntityPolicy): {
+    acceptedSources: Record<string, unknown>[];
+    uncertainSources: Record<string, unknown>[];
+    rejectedSources: Record<string, unknown>[];
+  } {
+    const candidates = items
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        ...item,
+        summary: this.firstString(item, ['contentSummary', 'content_summary', 'summary']),
+        content: this.firstString(item, ['contentText', 'content_text', 'content']),
+        vectorScore: this.firstNumber(item, ['relevanceScore', 'relevance_score']) || 0,
+        validationStage: 'fetched_content_validation',
+      }));
+    const bodyValidated: Record<string, unknown>[] = [];
+    const bodyRejected: Record<string, unknown>[] = [];
+    for (const candidate of candidates) {
+      const bodyOnly = filterSourcesByEntityPolicy([{ ...candidate, title: '', summary: '', snippet: '' }], entityPolicy);
+      if (this.fetchedBodyEntityConsistent(bodyOnly)) bodyValidated.push(candidate);
+      else bodyRejected.push(this.rejectedSupplementSource(candidate, '抓取正文未通过核心实体校验或标题与正文不一致。'));
+    }
+    const filtered = filterSourcesByEntityPolicy(bodyValidated, entityPolicy);
+    const acceptedSources: Record<string, unknown>[] = [];
+    const uncertainSources: Record<string, unknown>[] = [...filtered.uncertainSources];
+    const rejectedSources: Record<string, unknown>[] = [...bodyRejected, ...filtered.rejectedSources];
+    for (const source of filtered.acceptedSources) {
+      const quality = assessSourceQuality(source);
+      const enriched = { ...source, sourceQuality: quality, sourcePriority: 0 };
+      enriched.sourcePriority = sourcePriority(enriched);
+      if (quality.status === 'accepted') acceptedSources.push(enriched);
+      else if (quality.status === 'uncertain') uncertainSources.push(enriched);
+      else rejectedSources.push(enriched);
+    }
+    return { acceptedSources, uncertainSources, rejectedSources };
+  }
+
+  private fetchedBodyEntityConsistent(filtered: SourceFilterResult<Record<string, unknown>>): boolean {
+    if (filtered.acceptedSources.length) return true;
+    return filtered.uncertainSources.some((source) => {
+      const match = source.entityMatch;
+      return match.matchedCoreEntities.length > 0 && match.matchedConfusions.length === 0;
+    });
+  }
+
+  private mergeAcceptedSourceChannels(context: Record<string, unknown>, crawlerSources: Record<string, unknown>[]): Record<string, unknown> {
+    const database = (Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : [])
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({ ...item, sourceChannel: 'database' }));
+    const web = (Array.isArray(context.webSources) ? context.webSources : [])
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({ ...item, sourceChannel: 'web' }));
+    const existingCrawler = this.normalizeCrawlerSourceContext(context.crawlerSourceContext).items
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({ ...item, sourceChannel: 'crawler' }));
+    const combined = dedupeSupplementSources([
+      ...database,
+      ...web,
+      ...existingCrawler,
+      ...crawlerSources.map((item) => ({ ...item, sourceChannel: 'crawler' })),
+    ]);
+    return {
+      ...context,
+      vectorDatabaseSources: combined.filter((item) => item.sourceChannel === 'database').map((item) => this.withoutChannel(item)),
+      webSources: combined.filter((item) => item.sourceChannel === 'web').map((item) => this.withoutChannel(item)),
+      crawlerSourceContext: {
+        ...this.normalizeCrawlerSourceContext(context.crawlerSourceContext),
+        items: combined.filter((item) => item.sourceChannel === 'crawler').map((item) => this.withoutChannel(item)),
+      },
+    };
+  }
+
+  private withoutChannel(source: Record<string, unknown>): Record<string, unknown> {
+    const { sourceChannel: _sourceChannel, ...rest } = source;
+    return rest;
+  }
+
+  private async writeCrawlerDiagnosticsArtifact(job: JobRecord, diagnostics: Record<string, unknown>): Promise<void> {
+    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const crawlerDir = this.remoteFs.joinPath(jobDir, 'crawler');
+    await this.remoteFs.mkdir(crawlerDir);
+    const filePath = this.remoteFs.joinPath(crawlerDir, 'crawler_sources_diagnostics.json');
+    await this.remoteFs.writeFile(filePath, `${JSON.stringify(diagnostics, null, 2)}\n`);
+    job.artifacts = { ...job.artifacts, crawlerSourceDiagnosticsPath: filePath };
+    await this.writeJobState(job);
   }
 
   private async enrichPayloadWithCrawlerSources(job: JobRecord, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1462,11 +2215,34 @@ export class ReportsService implements OnModuleDestroy {
         message: '资料采集工具：执行采集任务',
       });
       const result = await this.crawler.runTask(task.taskId);
-      const crawlerSourceContext = this.buildCrawlerSourceContext(result.task, result.items);
+      const rawCrawlerSourceContext = this.buildCrawlerSourceContext(result.task, result.items);
+      const entityPolicy = parseEntityPolicy(context.entityPolicy);
+      const guardedCrawler = entityPolicy
+        ? this.guardCrawlerSources(rawCrawlerSourceContext.items, entityPolicy)
+        : {
+          acceptedSources: rawCrawlerSourceContext.items,
+          uncertainSources: [],
+          rejectedSources: [],
+        };
+      const mergedContext = this.mergeAcceptedSourceChannels(context, guardedCrawler.acceptedSources);
+      const crawlerSourceContext = {
+        ...rawCrawlerSourceContext,
+        items: this.normalizeCrawlerSourceContext(mergedContext.crawlerSourceContext).items,
+      };
+      const previousCrawlerDiagnostics = this.plainObject(this.plainObject(mergedContext.sourceDiagnostics).crawler);
       const nextContext = {
-        ...context,
+        ...mergedContext,
         crawlerPlan,
         crawlerSourceContext,
+        sourceDiagnostics: {
+          ...this.plainObject(mergedContext.sourceDiagnostics),
+          crawler: {
+            ...previousCrawlerDiagnostics,
+            acceptedCount: crawlerSourceContext.items.length,
+            uncertainCount: Number(previousCrawlerDiagnostics.uncertainCount || 0) + guardedCrawler.uncertainSources.length,
+            rejectedCount: Number(previousCrawlerDiagnostics.rejectedCount || 0) + guardedCrawler.rejectedSources.length,
+          },
+        },
       };
       job.artifacts = {
         ...job.artifacts,
@@ -1475,15 +2251,25 @@ export class ReportsService implements OnModuleDestroy {
         crawlerItemCount: crawlerSourceContext.items.length,
       };
       await this.writeCrawlerContextArtifact(job, nextContext);
+      if (entityPolicy) {
+        await this.writeCrawlerDiagnosticsArtifact(job, {
+          entityPolicy,
+          acceptedCrawlerSources: guardedCrawler.acceptedSources,
+          uncertainCrawlerSources: guardedCrawler.uncertainSources,
+          rejectedCrawlerSources: guardedCrawler.rejectedSources,
+        });
+      }
       this.pushEvent(job, {
         type: 'stage',
         stage: 'crawler_completed',
-        message: `资料采集工具：采集完成，获得 ${crawlerSourceContext.items.length} 条来源`,
+        message: entityPolicy
+          ? `资料采集工具：抓取 ${result.items.length} 条，最终 accepted ${guardedCrawler.acceptedSources.length} 条，过滤 ${guardedCrawler.uncertainSources.length + guardedCrawler.rejectedSources.length} 条。`
+          : `资料采集工具：采集完成，获得 ${crawlerSourceContext.items.length} 条来源`,
       });
       this.pushEvent(job, {
         type: 'sources',
         sources: crawlerSourceContext.items.map((item) => ({
-          ...item,
+          ...this.plainObject(item),
           sourceGroup: 'crawler',
           sourceOrigin: 'crawler',
           sourceType: '资料采集',
@@ -1529,16 +2315,21 @@ export class ReportsService implements OnModuleDestroy {
       sourceType: 'crawler',
       sourcePhase: 'planning',
     }));
+    const entityPolicy = parseEntityPolicy(context.entityPolicy);
+    const guarded = entityPolicy
+      ? this.guardCrawlerSources(items, entityPolicy)
+      : { acceptedSources: items, uncertainSources: [], rejectedSources: [] };
     const taskIds = this.stringArray(context.crawlerTaskIds, 20);
     const crawlerSourceContext = {
       source: 'planning_selected_sources',
-      tasks: this.buildPlanningCrawlerTaskSummaries(fallbackContext.tasks, taskIds, items.length),
-      items: items.map((item) => ({
+      tasks: this.buildPlanningCrawlerTaskSummaries(fallbackContext.tasks, taskIds, guarded.acceptedSources.length),
+      items: guarded.acceptedSources.map((item) => ({
         ...item,
         sourceType: 'crawler',
         sourcePhase: 'planning',
       })),
     };
+    const previousCrawlerDiagnostics = this.plainObject(this.plainObject(context.sourceDiagnostics).crawler);
     const nextContext = {
       ...context,
       crawlerPlan: {
@@ -1551,6 +2342,15 @@ export class ReportsService implements OnModuleDestroy {
       selectedCrawlerItemIds: selectedIds,
       crawlerTaskIds: taskIds,
       crawlerSourceContext,
+      sourceDiagnostics: {
+        ...this.plainObject(context.sourceDiagnostics),
+        crawler: {
+          ...previousCrawlerDiagnostics,
+          acceptedCount: crawlerSourceContext.items.length,
+          uncertainCount: Number(previousCrawlerDiagnostics.uncertainCount || 0) + guarded.uncertainSources.length,
+          rejectedCount: Number(previousCrawlerDiagnostics.rejectedCount || 0) + guarded.rejectedSources.length,
+        },
+      },
     };
     job.artifacts = {
       ...job.artifacts,
@@ -1559,6 +2359,14 @@ export class ReportsService implements OnModuleDestroy {
       crawlerItemCount: crawlerSourceContext.items.length,
     };
     await this.writeCrawlerContextArtifact(job, nextContext);
+    if (entityPolicy) {
+      await this.writeCrawlerDiagnosticsArtifact(job, {
+        entityPolicy,
+        acceptedCrawlerSources: guarded.acceptedSources,
+        uncertainCrawlerSources: guarded.uncertainSources,
+        rejectedCrawlerSources: guarded.rejectedSources,
+      });
+    }
     this.pushEvent(job, {
       type: 'stage',
       stage: 'crawler_planning_selected',
@@ -2314,12 +3122,19 @@ export class ReportsService implements OnModuleDestroy {
       maxRows: number;
       lookbackDays: number;
       databaseOptions: Record<string, unknown>;
+      entityPolicy?: EntityPolicy;
+      sourceFilter?: SourceFilterResult;
     },
   ): Promise<void> {
     const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
     const databaseDir = this.remoteFs.joinPath(jobDir, 'database');
     const now = new Date().toISOString();
     const vectorSources = result.sources.slice(0, options.maxRows);
+    const acceptedMatches = new Map<string, SourceEntityMatch>();
+    for (const source of options.sourceFilter?.acceptedSources || []) {
+      const key = this.sourceEntityMatchKey(source);
+      if (key) acceptedMatches.set(key, source.entityMatch);
+    }
     const databaseSources = vectorSources.map((source, index) => ({
       id: `pg-vector-${index + 1}`,
       source_type: 'pg_vector',
@@ -2335,6 +3150,7 @@ export class ReportsService implements OnModuleDestroy {
       relevance_level: this.databaseRelevanceLevel(source.relevanceScore),
       relevance_reason: '后端在调用编报执行器前通过 PostgreSQL pgvector 语义召回命中。',
       needs_verification: true,
+      entity_match: acceptedMatches.get(this.sourceEntityMatchKey(source)) || null,
     }));
     const queryPlan = {
       schema_version: 1,
@@ -2361,8 +3177,24 @@ export class ReportsService implements OnModuleDestroy {
       broadening_applied: result.queryPlan.broadeningApplied,
       content_rows_read: Math.min(databaseSources.length, this.boundInt(options.databaseOptions.maxContentRows, 8, 0, 20)),
       status: result.status,
-      database_source_fallback_reason: result.status === 'hit' ? '' : result.queryPlan.fallbackReason || 'PG vector pre-recall returned no usable source.',
+      database_source_fallback_reason: databaseSources.length
+        ? ''
+        : options.sourceFilter?.diagnostics.fallbackReason || result.queryPlan.fallbackReason || 'PG vector pre-recall returned no usable accepted source.',
       fallback_mcp: '',
+      entity_policy_enabled: true,
+      accepted_sources: databaseSources.length,
+      uncertain_sources: options.sourceFilter?.uncertainSources.length || 0,
+      rejected_sources: options.sourceFilter?.rejectedSources.length || 0,
+      should_use_web_supplement: options.sourceFilter?.diagnostics.shouldUseWebSupplement || databaseSources.length < 3,
+    };
+    const diagnostics = {
+      schema_version: 1,
+      generated_by: 'backend_pre_recall',
+      generated_at: now,
+      entityPolicy: options.entityPolicy || context.entityPolicy || null,
+      diagnostics: options.sourceFilter?.diagnostics || {},
+      uncertainSources: options.sourceFilter?.uncertainSources || [],
+      rejectedSources: options.sourceFilter?.rejectedSources || [],
     };
 
     await this.remoteFs.mkdir(databaseDir);
@@ -2383,6 +3215,14 @@ export class ReportsService implements OnModuleDestroy {
         this.remoteFs.joinPath(databaseDir, 'database_query_plan.json'),
         `${JSON.stringify(queryPlan, null, 2)}\n`,
       ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'entity_policy.json'),
+        `${JSON.stringify(options.entityPolicy || context.entityPolicy || null, null, 2)}\n`,
+      ),
+      this.remoteFs.writeFile(
+        this.remoteFs.joinPath(databaseDir, 'database_sources_diagnostics.json'),
+        `${JSON.stringify(diagnostics, null, 2)}\n`,
+      ),
     ]);
 
     job.artifacts = {
@@ -2391,6 +3231,8 @@ export class ReportsService implements OnModuleDestroy {
       backendDatabaseSourcesPath: this.remoteFs.joinPath(databaseDir, 'database_sources.json'),
       backendDatabaseQueryPlanPath: this.remoteFs.joinPath(databaseDir, 'database_query_plan.json'),
       backendVectorSourcesPath: this.remoteFs.joinPath(databaseDir, 'vector_sources.json'),
+      backendDatabaseSourceDiagnosticsPath: this.remoteFs.joinPath(databaseDir, 'database_sources_diagnostics.json'),
+      entityPolicyPath: this.remoteFs.joinPath(databaseDir, 'entity_policy.json'),
     };
     await this.writeJobState(job);
   }
@@ -2450,6 +3292,7 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private boundInt(raw: unknown, fallback: number, min: number, max: number): number {
+    if (raw === undefined || raw === null || (typeof raw === 'string' && !raw.trim())) return fallback;
     const parsed = typeof raw === 'number' ? raw : Number(String(raw ?? ''));
     if (!Number.isFinite(parsed)) return fallback;
     return Math.max(min, Math.min(max, Math.floor(parsed)));
@@ -2464,7 +3307,8 @@ export class ReportsService implements OnModuleDestroy {
     try {
       const requestUser = this.buildRequestUser(job);
       const enrichedPayload = await this.enrichPayloadWithVectorSources(job);
-      const crawlerPayload = await this.enrichPayloadWithCrawlerSources(job, enrichedPayload);
+      const supplementPayload = await this.enrichPayloadWithWebSupplement(job, enrichedPayload);
+      const crawlerPayload = await this.enrichPayloadWithCrawlerSources(job, supplementPayload);
       const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, crawlerPayload, this.buildJobOwnerUser(job));
       const runInput: RunInput = {
         skill: job.skill,
@@ -2562,9 +3406,35 @@ export class ReportsService implements OnModuleDestroy {
 
       let resolvedReport = recoveredReport ?? (await this.resolveHermesReportFile(result.markdown, startedAtMs, job.jobId));
       if (this.isJobCancelled(job)) return;
-      const finalMarkdown = resolvedReport?.markdown ?? result.markdown;
+      let finalMarkdown = resolvedReport?.markdown ?? result.markdown;
+      let syncResult: ArtifactSyncResult | null = null;
       if (!resolvedReport && /^\s*REPORT_FILE\s*:/im.test(finalMarkdown)) {
-        throw new Error('Hermes returned a REPORT_FILE pointer, but no valid Markdown report file was found.');
+        if (!this.artifactSync) {
+          job.artifacts = {
+            ...job.artifacts,
+            artifactSyncStatus: 'failed',
+            artifactSyncDiagnostics: this.artifactSyncDiagnostics(job, finalMarkdown),
+          };
+          await this.writeJobState(job);
+          throw new Error('HERMES_ARTIFACT_NOT_FOUND: Hermes returned a REPORT_FILE pointer, but no valid Markdown report file was found.');
+        }
+        syncResult = await this.artifactSync.syncReportMarkdown({
+          jobId: job.jobId,
+          reportPointer: this.extractReportPath(finalMarkdown) || this.extractReportPath(result.markdown),
+          markdown: finalMarkdown,
+        });
+        if (syncResult.status !== 'completed') {
+          job.artifacts = {
+            ...job.artifacts,
+            ...result.artifacts,
+            artifactSyncStatus: 'failed',
+            artifactSyncDiagnostics: syncResult.diagnostics,
+          };
+          await this.writeJobState(job);
+          throw new Error(`${syncResult.code || 'ARTIFACT_SYNC_FAILED'}: ${syncResult.message || 'Report artifact sync failed.'}`);
+        }
+        const storageKey = syncResult.artifacts.reportMarkdown?.storageKey;
+        finalMarkdown = storageKey ? await this.artifactSync.readText(storageKey) : finalMarkdown;
       }
       try {
         this.assertUsableGeneratedMarkdown(finalMarkdown);
@@ -2579,10 +3449,34 @@ export class ReportsService implements OnModuleDestroy {
         resolvedReport = lateReport;
       }
       const usableMarkdown = resolvedReport?.markdown ?? finalMarkdown;
+      syncResult = syncResult || (this.artifactSync
+        ? await this.artifactSync.syncReportMarkdown({
+          jobId: job.jobId,
+          reportPointer: this.extractReportPath(result.markdown),
+          localPath: resolvedReport?.filePath,
+          markdown: usableMarkdown,
+        })
+        : null);
+      if (syncResult && syncResult.status !== 'completed') {
+        job.artifacts = {
+          ...job.artifacts,
+          ...result.artifacts,
+          artifactSyncStatus: 'failed',
+          artifactSyncDiagnostics: syncResult.diagnostics,
+        };
+        await this.writeJobState(job);
+        throw new Error(`${syncResult.code || 'ARTIFACT_SYNC_FAILED'}: ${syncResult.message || 'Report artifact sync failed.'}`);
+      }
       job.status = 'succeeded';
       job.markdown = usableMarkdown;
-      job.artifacts = { ...job.artifacts, ...result.artifacts };
-      job.resultPath = resolvedReport?.filePath ?? (await this.writeReportFile(job, job.markdown));
+      job.artifacts = {
+        ...job.artifacts,
+        ...result.artifacts,
+        ...(syncResult?.artifacts || {}),
+        artifactSyncStatus: syncResult ? 'completed' : 'completed',
+        artifactSyncDiagnostics: syncResult?.diagnostics || this.plainObject(job.artifacts?.artifactSyncDiagnostics),
+      };
+      job.resultPath = syncResult?.artifacts.reportMarkdown?.storageKey || resolvedReport?.filePath || (await this.writeReportFile(job, job.markdown));
       await this.writeReportReferencesArtifact(job, usableMarkdown);
       job.updatedAt = new Date().toISOString();
       await this.writeJobState(job);
@@ -2945,10 +3839,109 @@ export class ReportsService implements OnModuleDestroy {
         title: this.sanitizeLogText(item.title || '', 200),
         url: this.sanitizeLogText(item.url || '', 500),
         summary: this.sanitizeLogText(item.summary || '', 1000),
+        contentExcerpt: this.sanitizeLogText(item.contentExcerpt || '', 1000),
         websiteName: this.sanitizeLogText(item.websiteName || '', 120),
         publishTime: this.sanitizeLogText(item.publishTime || '', 60),
+        similarity: Number.isFinite(Number(item.similarity)) ? Number(item.similarity) : undefined,
+        relevanceScore: Number.isFinite(Number(item.relevanceScore)) ? Number(item.relevanceScore) : undefined,
+        sourceType: item.retrievalMode || 'vector',
       }))
       .filter((item) => item.title || item.url);
+  }
+
+  private vectorSourceFromGuardedSource(source: Record<string, unknown>): VectorSourceItem {
+    return {
+      title: this.sanitizeLogText(this.firstString(source, ['title', 'ch_title']), 500),
+      url: this.sanitizeLogText(this.firstString(source, ['url', 'data_source_url']), 1000),
+      summary: this.sanitizeLogText(this.firstString(source, ['summary']), 1200),
+      contentExcerpt: this.sanitizeLogText(this.firstString(source, ['contentExcerpt', 'content_excerpt']), 1200),
+      embeddingText: this.sanitizeLogText(this.firstString(source, ['embeddingText', 'embedding_text']), 1200),
+      websiteName: this.sanitizeLogText(this.firstString(source, ['websiteName', 'website_name']), 300),
+      publishTime: this.sanitizeLogText(this.firstString(source, ['publishTime', 'publish_time']), 80),
+      similarity: this.firstNumber(source, ['similarity']) ?? 0,
+      relevanceScore: this.firstNumber(source, ['relevanceScore', 'relevance_score']) ?? this.firstNumber(source, ['similarity']) ?? 0,
+      retrievalMode: 'vector',
+    };
+  }
+
+  private filterDatabaseSourcesForResponse(sources: DatabaseSourceItem[], entityPolicy: EntityPolicy): SourceFilterResult<DatabaseSourceItem> {
+    return filterSourcesByEntityPolicy(
+      sources.map((source) => ({
+        ...source,
+        publisher: source.websiteName,
+        publishedAt: source.publishTime,
+        vectorScore: source.relevanceScore ?? source.similarity,
+      })),
+      entityPolicy,
+    );
+  }
+
+  private databaseSourceMessage(filtered: {
+    acceptedSources: unknown[];
+    uncertainSources: unknown[];
+    rejectedSources: unknown[];
+    diagnostics: { fallbackReason?: string };
+  }): string {
+    if (filtered.acceptedSources.length) return '';
+    const filteredCount = filtered.uncertainSources.length + filtered.rejectedSources.length;
+    if (filteredCount > 0) return `数据库未找到通过核心实体校验的信源，已过滤 ${filteredCount} 条候选。`;
+    return filtered.diagnostics.fallbackReason || '';
+  }
+
+  private sourceEntityMatchKey(source: Partial<DatabaseSourceItem | VectorSourceItem | Record<string, unknown>>): string {
+    const record = source as Record<string, unknown>;
+    const url = this.firstString(record, ['url', 'data_source_url', 'source_url']);
+    if (url) return `url:${this.normalizeSourceUrl(url)}`;
+    const title = this.firstString(record, ['title', 'ch_title']);
+    const summary = this.firstString(record, ['summary']);
+    return title ? `title:${title.toLowerCase()}|${summary.slice(0, 80).toLowerCase()}` : '';
+  }
+
+  private async entityPolicyForJob(
+    job: JobRecord,
+    dir?: string | null,
+    context?: Record<string, unknown> | null,
+  ): Promise<EntityPolicy> {
+    if (dir) {
+      const databaseDir = this.remoteFs.joinPath(dir, 'database');
+      const rawPolicy = await this.readJsonFile(this.remoteFs.joinPath(databaseDir, 'entity_policy.json'));
+      const filePolicy = parseEntityPolicy(rawPolicy);
+      if (filePolicy) return { ...filePolicy, generatedBy: filePolicy.generatedBy || 'existing' };
+      const diagnostics = await this.readJsonFile(this.remoteFs.joinPath(databaseDir, 'database_sources_diagnostics.json'));
+      const diagnosticsPolicy = diagnostics && !Array.isArray(diagnostics)
+        ? parseEntityPolicy(diagnostics.entityPolicy)
+        : null;
+      if (diagnosticsPolicy) return { ...diagnosticsPolicy, generatedBy: diagnosticsPolicy.generatedBy || 'existing' };
+    }
+
+    const contextPolicy = parseEntityPolicy(context?.entityPolicy);
+    if (contextPolicy) return { ...contextPolicy, generatedBy: contextPolicy.generatedBy || 'existing' };
+
+    const artifactPolicy = parseEntityPolicy(job.artifacts?.entityPolicy);
+    if (artifactPolicy) return { ...artifactPolicy, generatedBy: artifactPolicy.generatedBy || 'existing' };
+
+    const payload = job.payload as unknown as Record<string, unknown>;
+    const payloadContext = context || this.contextObjectFromPayload(payload);
+    const reportPlan = this.plainObject(payloadContext.report_plan || payloadContext.reportPlan);
+    const draftAssistantContext = this.plainObject(payloadContext.draftAssistantContext);
+    const input = {
+      topic: payload.topic || payloadContext.topic,
+      userSupplement: payloadContext.supplement || payload.known_context,
+      reportPlan,
+      databaseQueryIntent: payloadContext.databaseQueryIntent,
+      selectedSearchQueries: payloadContext.selectedSearchQueries,
+      selectedSources: payloadContext.userProvidedSources || payloadContext.selectedSources,
+      draftAssistantContext,
+    };
+    const hermesExtractor = this.hermes as unknown as { extractEntityPolicy?: (input: ExtractEntityPolicyInput) => Promise<EntityPolicy> };
+    if (typeof hermesExtractor.extractEntityPolicy === 'function') {
+      try {
+        return await hermesExtractor.extractEntityPolicy(input);
+      } catch {
+        // Deterministic fallback keeps report creation available when model extraction fails.
+      }
+    }
+    return buildRuleBasedEntityPolicy(input);
   }
 
   private mergeDatabaseSources(primary: DatabaseSourceItem[], secondary: DatabaseSourceItem[]): DatabaseSourceItem[] {
@@ -3251,7 +4244,7 @@ export class ReportsService implements OnModuleDestroy {
   private async resolveHermesReportFileOnce(markdown: string, startedAtMs: number, jobId?: string) {
     if (!this.hasReportFilePointer(markdown)) return null;
 
-    const fromText = await this.readMarkdownFile(this.extractReportPath(markdown));
+    const fromText = await this.readMarkdownFile(this.extractReportPath(markdown), jobId);
     if (fromText) return fromText;
 
     return null;
@@ -3263,9 +4256,11 @@ export class ReportsService implements OnModuleDestroy {
 
   private extractReportPath(text: string): string | null {
     const normalized = text.replaceAll('\\\\', '/');
+    const pointer = normalized.match(/^\s*REPORT_FILE\s*:\s*(\/[^\r\n`"'<>|?*]+?\.md)\s*$/im)?.[1]?.trim();
+    if (pointer) return pointer;
     const pattern = /(?:\/opt\/data\/workspace\/report-agent\/reports\/|\/opt\/hermes\/workspace\/report-agent\/reports\/|\/home\/node\/\.hermes\/workspace\/report-agent\/reports\/|\/usr\/docker\/hermes\/workspace\/report-agent\/reports\/)[^\r\n`"'<>|?*]+?\.md/gi;
     const matches = Array.from(normalized.matchAll(pattern)).map((match) => match[0].trim());
-    return matches.find((candidate) => this.remoteFs.isInsideReportDir(candidate)) ?? null;
+    return matches[0] ?? null;
   }
 
   private hasReportFilePointer(text: string): boolean {
@@ -3321,7 +4316,7 @@ export class ReportsService implements OnModuleDestroy {
       }
       files.sort((a, b) => b.stat.size - a.stat.size || b.stat.mtimeMs - a.stat.mtimeMs);
       for (const candidate of files) {
-        const report = await this.readMarkdownFile(candidate.filePath);
+        const report = await this.readMarkdownFile(candidate.filePath, jobId);
         if (report) return report;
       }
     } catch {
@@ -3445,8 +4440,13 @@ export class ReportsService implements OnModuleDestroy {
     }
   }
 
-  private async readMarkdownFile(filePath: string | null) {
-    if (!filePath || !this.remoteFs.isInsideReportDir(filePath)) return null;
+  private async readMarkdownFile(filePath: string | null, jobId?: string) {
+    if (!filePath) return null;
+    if (jobId) {
+      const resolved = await this.resolveArtifactLocalPath({ jobId, artifacts: {}, status: 'running' } as JobRecord, filePath, 'reportMarkdown');
+      if (!resolved) return null;
+      filePath = resolved;
+    } else if (!this.remoteFs.isInsideReportDir(filePath)) return null;
     try {
       const stat = await this.remoteFs.stat(filePath);
       if (!stat.isFile) return null;
@@ -3455,6 +4455,47 @@ export class ReportsService implements OnModuleDestroy {
     } catch {
       return null;
     }
+  }
+
+  private async resolveArtifactLocalPath(job: JobRecord, filePath: string | null | undefined, artifactType: string): Promise<string | null> {
+    if (!filePath) return null;
+    if (this.artifactResolver) {
+      const resolved = await this.artifactResolver.resolveHermesArtifactPath({
+        jobId: job.jobId,
+        remotePath: filePath,
+        artifactType,
+      });
+      if (resolved.exists) return resolved.localPath;
+      job.artifacts = {
+        ...job.artifacts,
+        artifactSyncStatus: 'failed',
+        artifactSyncDiagnostics: {
+          ...this.plainObject(job.artifacts?.artifactSyncDiagnostics),
+          [artifactType]: {
+            status: resolved.status,
+            mode: resolved.status,
+            localExists: resolved.exists,
+            remotePathPresent: Boolean(filePath),
+            reason: resolved.reason,
+          },
+        },
+      };
+      return null;
+    }
+    return this.remoteFs.isInsideReportDir(filePath) ? filePath : null;
+  }
+
+  private artifactSyncDiagnostics(job: JobRecord, markdown: string): Record<string, unknown> {
+    return {
+      reportMarkdown: {
+        status: 'missing',
+        mode: 'mapped',
+        localExists: false,
+        remotePathPresent: Boolean(this.extractReportPath(markdown)),
+        reason: 'REPORT_FILE pointer could not be resolved to a readable local artifact.',
+      },
+      jobId: job.jobId,
+    };
   }
 
   private async readJsonFile(filePath: string): Promise<Record<string, unknown> | unknown[] | null> {
@@ -3486,11 +4527,36 @@ export class ReportsService implements OnModuleDestroy {
         title,
         url,
         summary: this.sanitizeLogText(this.firstString(source, ['summary']), 1000),
+        contentExcerpt: this.sanitizeLogText(this.firstString(source, ['content_excerpt', 'contentExcerpt', 'snippet', 'content_preview']), 1000),
         websiteName: this.sanitizeLogText(this.firstString(source, ['website_name', 'websiteName']), 120),
         publishTime: this.sanitizeLogText(this.firstString(source, ['publish_time', 'publishTime']), 60),
+        similarity: this.firstNumber(source, ['similarity']),
+        relevanceScore: this.firstNumber(source, ['relevance_score', 'relevanceScore', 'score', 'rank_score']),
+        sourceType: this.sanitizeLogText(this.firstString(source, ['source_type', 'sourceType', 'type']), 80),
       });
     }
     return result;
+  }
+
+  private normalizeDiagnosticDatabaseSources(items: unknown[]): DatabaseSourceItem[] {
+    return this.normalizeDatabaseSources(items).map((source, index) => {
+      const raw = items[index] && typeof items[index] === 'object' ? items[index] as Record<string, unknown> : {};
+      const entityMatchRaw = raw.entityMatch || raw.entity_match;
+      const entityMatch = entityMatchRaw && typeof entityMatchRaw === 'object' && !Array.isArray(entityMatchRaw)
+        ? entityMatchRaw as SourceEntityMatch
+        : undefined;
+      return entityMatch ? { ...source, entityMatch } : source;
+    });
+  }
+
+  private async readDatabaseSourceDiagnostics(dir: string): Promise<{ diagnostics: Record<string, unknown>; uncertainSources: unknown[]; rejectedSources: unknown[] }> {
+    const raw = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'database_sources_diagnostics.json'));
+    if (!raw || Array.isArray(raw)) return { diagnostics: {}, uncertainSources: [], rejectedSources: [] };
+    return {
+      diagnostics: this.plainObject(raw.diagnostics),
+      uncertainSources: Array.isArray(raw.uncertainSources) ? raw.uncertainSources : [],
+      rejectedSources: Array.isArray(raw.rejectedSources) ? raw.rejectedSources : [],
+    };
   }
 
   private normalizeReportSourceType(type: unknown): ReportSourceListType {
@@ -3552,7 +4618,8 @@ export class ReportsService implements OnModuleDestroy {
     const publicRefs = reportRefs
       .filter((ref) => {
         const key = this.sourceDedupeKey(ref);
-        return !key || !databaseKeys.has(key) || researchKeys.has(key);
+        if (!key || !ref.url || ref.matchStatus !== 'matched') return false;
+        return !databaseKeys.has(key) || researchKeys.has(key);
       })
       .map((ref) => ({
         ...ref,
@@ -3606,6 +4673,16 @@ export class ReportsService implements OnModuleDestroy {
     return title ? `title:${title}|${sourceName}` : '';
   }
 
+  private reportSourcePriority(item: ReportSourceListItem): number {
+    const explicit = Number(item.sourcePriority);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    const relevance = Number(item.relevanceScore || 0);
+    const normalized = relevance > 1 ? relevance / 100 : relevance;
+    const authority = /官方|政府|公告|主流|研究|reuters|bloomberg/i.test(`${item.sourceType || ''} ${item.sourceName || ''}`) ? 0.15 : 0;
+    const referenced = item.status === 'referenced' || item.evidenceKind === 'report_reference' ? 0.08 : 0;
+    return Math.max(0, Math.min(1, normalized + authority + referenced));
+  }
+
   private normalizeSourceUrl(value: unknown): string {
     const raw = String(value || '').trim();
     if (!raw) return '';
@@ -3627,44 +4704,69 @@ export class ReportsService implements OnModuleDestroy {
 
   private async reportReferenceSources(job: JobRecord): Promise<ReportSourceListItem[]> {
     const persisted = await this.readReportReferencesArtifact(job);
-    if (persisted?.length) return persisted;
+    const acceptedPersisted = (persisted || []).filter((item) => item.matchStatus === 'matched');
+    if (acceptedPersisted.length) return acceptedPersisted;
 
     const markdown = await this.reportMarkdown(job);
     if (!markdown) return [];
     const rebuilt = await this.buildReportReferenceItems(job, markdown);
     await this.writeReportReferencesArtifact(job, markdown, rebuilt);
-    return rebuilt;
+    return rebuilt.filter((item) => item.matchStatus === 'matched');
   }
 
   private async buildReportReferenceItems(job: JobRecord, markdown: string): Promise<ReportSourceListItem[]> {
     const references = this.parseReferenceEntriesRobust(markdown);
     const citationNumbers = this.parseCitationNumbers(markdown);
-    const structured = await this.structuredReportSources(job);
+    const [structured, toolSearch, crawler] = await Promise.all([
+      this.structuredReportSources(job),
+      this.toolSearchSources(job),
+      this.crawlerReportSources(job),
+    ]);
+    const acceptedSources = [...structured, ...toolSearch, ...crawler];
+    const acceptedByUrl = new Map(
+      acceptedSources
+        .map((source) => [this.normalizeSourceUrl(source.url), source] as const)
+        .filter(([url]) => Boolean(url)),
+    );
+    const titleKey = (value: unknown) => String(value || '')
+      .toLowerCase()
+      .replace(/[\s\p{P}\p{S}]+/gu, '');
+    const acceptedByTitle = new Map(
+      acceptedSources
+        .map((source) => [titleKey(source.title), source] as const)
+        .filter(([title]) => Boolean(title)),
+    );
     const allNumbers = citationNumbers.length
       ? citationNumbers
       : Array.from(references.keys()).sort((a, b) => a - b);
 
     return allNumbers.map((number, index) => {
       const reference = references.get(number);
-      const fallback = structured[number - 1];
+      const referenceUrl = this.normalizeSourceUrl(reference?.url);
+      const referenceTitle = titleKey(reference?.title);
+      const matchedSource = reference
+        ? (referenceUrl ? acceptedByUrl.get(referenceUrl) : undefined) ||
+          (referenceTitle ? acceptedByTitle.get(referenceTitle) : undefined)
+        : structured[number - 1];
       const rawReferenceText = reference?.rawReferenceText || reference?.summary || reference?.title || '';
-      const matched = Boolean(fallback?.title || fallback?.url || fallback?.summary);
+      const matched = Boolean(matchedSource?.title || matchedSource?.url || matchedSource?.summary);
       return {
         id: `report-ref-${number}`,
         sourceGroup: 'report_refs',
-        sourceOrigin: undefined,
+        sourceOrigin: matchedSource?.sourceOrigin,
         evidenceKind: 'report_reference',
+        engine: matchedSource?.engine,
         citationNo: number,
-        title: reference?.title || fallback?.title || `\u53c2\u8003\u7f16\u53f7 [${number}]`,
-        url: reference?.url || fallback?.url || '',
-        sourceName: reference?.sourceName || fallback?.sourceName || '',
-        publishTime: reference?.publishTime || fallback?.publishTime || '',
-        summary: reference?.summary || fallback?.summary || rawReferenceText,
+        title: reference?.title || matchedSource?.title || `\u53c2\u8003\u7f16\u53f7 [${number}]`,
+        url: matchedSource?.url || '',
+        sourceName: matchedSource?.sourceName || reference?.sourceName || '',
+        publishTime: matchedSource?.publishTime || reference?.publishTime || '',
+        summary: matchedSource?.summary || reference?.summary || rawReferenceText,
         excerpt: `\u6b63\u6587\u5f15\u7528\u7f16\u53f7 [${number}]`,
         sourceType: '\u62a5\u544a\u5f15\u7528',
         relevanceScore: Math.max(100 - index, 1),
         status: 'referenced',
-        method: reference ? '\u62a5\u544a\u53c2\u8003\u8d44\u6599\u7d22\u5f15' : matched ? '\u7ed3\u6784\u5316\u4fe1\u6e90\u5339\u914d' : '\u6b63\u6587\u5f15\u7528\u7f16\u53f7',
+        method: matchedSource?.method || (reference ? '\u62a5\u544a\u53c2\u8003\u8d44\u6599\u7d22\u5f15' : matched ? '\u7ed3\u6784\u5316\u4fe1\u6e90\u5339\u914d' : '\u6b63\u6587\u5f15\u7528\u7f16\u53f7'),
         rawReferenceText,
         matchStatus: matched ? 'matched' : 'raw_only',
       };
@@ -3690,6 +4792,7 @@ export class ReportsService implements OnModuleDestroy {
     for (const filePath of paths) {
       const raw = await this.readJsonFile(filePath);
       if (!raw) continue;
+      if (Array.isArray(raw) || Number((raw as Record<string, unknown>).referenceGuardVersion) !== 2) continue;
       const items = Array.isArray(raw)
         ? raw
         : this.arrayFromObject(raw, ['references', 'items', 'sources', 'data']);
@@ -3744,7 +4847,7 @@ export class ReportsService implements OnModuleDestroy {
   ): Promise<void> {
     try {
       const items = prebuiltItems ?? await this.buildReportReferenceItems(job, markdown);
-      const references = items.slice(0, 300).map((item) => ({
+      const references = items.filter((item) => item.matchStatus === 'matched').slice(0, 300).map((item) => ({
         citationNo: item.citationNo,
         title: item.title || '',
         sourceName: item.sourceName || '',
@@ -3769,6 +4872,7 @@ export class ReportsService implements OnModuleDestroy {
         filePath,
         JSON.stringify({
           jobId: job.jobId,
+          referenceGuardVersion: 2,
           updatedAt: new Date().toISOString(),
           sourceCount: references.length,
           references,
@@ -3788,7 +4892,11 @@ export class ReportsService implements OnModuleDestroy {
     const refs = new Map<number, Partial<ReportSourceListItem>>();
     const refsStart = this.findReferenceSectionStart(markdown);
     if (refsStart < 0) return refs;
-    const refText = markdown.slice(refsStart);
+    const sectionText = markdown.slice(refsStart);
+    const boundary = sectionText.search(
+      /\n\s*(?:\*\*)?\s*(?:\u6765\u6e90\u53ef\u4fe1\u5ea6\u8bc4\u4f30|\u4fe1\u6e90\u53ef\u4fe1\u5ea6\u8bc4\u4f30|\u4fe1\u606f\u7f3a\u53e3|source credibility assessment|information gaps?)\s*[:\uff1a]?\s*(?:\*\*)?\s*(?=\n|$)/iu,
+    );
+    const refText = boundary >= 0 ? sectionText.slice(0, boundary) : sectionText;
     const regex = /(?:^|\n)\s*(?:\[(\d{1,3})\]|(\d{1,3})[\u3001.\uff0e])\s*([\s\S]*?)(?=\n\s*(?:\[\d{1,3}\]|\d{1,3}[\u3001.\uff0e])\s*|$)/g;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(refText)) !== null) {
@@ -3926,11 +5034,17 @@ export class ReportsService implements OnModuleDestroy {
 
   private async toolSearchSources(job: JobRecord): Promise<ReportSourceListItem[]> {
     const dir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
-    if (!(await this.remoteFs.exists(dir))) return [];
+    const contextSources: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [];
+    const payloadContext = this.contextObjectFromPayload(job.payload as unknown as Record<string, unknown>);
+    if (Array.isArray(payloadContext.webSources)) {
+      contextSources.push(...payloadContext.webSources.map((item) => ({ item, evidenceKind: 'research_source' as const })));
+    }
+    const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
+    if (contextJson && !Array.isArray(contextJson) && Array.isArray(contextJson.webSources)) {
+      contextSources.push(...contextJson.webSources.map((item) => ({ item, evidenceKind: 'research_source' as const })));
+    }
     const researchDir = this.remoteFs.joinPath(dir, 'research');
-    if (!(await this.remoteFs.exists(researchDir))) return [];
-
-    const rawItems: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [];
+    const rawItems: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [...contextSources];
     for (const filename of ['consolidated.json']) {
       const parsed = await this.readJsonFile(this.remoteFs.joinPath(researchDir, filename));
       rawItems.push(...this.extractToolSearchRawItems(parsed));
@@ -4083,6 +5197,19 @@ export class ReportsService implements OnModuleDestroy {
         'hits',
         'candidates',
       ]));
+      const databaseDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(databaseDir, 'database_sources_diagnostics.json'));
+      const webDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(dir, 'research', 'web_supplement_diagnostics.json'));
+      const crawlerDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources_diagnostics.json'));
+      for (const diagnostics of [databaseDiagnostics, webDiagnostics, crawlerDiagnostics]) {
+        if (!diagnostics || Array.isArray(diagnostics)) continue;
+        for (const key of [
+          'uncertainSources', 'rejectedSources',
+          'uncertainWebSources', 'rejectedWebSources',
+          'uncertainCrawlerSources', 'rejectedCrawlerSources',
+        ]) {
+          if (Array.isArray(diagnostics[key])) fileItems.push(...diagnostics[key]);
+        }
+      }
     }
     return this.dedupeRawSources([...fileItems, ...artifactItems]);
   }
@@ -4090,11 +5217,13 @@ export class ReportsService implements OnModuleDestroy {
   private normalizeCandidateSourceItem(item: unknown, index: number): ReportSourceListItem {
     const source = item && typeof item === 'object' ? item as Record<string, unknown> : {};
     const normalized = this.normalizeSourceRecord(source, index, 'candidate_hits');
+    const entityMatch = this.plainObject(source.entityMatch || source.entity_match);
     return {
       ...normalized,
+      summary: normalized.summary || this.firstString(entityMatch, ['reason']),
       sourceType: normalized.sourceType || '候选命中',
       relevanceScore: this.firstNumber(source, ['relevance_score', 'relevanceScore', 'score', 'similarity', 'rank_score']) ?? normalized.relevanceScore,
-      status: this.firstString(source, ['status', 'source_status']) || 'candidate',
+      status: this.firstString(entityMatch, ['status']) || this.firstString(source, ['status', 'source_status']) || 'candidate',
       method: this.firstString(source, ['method', 'retrievalMode', 'collection_method']) || '检索阶段候选池',
       candidateStage: this.firstString(source, ['candidateStage', 'candidate_stage', 'stage']),
       hitType: this.firstString(source, ['hitType', 'hit_type', 'type']),
@@ -4110,6 +5239,7 @@ export class ReportsService implements OnModuleDestroy {
     const excerpt = this.firstString(source, ['excerpt', 'content_excerpt', 'chunk_text', 'content_chunk', 'body', 'content', 'markdown', 'content_preview']);
     const sourceType = this.firstString(source, ['source_type', 'type', 'tag', 'designated_tag', 'sourceType']);
     const score = this.firstNumber(source, ['relevance_score', 'relevanceScore', 'score', 'similarity', 'rank_score', 'credibility_score']);
+    const priority = this.firstNumber(source, ['sourcePriority', 'source_priority', 'finalScore', 'final_score']);
     const id = this.firstString(source, ['id', 'sourceId', 'source_id', 'mysql_id']) || `${sourceGroup}-${url || title || index}`;
     const engine = this.firstString(source, ['engine', 'search_engine', 'provider']);
     return {
@@ -4123,6 +5253,7 @@ export class ReportsService implements OnModuleDestroy {
       excerpt: this.sanitizeLogText(excerpt, 1200),
       sourceType: this.sanitizeLogText(sourceType, 80),
       relevanceScore: score,
+      sourcePriority: priority,
       status: this.sanitizeLogText(this.firstString(source, ['status', 'extract_status', 'source_status']), 80),
       method: this.sanitizeLogText(this.firstString(source, ['method', 'retrievalMode', 'collection_method']), 120),
       engine: this.sanitizeLogText(engine, 40) as ReportSourceEngine,
@@ -4133,6 +5264,16 @@ export class ReportsService implements OnModuleDestroy {
     if (job.markdown) return job.markdown;
     const recovered = await this.readMarkdownFile(job.resultPath || null);
     return recovered?.markdown || '';
+  }
+
+  private async reportSourceDiagnostics(job: JobRecord): Promise<Record<string, unknown>> {
+    const payloadContext = this.contextObjectFromPayload(job.payload as unknown as Record<string, unknown>);
+    const dir = await this.resolveHermesJobDir(job);
+    if (dir) {
+      const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
+      if (contextJson && !Array.isArray(contextJson)) return this.plainObject(contextJson.sourceDiagnostics);
+    }
+    return this.plainObject(payloadContext.sourceDiagnostics);
   }
 
   private parseCitationNumbers(markdown: string): number[] {

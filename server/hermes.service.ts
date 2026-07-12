@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import OpenAI from 'openai';
@@ -31,6 +31,7 @@ import {
 } from './config.js';
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
 import { ResearchKeysService } from './research-keys.service.js';
+import { ENTITY_POLICY_PROMPT, extractEntityPolicy as extractEntityPolicyWithFallback, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
 import type { HermesHealth, ReportPlanRequest, ReportPlanResponse, RunInput, RunResult, ServerEvent } from './types.js';
 import type { ReportPlanStepType } from './types.js';
 
@@ -55,8 +56,8 @@ const SSH_EXE = process.platform === 'win32'
 @Injectable()
 export class HermesService {
   constructor(
-    private readonly gatewayDevice: HermesGatewayDeviceService,
-    private readonly researchKeys: ResearchKeysService,
+    @Inject(HermesGatewayDeviceService) private readonly gatewayDevice: HermesGatewayDeviceService,
+    @Inject(ResearchKeysService) private readonly researchKeys: ResearchKeysService,
   ) {}
 
   private readonly client = new OpenAI({
@@ -282,6 +283,35 @@ export class HermesService {
     } catch {
       return fallback;
     }
+  }
+
+  async extractEntityPolicy(input: ExtractEntityPolicyInput): Promise<EntityPolicy> {
+    return extractEntityPolicyWithFallback(input, async (prompt, payload) => {
+      const completion = await this.withTimeout(
+        this.client.chat.completions.create({
+          model: HERMES_MODEL,
+          stream: false,
+          response_format: { type: 'json_object' },
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a precise OSINT retrieval entity-policy planner. Return compact valid JSON only.',
+            },
+            {
+              role: 'user',
+              content: [
+                prompt || ENTITY_POLICY_PROMPT,
+                '',
+                `输入：${JSON.stringify(payload || {})}`,
+              ].join('\n'),
+            },
+          ],
+        }),
+        PLAN_MODEL_TIMEOUT_MS,
+        'Entity policy extraction timed out.',
+      );
+      return this.extractCompletionText(completion);
+    });
   }
 
   private runHermesRemoteCli(skill: string, prompt: string): Promise<string> {
@@ -1345,7 +1375,7 @@ export class HermesService {
           '20. PG 首轮检索必须围绕 databaseQueryIntent.primaryPhrases、entityTerms、actionTerms、domainTerms、ngrams，在 ch_title、entitle、summary、content、embedding_text 中组织关键词、同义词和语义召回；优先返回 ch_title、entitle、data_source_url、website_name、publish_time、summary，可在内部读取有限 content/embedding_text 摘要用于相关性判断；严禁读取或输出 embedding_vector、raw_data、连接信息。',
           `21. PG 命中结果必须单独保存为 database/database_sources.json 和 database/database_query_plan.json。database_sources.json 每条记录必须保留原始展示字段：ch_title（中文标题）、data_source_url（信源链接）、summary（摘要）、website_name（来源站点名称）、publish_time（发布时间）；可附带内部字段如 relevance_score、similarity、relevance_reason、needs_verification、source_type='pg_vector'。database_query_plan 必须记录 retrieval_mode='pg_vector'、mcp_server='pg-sources'、storageMode、sourceTable、embeddingModel（如可得）、indexedRows（如可得）、vector_hits/total_hits、returned_sources、使用词包和 database_source_fallback_reason。`,
           '22. 如果 pg-sources__query 返回空结果、表结构不满足需求、SQL 报错或权限不足，必须在 database_query_plan.json 中写入 database_source_fallback_reason 字段（值为字符串，说明具体回退原因）；只有在该字段已记录后，才可用 mysql-test__mysql_query 作为补充兜底检索，并在 plan 中记录 fallback_mcp="mysql-test"。无论是否回退，都不得让编报任务失败，也不得因此缩减公网调研流程。',
-          '23. 数据库/向量信源是前置可信素材池，必须与 Tavily/Exa/Firecrawl 三件套结果合并并交叉核验后再写作；不得在最终报告正文或用户可见日志中暴露 SQL、表名、MCP 实现细节、数据库连接信息、完整 content、raw_data、embedding_text 或 embedding_vector。',
+          '23. 数据库/向量信源是候选素材渠道之一，必须与 Tavily/Exa/Firecrawl 结果合并并交叉核验后再写作；来源优先级由核心实体相关性、主题相关性、来源质量、时效性、互证程度和歧义惩罚共同决定，不得因来自数据库而天然优先。不得在最终报告正文或用户可见日志中暴露 SQL、表名、MCP 实现细节、数据库连接信息、完整 content、raw_data、embedding_text 或 embedding_vector。',
         ]
       : [
           '18. databaseSourceOptions.enabled 不是 true 时，不得调用 pg-sources__query、mysql-test__mysql_query 或其他数据库 MCP 工具；继续使用 web-research-firecrawl、用户指定信源和公开检索。',
@@ -1359,6 +1389,9 @@ export class HermesService {
         '28. If context.json contains vectorDatabaseSources, treat them as already-prefetched PostgreSQL pgvector semantic database sources. Save sanitized fields to database/vector_sources.json, including title, url, summary, contentExcerpt, websiteName, publishTime, similarity, and relevanceScore. Merge them with database_sources.json; they may satisfy PG/vector pre-recall when queryPlan reports returnedSources > 0.',
         '29. PG/vector sources cannot replace harness_cli.py plan/run, Tavily, Exa, Firecrawl, research_*.json, consolidated.json, or synthesis steps; they replace only the old MySQL-first database recall path.',
         '30. embeddingText/embedding_text is recall-debug text only. Do not include embeddingText, embedding_text, SQL, table names, MCP implementation details, database connection details, full content, raw_data, or embedding vectors in user-visible logs or the final report.',
+        '31. context.json.entityPolicy and sourceDiagnostics.database are authoritative source-contamination guards. database_sources.json may contain only accepted database sources that match coreEntities or their aliases; uncertain, rejected, low relevance, entity mismatch, and only-vector-similar sources must be written only to database/database_sources_diagnostics.json.',
+        '32. strict_hits=0 means expanded results are candidates only. Expanded results must pass core entity validation before entering database_sources.json, vector_sources.json, report context, synthesis evidence, or final references. Do not use unrelated but semantically similar companies, people, locations, or institutions to fill the database source quota.',
+        '33. If accepted database sources are empty, state internally that the database did not contain valid core-entity sources, continue Tavily/Exa/Firecrawl and crawler supplement, and do not put rejected database candidates into the writing context.',
       );
     }
     return [
@@ -1370,15 +1403,15 @@ export class HermesService {
       planningCrawlerAlreadyExecuted && !allowFurtherCrawlerCollection
         ? '10a. context.json.crawlerPlan.executePhase="planning" 且 alreadyExecuted=true 时，Research Phase 不得调用 source-collection-agent、controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items；必须直接使用 context.json.crawlerSourceContext.items 中规划页面已选择的采集信源。'
         : crawlerEnabled
-        ? '10a. source-collection-agent: context.json.crawlerPlan.enabled=true 时，在 PG 向量召回后、公开检索分组前，必须启动 Research Phase 子任务 source-collection-agent。该子任务只读取 crawlerPlan、report_plan、database_sources 信息缺口，生成受控采集请求，并通过 controlled-web-collector skill 调用 NestJS 内部接口 crawler.create_task、crawler.run_task、crawler.get_items；严禁让模型自由执行 Python、shell、登录、验证码绕过、付费墙抓取或内网访问。'
+        ? '10a. 资料采集由 NestJS 后端在调用 Hermes 前执行。context.json.crawlerPlan.enabled=true 时，Hermes 只读取 context.json.crawlerSourceContext 中后端已完成并通过实体校验的 tasks/items；不得再次调用 source-collection-agent、controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items，不得重复创建或执行采集任务。'
         : '10a. context.json.crawlerPlan.enabled 不是 true 时，不得调用 controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items；继续使用 PG 向量召回和公开检索流水线。',
       planningCrawlerAlreadyExecuted && !allowFurtherCrawlerCollection
         ? '10b. 规划页面已选采集信源的 sourcePhase 必须保持为 "planning"，用户可见日志写“资料采集工具：使用规划页面已选择的 N 条采集信源。”；不得伪造或扩大 selectedCrawlerItemIds 之外的采集结果。'
         : crawlerEnabled
-        ? '10b. controlled-web-collector skill 只允许访问 NestJS /api/internal/crawler/*，必须携带 x-internal-skill-token；采集结果必须写入 context.json.crawlerSourceContext={tasks:[],items:[]}，每个 item 包含 title、url、publisher、publishedAt、fetchedAt、contentSummary、contentText、sourceType="crawler"、relevanceScore、credibilityScore。crawlerSourceContext 只能补充公开信源，不能覆盖 database_sources、report_plan、userPreferenceContext 或 draftAssistantContext。'
+        ? '10b. context.json.crawlerSourceContext={tasks:[],items:[]} 是资料采集的唯一输入；每个 item 可包含 title、url、publisher、publishedAt、fetchedAt、contentSummary、contentText、sourceType="crawler"、relevanceScore、credibilityScore。Hermes 只能把这些信源用于 Research/Synthesis，不能覆盖 database_sources、report_plan、userPreferenceContext 或 draftAssistantContext，也不得伪造额外采集结果。'
         : '10b. context.json.crawlerSourceContext 保持 {tasks:[],items:[]}，不得伪造资料采集结果。',
       '10c. 用户可见进度日志中，把 PG/vector 召回称为“数据库检索工具”，把 Tavily/Exa/Firecrawl 称为“互联网搜索工具”，把 controlled-web-collector 称为“资料采集工具”，如确有本地脚本则称为“本地脚本工具”；不要出现 OpenClaw 字样。',
-      '10d. Synthesis Phase 必须把 context.json.crawlerSourceContext 作为补充材料参与综合：数据库信源优先，资料采集信源作为补充；如资料采集信源与数据库信源冲突，标注“待核实”；不得编造来源。',
+      '10d. Synthesis Phase 必须综合 context.json.vectorDatabaseSources、webSources 和 crawlerSourceContext.items；仅使用后端 accepted 来源。优先官方和高质量来源，其次按核心实体相关性、主题相关性、时效性和多源互证排序。数据库/Web/crawler 只是渠道，不代表固定质量顺序；冲突信息标注“待核实”，不得编造来源。',
       '10e. 引用资料采集信源时，必须在内部证据和文末参考资料中尽量保留 URL / publisher / fetchedAt；各方态度必须尽量标注主体、时间、媒体和来源。',
       '11. Write-HB Phase：只在 Research Phase 完成后，基于前置研究结果和用户 selectedModules，按 sectionTitle 对应的 K报/HB报一级章节逐章撰写；每章重点展开 selectedDirections，未选方向不得强行作为正文重点。',
       '11a. K报篇幅是硬约束：最终 Markdown 目标约 9000-11000 个中文字符，按 A4 常规排版约 10 页；最低不得低于 8500 个中文字符。不得通过新增一级章节、堆砌参考资料或重复空话凑篇幅，只能通过增加事实密度、分析层次、风险链条、对策可操作性和信息缺口说明扩写。低于 8500 中文字符必须视为不合格并重新扩写，禁止交付短稿。',

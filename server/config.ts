@@ -48,8 +48,24 @@ export const HEALTH_TIMEOUT_MS = Number(process.env.HERMES_HEALTH_TIMEOUT_MS || 
 export const HERMES_WS_URL =
   process.env.HERMES_WS_URL || HERMES_BASE_URL.replace(/^http/, 'ws').replace(/\/v1\/?$/, '');
 export const HERMES_STATE_DIR = process.env.HERMES_STATE_DIR || path.join(os.homedir(), '.hermes');
+export const HERMES_RESEARCH_KEYS_DIR =
+  process.env.HERMES_RESEARCH_KEYS_DIR || path.join(HERMES_STATE_DIR, 'workspace', 'report-agent', 'config');
 export const REPORT_OUTPUT_DIR =
   process.env.REPORT_OUTPUT_DIR || path.join(HERMES_STATE_DIR, 'workspace', 'report-agent', 'reports');
+export const ARTIFACT_STORAGE_MODE = process.env.ARTIFACT_STORAGE_MODE || 'local';
+export const ARTIFACT_LOCAL_ROOT =
+  process.env.ARTIFACT_LOCAL_ROOT || REPORT_OUTPUT_DIR;
+export const HERMES_ARTIFACT_TRANSPORT = process.env.HERMES_ARTIFACT_TRANSPORT || 'shared_volume';
+export const HERMES_SHARED_REPORT_ROOT = process.env.HERMES_SHARED_REPORT_ROOT || '';
+export const HERMES_REMOTE_REPORT_ROOT =
+  process.env.HERMES_REMOTE_REPORT_ROOT || process.env.HERMES_REMOTE_OUTPUT_DIR || '/opt/data/workspace/report-agent/reports';
+export const S3_ENDPOINT = process.env.S3_ENDPOINT || '';
+export const S3_REGION = process.env.S3_REGION || '';
+export const S3_BUCKET = process.env.S3_BUCKET || '';
+export const S3_ACCESS_KEY_ID = process.env.S3_ACCESS_KEY_ID || '';
+export const S3_SECRET_ACCESS_KEY = process.env.S3_SECRET_ACCESS_KEY || '';
+export const S3_FORCE_PATH_STYLE = String(process.env.S3_FORCE_PATH_STYLE || '').toLowerCase() === 'true';
+export const S3_ARTIFACT_PREFIX = process.env.S3_ARTIFACT_PREFIX || 'hermes-artifacts';
 export const HERMES_QA_ARTIFACT_DIR =
   process.env.HERMES_QA_ARTIFACT_DIR || path.join(HERMES_STATE_DIR, 'workspace', HERMES_QA_AGENT_ID, 'sessions');
 export const HERMES_REMOTE_HOST = process.env.HERMES_REMOTE_HOST || '';
@@ -62,6 +78,12 @@ export const HERMES_CONTAINER_REPORT_DIR =
   process.env.HERMES_CONTAINER_REPORT_DIR || '/opt/data/workspace/report-agent/reports';
 export const HERMES_REMOTE_CONTAINER_REPORT_DIR =
   process.env.HERMES_REMOTE_CONTAINER_REPORT_DIR || '/opt/data/workspace/report-agent/reports';
+export const HERMES_REMOTE_OUTPUT_DIR =
+  process.env.HERMES_REMOTE_OUTPUT_DIR || HERMES_REMOTE_CONTAINER_REPORT_DIR;
+export const HERMES_LOCAL_OUTPUT_DIR =
+  process.env.HERMES_LOCAL_OUTPUT_DIR || REPORT_OUTPUT_DIR;
+export const HERMES_ARTIFACT_BASE_URL = process.env.HERMES_ARTIFACT_BASE_URL || '';
+export const HERMES_INTERNAL_TOKEN = process.env.HERMES_INTERNAL_TOKEN || '';
 export const HERMES_REMOTE_CLI_CONTAINER = process.env.HERMES_REMOTE_CLI_CONTAINER || 'hermes';
 export const HERMES_REMOTE_CLI_BINARY =
   process.env.HERMES_REMOTE_CLI_BINARY || '/opt/hermes/.venv/bin/hermes';
@@ -79,3 +101,51 @@ export const REPORT_AGENT_MODEL =
   process.env.REPORT_AGENT_MODEL || process.env.DIRECT_QA_MODEL || DIRECT_QA_MODEL;
 export const REPORT_AGENT_CLI_COMMAND = process.env.REPORT_AGENT_CLI_COMMAND || '';
 export const REPORT_AGENT_CLI_ARGS_JSON = process.env.REPORT_AGENT_CLI_ARGS_JSON || '[]';
+
+export function assertArtifactStorageConfig(): void {
+  const mode = ARTIFACT_STORAGE_MODE;
+  const transport = HERMES_ARTIFACT_TRANSPORT;
+  if (!['local', 's3'].includes(mode)) {
+    throw new Error(`Invalid ARTIFACT_STORAGE_MODE: ${mode}. Expected "local" or "s3".`);
+  }
+  if (!['inline', 'shared_volume', 'remote_api'].includes(transport)) {
+    throw new Error(`Invalid HERMES_ARTIFACT_TRANSPORT: ${transport}. Expected "inline", "shared_volume", or "remote_api".`);
+  }
+  if (process.env.NODE_ENV !== 'production') return;
+
+  if (mode === 'local') {
+    if (!process.env.ARTIFACT_LOCAL_ROOT) {
+      throw new Error('ARTIFACT_LOCAL_ROOT is required in production when ARTIFACT_STORAGE_MODE=local.');
+    }
+    if (REPORT_AGENT_PROVIDER === 'hermes' && transport === 'shared_volume') {
+      const missing = [
+        ['HERMES_REMOTE_REPORT_ROOT', HERMES_REMOTE_REPORT_ROOT],
+        ['HERMES_SHARED_REPORT_ROOT', HERMES_SHARED_REPORT_ROOT],
+      ].filter(([, value]) => !value).map(([name]) => name);
+      if (missing.length) {
+        throw new Error(`Shared-volume artifact transport is missing required configuration: ${missing.join(', ')}`);
+      }
+    }
+    if (REPORT_AGENT_PROVIDER === 'hermes' && transport === 'remote_api') {
+      const missing = [
+        ['HERMES_ARTIFACT_BASE_URL', HERMES_ARTIFACT_BASE_URL],
+        ['HERMES_INTERNAL_TOKEN', HERMES_INTERNAL_TOKEN],
+      ].filter(([, value]) => !value).map(([name]) => name);
+      if (missing.length) {
+        throw new Error(`Remote artifact API transport is missing required configuration: ${missing.join(', ')}`);
+      }
+    }
+  }
+
+  if (mode === 's3') {
+    const missing = [
+      ['S3_BUCKET', S3_BUCKET],
+      ['S3_ACCESS_KEY_ID', S3_ACCESS_KEY_ID],
+      ['S3_SECRET_ACCESS_KEY', S3_SECRET_ACCESS_KEY],
+    ].filter(([, value]) => !value).map(([name]) => name);
+    if (!S3_REGION && !S3_ENDPOINT) missing.push('S3_REGION or S3_ENDPOINT');
+    if (missing.length) {
+      throw new Error(`S3 artifact storage is missing required configuration: ${missing.join(', ')}`);
+    }
+  }
+}

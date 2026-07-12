@@ -314,7 +314,7 @@ async function testSourceOverviewDistinguishesCrawlerSources() {
   assert.equal(result?.meta?.summary && (result.meta.summary as Record<string, unknown>).crawlerCount, 1);
 }
 
-function testHermesPromptContainsCrawlerAndSynthesisConstraints() {
+function testHermesPromptConsumesBackendCrawlerContext() {
   const hermes = new HermesService({} as never, {} as never) as HermesService & {
     buildReportPrompt: (input: Record<string, unknown>) => string;
     getSkillRequirements: (input: Record<string, unknown>) => string[];
@@ -332,12 +332,12 @@ function testHermesPromptContainsCrawlerAndSynthesisConstraints() {
     },
   };
   const prompt = hermes.buildReportPrompt(input);
-  assert.match(prompt, /source-collection-agent/);
-  assert.match(prompt, /controlled-web-collector/);
-  assert.match(prompt, /crawler\.create_task、crawler\.run_task、crawler\.get_items/);
-  assert.match(prompt, /严禁让模型自由执行 Python、shell/);
-  assert.match(prompt, /数据库信源优先/);
-  assert.match(prompt, /资料采集信源作为补充/);
+  assert.match(prompt, /资料采集由 NestJS 后端在调用 Hermes 前执行/);
+  assert.match(prompt, /只读取 context\.json\.crawlerSourceContext/);
+  assert.match(prompt, /不得再次调用 source-collection-agent、controlled-web-collector、crawler\.create_task、crawler\.run_task 或 crawler\.get_items/);
+  assert.match(prompt, /不得重复创建或执行采集任务/);
+  assert.match(prompt, /优先官方和高质量来源/);
+  assert.match(prompt, /数据库\/Web\/crawler 只是渠道，不代表固定质量顺序/);
   assert.match(prompt, /URL \/ publisher \/ fetchedAt/);
 
   const disabledRequirements = hermes.getSkillRequirements({
@@ -393,7 +393,7 @@ await testCrawlerPlanEnabledWritesCrawlerSourceContextAndSources();
 await testPlanningSelectedCrawlerItemsSkipResearchCollection();
 await testPlanningCrawlerDoesNotIncludeUnselectedFallbackItems();
 await testSourceOverviewDistinguishesCrawlerSources();
-testHermesPromptContainsCrawlerAndSynthesisConstraints();
+testHermesPromptConsumesBackendCrawlerContext();
 testHermesPromptForPlanningSelectedCrawlerSkipsResearchCollection();
 testControlledWebCollectorSkillForbidsArbitraryExecution();
 
