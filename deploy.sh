@@ -27,11 +27,10 @@ REMOTE_ENV_FILE=$REMOTE_DIR/hermes-api.env
 HERMES_API_LEGACY_DATA_MOUNT="${HERMES_API_LEGACY_DATA_MOUNT:-true}"
 if [[ "$HERMES_API_LEGACY_DATA_MOUNT" == "false" ]]; then
   DEFAULT_HERMES_STATE_DIR=/app/storage/artifacts/hermes-state
-  DEFAULT_HERMES_RESEARCH_KEYS_DIR=/app/hermes-config
 else
   DEFAULT_HERMES_STATE_DIR=/opt/data
-  DEFAULT_HERMES_RESEARCH_KEYS_DIR=/opt/data/workspace/report-agent/config
 fi
+DEFAULT_HERMES_RESEARCH_KEYS_DIR=/app/hermes-config
 
 DEPLOY_ENV_FILE=$(mktemp)
 trap 'rm -f "$DEPLOY_ENV_FILE"' EXIT
@@ -154,6 +153,9 @@ echo "--- Ensure report artifact volumes ---"
 docker volume create report-artifacts >/dev/null
 mkdir -p /opt/hermes/workspace/report-agent/reports
 mkdir -p /opt/hermes/workspace/report-agent/config
+chown -R 1000:1000 /opt/hermes/workspace/report-agent/config
+chmod 700 /opt/hermes/workspace/report-agent/config
+find /opt/hermes/workspace/report-agent/config -maxdepth 1 -type f -exec chmod 600 {} \;
 if command -v setfacl >/dev/null 2>&1; then
   setfacl -R -m u:1000:rX /opt/hermes/workspace/report-agent/reports || true
   setfacl -R -m d:u:1000:rX /opt/hermes/workspace/report-agent/reports || true
@@ -204,7 +206,7 @@ docker run -d \
   --env-file "\$REMOTE_ENV_FILE" \
   --mount type=volume,source=report-artifacts,target=/app/storage/artifacts \
   --mount type=bind,src=/opt/hermes/workspace/report-agent/reports,dst=/app/hermes-inbox,readonly \
-  \$(if [ "\${HERMES_API_LEGACY_DATA_MOUNT:-true}" = "false" ]; then printf '%s\n' "--mount type=bind,src=/opt/hermes/workspace/report-agent/config,dst=/app/hermes-config"; fi) \
+  --mount type=bind,src=/opt/hermes/workspace/report-agent/config,dst=/app/hermes-config \
   \$(if [ "\${HERMES_API_LEGACY_DATA_MOUNT:-true}" != "false" ]; then printf '%s\n' "--mount type=bind,src=/opt/hermes,dst=/opt/data"; fi) \
   "\$IMAGE_TAG"
 
