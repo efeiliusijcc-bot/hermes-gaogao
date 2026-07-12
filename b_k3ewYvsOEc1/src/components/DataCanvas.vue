@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
-import { firstSourceDisplayText, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
+import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -215,7 +215,7 @@ const qualityReviewLoading = ref(false)
 const qualityReviewRunning = ref(false)
 const qualityReviewError = ref('')
 const qualityReviewNotice = ref('')
-const activeSourceType = ref('database_recall')
+const activeSourceType = ref('all')
 const sourceSearchQuery = ref('')
 const sourceKindFilter = ref('全部')
 const sourceTimeFilter = ref('all')
@@ -228,9 +228,12 @@ const sourceListPageSize = ref(10)
 const sourceListTotal = ref(null)
 const sourceListHasMore = ref(false)
 const sourceListSummary = ref(null)
+const sourceListDiagnostics = ref(null)
 const sourceCurrentPage = ref(1)
 const expandedSourceListId = ref('')
 const sourceListNotice = ref('')
+const acceptedCitationSources = ref([])
+const acceptedCitationSourcesLoading = ref(false)
 const activeResultTab = ref('report')
 const homeMode = computed({
   get: () => props.homeMode || 'report',
@@ -2772,6 +2775,90 @@ const visibleSourceCards = computed(() => {
   return dbSourcesExpanded.value ? normalizedSources.value : normalizedSources.value.slice(0, 5)
 })
 
+const databaseSourceDiagnostics = computed(() => {
+  const data = props.databaseSources || {}
+  const diagnostics = data.diagnostics || {}
+  const entityPolicy = diagnostics.entityPolicy || data.entityPolicy || {}
+  const coreEntities = Array.isArray(diagnostics.coreEntities)
+    ? diagnostics.coreEntities
+    : Array.isArray(entityPolicy.coreEntities)
+      ? entityPolicy.coreEntities.map((item) => item?.canonical || item).filter(Boolean)
+      : []
+  const topicTerms = Array.isArray(diagnostics.topicTerms)
+    ? diagnostics.topicTerms
+    : Array.isArray(entityPolicy.topicTerms)
+      ? entityPolicy.topicTerms
+      : []
+  return {
+    enabled: Boolean(data.diagnostics || data.message || data.rejectedSources?.length || data.uncertainSources?.length),
+    coreEntities: coreEntities.slice(0, 8),
+    topicTerms: topicTerms.slice(0, 10),
+    acceptedCount: diagnostics.acceptedCount ?? data.acceptedSources?.length ?? data.sources?.length ?? 0,
+    uncertainCount: diagnostics.uncertainCount ?? data.uncertainSources?.length ?? 0,
+    rejectedCount: diagnostics.rejectedCount ?? data.rejectedSources?.length ?? 0,
+    fallbackReason: diagnostics.fallbackReason || data.message || data.fallbackReason || '',
+    shouldUseWebSupplement: diagnostics.shouldUseWebSupplement === true,
+    recommendedSearchQueries: Array.isArray(diagnostics.recommendedSearchQueries) ? diagnostics.recommendedSearchQueries.slice(0, 6) : [],
+  }
+})
+
+const sourceSupplementStatus = computed(() => {
+  const diagnostics = sourceListDiagnostics.value || {}
+  const supplement = diagnostics.supplement || {}
+  const retrievalMetrics = supplement.retrievalMetrics || {}
+  const webMetrics = retrievalMetrics.web || {}
+  const deduplication = retrievalMetrics.deduplication || {}
+  const performance = retrievalMetrics.performance || {}
+  const database = diagnostics.database || props.databaseSources?.diagnostics || {}
+  const web = diagnostics.web || {}
+  const crawler = diagnostics.crawler || {}
+  const databaseAccepted = Number(database.acceptedCount ?? props.databaseSources?.sources?.length ?? 0)
+  const webAccepted = Number(web.acceptedCount ?? 0)
+  const crawlerAccepted = Number(crawler.acceptedCount ?? 0)
+  return {
+    visible: supplement.triggered === true || Boolean(supplement.reason),
+    triggered: supplement.triggered === true,
+    reason: supplement.reason || '',
+    databaseAccepted,
+    queryCount: Array.isArray(supplement.queries) ? supplement.queries.length : 0,
+    searchResultCount: Number(supplement.searchResultCount ?? web.searchResultCount ?? 0),
+    fetchedCount: Number(supplement.fetchedCount ?? web.fetchedCount ?? 0),
+    acceptedCount: Number(supplement.acceptedCount ?? (webAccepted + crawlerAccepted)),
+    rejectedCount: Number(supplement.rejectedCount ?? 0),
+    finalCount: databaseAccepted + webAccepted + crawlerAccepted,
+    fetchSuccessRate: Number(webMetrics.fetchSuccessRate ?? 0),
+    deduplicationRemoved: Number(deduplication.removedCount ?? 0),
+    referencedCount: Number(retrievalMetrics.final?.referencedSourceCount ?? 0),
+    durationMs: Number(performance.totalSupplementDurationMs ?? 0),
+  }
+})
+
+const filteredDatabaseCandidates = computed(() => {
+  const data = props.databaseSources || {}
+  const uncertain = Array.isArray(data.uncertainSources) ? data.uncertainSources : []
+  const rejected = Array.isArray(data.rejectedSources) ? data.rejectedSources : []
+  return [
+    ...uncertain.map((source) => ({ ...source, filterStatus: '待核验' })),
+    ...rejected.map((source) => ({ ...source, filterStatus: '已过滤' })),
+  ].slice(0, 30).map((source, index) => normalizeFilteredDatabaseCandidate(source, index))
+})
+
+function normalizeFilteredDatabaseCandidate(source, index) {
+  const match = source?.entityMatch || source?.entity_match || {}
+  const url = firstText(source, ['url', 'source_url', 'data_source_url', 'sourceUrl'], '')
+  return {
+    id: `filtered-${url || source?.title || source?.ch_title || index}`,
+    title: firstSourceDisplayText(source, ['title', 'ch_title', 'headline', 'sourceTitle', 'name'], url || '未命名候选'),
+    sourceName: firstSourceDisplayText(source, ['websiteName', 'website_name', 'publisher', 'source_name', 'site_name', 'sourceName'], sourceHostname(url) || '来源未知'),
+    filterStatus: source?.filterStatus || (match.status === 'uncertain' ? '待核验' : '已过滤'),
+    reason: match.reason || source?.reason || source?.relevance_reason || '未通过核心实体校验。',
+    matchedConfusions: Array.isArray(match.matchedConfusions) ? match.matchedConfusions.join('、') : '',
+    missingCoreEntities: Array.isArray(match.missingCoreEntities) ? match.missingCoreEntities.join('、') : '',
+    vectorScore: match.vectorScore ?? source?.similarity ?? source?.relevanceScore ?? source?.relevance_score ?? '',
+    url,
+  }
+}
+
 function extractCitationNumbers() {
   const text = extractReportPlainText()
   if (!text) return []
@@ -2923,6 +3010,8 @@ const sourceTypeOptions = [
   { key: 'database_recall', label: '数据库检索工具' },
   { key: 'crawler', label: '资料采集工具' },
   { key: 'tool_search', label: '互联网搜索工具' },
+  { key: 'report_refs', label: '最终引用' },
+  { key: 'candidate_hits', label: '被过滤候选' },
 ]
 
 const sourceKindOptions = ['全部', '官方文件', '媒体报道', '研究报告', '数据库记录', '数据库检索工具', '资料采集', '互联网搜索工具', '其他']
@@ -2976,7 +3065,12 @@ const activeSourceConfig = computed(() => {
       emptyDesc: '当前报告暂无可展示的信源记录。',
     }
   }
-  const base = sourceCardConfigs.value.find((item) => item.key === activeSourceType.value) || sourceCardConfigs.value[0]
+  const base = sourceCardConfigs.value.find((item) => item.key === activeSourceType.value) || {
+    key: activeSourceType.value,
+    title: '',
+    value: '--',
+    desc: '',
+  }
   const descriptions = {
     database_recall: ['数据库检索工具信源', '以下信源来自 PG 向量库或数据库检索，并已保留引用编号和结构化整理状态。', '暂无数据库检索工具信源', '当前报告没有数据库检索工具信源记录，您可以切换资料采集工具或互联网搜索工具查看。'],
     crawler: ['资料采集工具信源', '以下信源来自规划阶段 crawlerPlan 触发的受控公开资料采集。', '暂无资料采集工具信源', '当前报告没有资料采集工具信源记录，您可以切换数据库检索工具或互联网搜索工具查看。'],
@@ -2998,14 +3092,27 @@ const sourceListCountText = computed(() => {
 const resultInfoItems = computed(() => {
   const generatedAt = props.job?.completedAt || props.job?.updatedAt || props.job?.createdAt || ''
   const generatedText = generatedAt ? new Date(generatedAt).toLocaleString('zh-CN', { hour12: false }) : '--'
+  const artifactStatus = artifactSyncLabel(props.job?.artifacts?.artifactSyncStatus)
   return [
     ['报告标题', props.title || props.job?.payload?.topic || '--'],
     ['报告类型', reportTypeLabel.value || '--'],
     ['任务编号', props.job?.jobId ? props.job.jobId.slice(0, 8) : '--'],
     ['生成时间', generatedText],
     ['状态', props.phase === 'done' || props.job?.status === 'succeeded' ? '已完成' : taskStatusLabel.value || '--'],
+    ['产物同步', artifactStatus],
   ]
 })
+
+function artifactSyncLabel(status) {
+  const value = String(status || '').toLowerCase()
+  if (value === 'completed') return '报告可查看、可下载'
+  if (value === 'syncing') return '正在同步报告产物'
+  if (value === 'partial') return '报告正文可用'
+  if (value === 'failed') return '报告产物同步失败'
+  if (props.job?.status === 'succeeded' && props.job?.resultPath) return '报告可查看'
+  if (props.job?.status === 'running') return '等待报告生成'
+  return '--'
+}
 
 const technicalLogs = computed(() => {
   if (props.executionLogs?.length) return props.executionLogs
@@ -3168,18 +3275,17 @@ function chapterForCitation(text, matchIndex) {
 const citationItems = computed(() => {
   const text = extractReportPlainText()
   if (!text) return []
-  return reportCitationNumbers.value.map((number) => {
+  return acceptedCitationSources.value.map((source, index) => {
+    const number = Number(source.citationNo) || index + 1
     const match = text.match(new RegExp(`(?:\\\\[|〔|【)${number}(?:\\\\]|〕|】)`))
-    const source = normalizedSources.value[number - 1] || null
-    const reference = reportReferenceIndex.value.get(number) || null
     return {
       number,
       chapter: chapterForCitation(text, match?.index || 0),
-      title: reference?.title || source?.title || '--',
-      sourceName: reference?.sourceName || source?.sourceName || '--',
-      method: source?.method || (reference ? '报告参考资料索引' : '--'),
-      credibility: source ? (source.relevance === '高相关' ? '高' : '中') : '--',
-      summary: reference?.summary || source?.summary || '当前引用未匹配到结构化来源，可查看任务进度中的技术详情或原始来源。',
+      title: source.title || '--',
+      sourceName: source.sourceName || '--',
+      method: source.method || '后端 accepted 引用',
+      credibility: source.relevance || '--',
+      summary: source.summary || '当前引用已通过后端信源校验。',
     }
   })
 })
@@ -3208,19 +3314,7 @@ function scrubSourceDisplayText(value) {
 }
 
 function inferSourceGroup(source, fallbackGroup = activeSourceType.value) {
-  const origin = source?.sourceOrigin || source?.source_origin
-  if (origin === 'database_recall' || origin === 'crawler' || origin === 'tool_search') return origin
-  const explicit = source?.sourceGroup || source?.source_group || source?.group || source?.category
-  if (explicit === 'database_recall' || explicit === 'crawler' || explicit === 'tool_search') return explicit
-  const text = `${explicit || ''} ${source?.type || ''} ${source?.source_type || ''} ${source?.sourceType || ''} ${source?.tag || ''} ${source?.designated_tag || ''} ${source?.status || ''} ${source?.extract_status || ''} ${source?.method || ''} ${source?.engine || ''}`.toLowerCase()
-  if (/crawler|资料采集/.test(text)) return 'crawler'
-  if (/database_recall|pg_vector|pgvector|database|vector|结构化|数据库|向量/.test(text)) return 'database_recall'
-  if (/tool_search|exa|firecrawl|tavily|工具调用|公开搜索/.test(text)) return 'tool_search'
-  if (/report_refs|report_ref|citation|reference|引用|参考/.test(text)) return 'report_refs'
-  if (/candidate_hits|candidate|hit|候选|命中/.test(text)) return 'candidate_hits'
-  if (/extract_failed|failed|failure|error|失败|不可用/.test(text)) return 'extract_failed'
-  if (/structured_sources|structured/.test(text)) return 'database_recall'
-  return fallbackGroup === 'all' ? 'database_recall' : fallbackGroup
+  return resolveSourceGroup(source, fallbackGroup)
 }
 
 function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType.value) {
@@ -3243,7 +3337,7 @@ function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType
   const status = scrubSourceDisplayText(firstText(source, ['status', 'extract_status', 'source_status'], ''))
   const method = scrubSourceDisplayText(firstText(source, ['method', 'retrievalMode', 'collection_method'], ''))
   const failedReason = scrubSourceDisplayText(firstText(source, ['failedReason', 'failure_reason', 'error', 'message', 'note'], ''))
-  const score = source?.relevance_score ?? source?.relevanceScore ?? source?.score ?? source?.similarity ?? source?.rank_score ?? source?.relevance ?? null
+  const score = source?.sourcePriority ?? source?.source_priority ?? source?.relevance_score ?? source?.relevanceScore ?? source?.score ?? source?.similarity ?? source?.rank_score ?? source?.relevance ?? null
   const id = firstText(source, ['id', 'sourceId', 'source_id', 'mysql_id'], `${sourceGroup}-${url || title}-${index}`)
   return {
     id: String(id),
@@ -3427,8 +3521,9 @@ function localSourcePool(type = activeSourceType.value) {
 
   if (type === 'all') return [
     ...grouped.database_recall,
+    ...grouped.crawler,
     ...grouped.tool_search,
-  ]
+  ].sort((a, b) => b.numericScore - a.numericScore)
   return grouped[type] || []
 }
 
@@ -3483,6 +3578,7 @@ function resetSourceListState({ preserveSummary = false } = {}) {
   sourceListTotal.value = null
   sourceListHasMore.value = false
   if (!preserveSummary) sourceListSummary.value = null
+  if (!preserveSummary) sourceListDiagnostics.value = null
   sourceCurrentPage.value = 1
   sourceListError.value = ''
   sourceListNotice.value = ''
@@ -3525,6 +3621,7 @@ async function loadSourceListPage(page = 1) {
       : requestType
     const normalized = normalizeSourceListResponse(response, fallbackGroup)
     sourceListSummary.value = response?.meta?.summary || sourceListSummary.value
+    sourceListDiagnostics.value = response?.meta?.sourceDiagnostics || sourceListDiagnostics.value
     const typedItems = requestType === 'all'
       ? normalized.items
       : normalized.items.filter((item) => item.sourceGroup === requestType)
@@ -3574,6 +3671,25 @@ async function loadSourceListPage(page = 1) {
 
 async function loadMoreSourceRows() {
   await loadSourceListPage(sourceListPage.value + 1)
+}
+
+async function loadAcceptedCitationSources() {
+  const jobId = props.job?.jobId
+  if (!jobId || acceptedCitationSourcesLoading.value) return
+  acceptedCitationSourcesLoading.value = true
+  try {
+    const response = await fetchReportSources(jobId, 'report_refs', { page: 1, pageSize: 100 })
+    const rawItems = Array.isArray(response?.items) ? response.items : []
+    acceptedCitationSources.value = filterAcceptedReportReferences(rawItems).map((item, index) => ({
+      ...normalizeSourceListItem(item, index, 'report_refs'),
+      citationNo: item.citationNo ?? item.citation_no ?? index + 1,
+      matchStatus: item.matchStatus ?? item.match_status ?? '',
+    }))
+  } catch {
+    acceptedCitationSources.value = []
+  } finally {
+    acceptedCitationSourcesLoading.value = false
+  }
 }
 
 function reloadSourceRows() {
@@ -3744,7 +3860,9 @@ watch(() => [props.phase, props.isHistoryMode], () => {
 })
 watch(() => [props.phase, props.job?.jobId], () => {
   if (props.phase === 'done') activeResultTab.value = 'report'
-  activeSourceType.value = 'database_recall'
+  activeSourceType.value = 'all'
+  acceptedCitationSources.value = []
+  acceptedCitationSourcesLoading.value = false
   qualityReview.value = null
   qualityReviewError.value = ''
   qualityReviewNotice.value = ''
@@ -3753,6 +3871,9 @@ watch(() => [props.phase, props.job?.jobId], () => {
 watch(() => activeResultTab.value, (tab) => {
   if (tab === 'sources' && props.job?.jobId && !sourceListItems.value.length && !sourceListLoading.value) {
     selectSourceType(activeSourceType.value || 'database_recall')
+  }
+  if (tab === 'citations' && props.job?.jobId && !acceptedCitationSources.value.length && !acceptedCitationSourcesLoading.value) {
+    loadAcceptedCitationSources()
   }
   if (tab === 'quality' && props.job?.jobId && !qualityReview.value && !qualityReviewLoading.value) {
     loadQualityReview()
@@ -5368,11 +5489,47 @@ function exportPdf() {
             <h2>信源采集结果</h2>
           </div>
 
+          <section v-if="databaseSourceDiagnostics.enabled" class="source-diagnostics-card">
+            <div class="source-diagnostics-header">
+              <strong>检索诊断</strong>
+              <span v-if="databaseSourceDiagnostics.shouldUseWebSupplement">建议补充 Web / 资料采集</span>
+            </div>
+            <div class="source-diagnostics-grid">
+              <div>
+                <b>{{ databaseSourceDiagnostics.acceptedCount }}</b>
+                <span>可用数据库信源</span>
+              </div>
+              <div>
+                <b>{{ databaseSourceDiagnostics.uncertainCount }}</b>
+                <span>待核验候选</span>
+              </div>
+              <div>
+                <b>{{ databaseSourceDiagnostics.rejectedCount }}</b>
+                <span>已过滤候选</span>
+              </div>
+            </div>
+            <p v-if="databaseSourceDiagnostics.coreEntities.length">
+              核心实体：{{ databaseSourceDiagnostics.coreEntities.join('、') }}
+            </p>
+            <p v-if="databaseSourceDiagnostics.topicTerms.length">
+              主题词：{{ databaseSourceDiagnostics.topicTerms.join('、') }}
+            </p>
+            <p v-if="databaseSourceDiagnostics.fallbackReason" class="source-diagnostics-reason">
+              {{ databaseSourceDiagnostics.fallbackReason }}
+            </p>
+            <p v-if="databaseSourceDiagnostics.recommendedSearchQueries.length" class="source-diagnostics-query">
+              建议查询：{{ databaseSourceDiagnostics.recommendedSearchQueries.join('；') }}
+            </p>
+          </section>
+
           <div v-if="databaseSourcesLoading && !normalizedSources.length" class="source-empty-state">
             正在检查可展示信源...
           </div>
           <div v-else-if="!normalizedSources.length" class="source-empty-state">
-            <div>{{ dbSourcesState === 'fallback' ? '数据库无直接命中，已回退公开检索。' : '暂未采集到可展示信源，系统仍在检索中。' }}</div>
+            <div>
+              {{ filteredDatabaseCandidates.length ? '数据库未找到通过核心实体校验的信源。' : (dbSourcesState === 'fallback' ? '数据库无直接命中，已回退公开检索。' : '暂未采集到可展示信源，系统仍在检索中。') }}
+            </div>
+            <div v-if="filteredDatabaseCandidates.length">已过滤 {{ filteredDatabaseCandidates.length }} 条低相关或实体错配候选，建议使用 Web 搜索或资料采集补充。</div>
             <div v-if="databaseSources?.fallbackReason" class="source-empty-reason">原因：{{ databaseSources.fallbackReason }}</div>
           </div>
 
@@ -5421,6 +5578,23 @@ function exportPdf() {
               {{ dbSourcesExpanded ? '收起' : `展开全部信源（共 ${normalizedSources.length} 条）` }}
             </button>
           </div>
+
+          <details v-if="filteredDatabaseCandidates.length" class="source-filtered-details">
+            <summary>查看被过滤候选信源（{{ filteredDatabaseCandidates.length }}）</summary>
+            <div class="source-filtered-list">
+              <article v-for="candidate in filteredDatabaseCandidates" :key="candidate.id" class="source-filtered-item">
+                <div>
+                  <strong>{{ candidate.title }}</strong>
+                  <p>{{ candidate.sourceName }} · {{ candidate.filterStatus }}</p>
+                </div>
+                <p>{{ candidate.reason }}</p>
+                <p v-if="candidate.matchedConfusions">疑似错配：{{ candidate.matchedConfusions }}</p>
+                <p v-if="candidate.missingCoreEntities">缺失核心实体：{{ candidate.missingCoreEntities }}</p>
+                <p v-if="candidate.vectorScore !== ''">原始向量分：{{ candidate.vectorScore }}</p>
+                <a v-if="candidate.url" :href="candidate.url" target="_blank" rel="noopener noreferrer">打开来源</a>
+              </article>
+            </div>
+          </details>
 
           <details class="source-technical-details" open>
             <summary>查看技术详情</summary>
@@ -5635,6 +5809,26 @@ function exportPdf() {
             <div class="source-count-note">
               口径说明：数据库检索工具来自 PG 向量库/数据库；资料采集工具来自 crawlerPlan 触发的受控公开采集；互联网搜索工具来自联网检索服务。报告引用编号和结构化整理状态作为信源属性展示，不作为主分类混算。
             </div>
+
+            <section v-if="sourceSupplementStatus.visible" class="source-supplement-status">
+              <header>
+                <strong>{{ sourceSupplementStatus.triggered ? '数据库有效信源不足，已启动公开信源补充' : '公开信源补充状态' }}</strong>
+                <span>{{ sourceSupplementStatus.reason }}</span>
+              </header>
+              <div class="source-supplement-metrics">
+                <div><b>{{ sourceSupplementStatus.databaseAccepted }}</b><span>数据库有效</span></div>
+                <div><b>{{ sourceSupplementStatus.queryCount }}</b><span>Web 查询</span></div>
+                <div><b>{{ sourceSupplementStatus.searchResultCount }}</b><span>搜索候选</span></div>
+                <div><b>{{ sourceSupplementStatus.fetchedCount }}</b><span>抓取成功</span></div>
+                <div><b>{{ sourceSupplementStatus.acceptedCount }}</b><span>补充 accepted</span></div>
+                <div><b>{{ sourceSupplementStatus.rejectedCount }}</b><span>已过滤</span></div>
+                <div><b>{{ sourceSupplementStatus.finalCount }}</b><span>最终可用</span></div>
+                <div><b>{{ Math.round(sourceSupplementStatus.fetchSuccessRate * 100) }}%</b><span>抓取成功率</span></div>
+                <div><b>{{ sourceSupplementStatus.deduplicationRemoved }}</b><span>去重条数</span></div>
+                <div><b>{{ sourceSupplementStatus.referencedCount }}</b><span>最终引用</span></div>
+                <div><b>{{ (sourceSupplementStatus.durationMs / 1000).toFixed(1) }}s</b><span>补充耗时</span></div>
+              </div>
+            </section>
 
             <div class="source-sub-filter" aria-label="信源类型筛选">
               <button
@@ -5907,7 +6101,10 @@ function exportPdf() {
         </section>
 
         <section v-else-if="activeResultTab === 'citations'" class="result-tab-panel">
-          <div v-if="!citationItems.length" class="source-empty-state">
+          <div v-if="acceptedCitationSourcesLoading" class="source-empty-state">
+            正在加载后端已校验引用...
+          </div>
+          <div v-else-if="!citationItems.length" class="source-empty-state">
             当前报告未返回结构化引用依据。
           </div>
           <div v-else class="citation-list">

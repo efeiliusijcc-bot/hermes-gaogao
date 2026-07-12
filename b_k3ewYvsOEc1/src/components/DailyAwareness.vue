@@ -427,6 +427,7 @@ function sanitizeSourceText(value) {
   const text = String(value || '')
     .replace(/\u0000/g, '')
     .replace(/^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\]+(?=[\p{L}\p{N}\u4e00-\u9fff])/u, '')
+    .replace(/(?<=[\p{L}\p{N}\u4e00-\u9fff])[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u, '')
     .trim()
   return /^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u.test(text) ? '' : text
 }
