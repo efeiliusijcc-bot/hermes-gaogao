@@ -63,6 +63,8 @@ defineExpose({ root, toggleButton })
       aria-controls="draft-history-sidebar-content"
       :title="collapsed ? '展开历史事件' : '收起历史事件'"
       @click="requestToggle"
+      @keydown.enter.prevent="requestToggle"
+      @keydown.space.prevent="requestToggle"
     >
       {{ collapsed ? '›' : '‹' }}
     </button>

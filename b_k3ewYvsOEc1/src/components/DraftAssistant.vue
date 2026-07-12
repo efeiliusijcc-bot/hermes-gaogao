@@ -70,6 +70,8 @@ const lastSavedAt = ref(null)
 const saveFailed = ref(false)
 const historySearchFocused = ref(false)
 const draftLifecycleStatus = ref('idle')
+const historySidebarComponent = ref(null)
+const draftPrimaryHeading = ref(null)
 
 const outlineEdit = reactive({
   reportTitle: '',
@@ -156,6 +158,8 @@ const {
   draftStatus: draftLifecycleStatus,
   editorMode: historyEditorMode,
   searchFocused: historySearchFocused,
+  sidebarComponentRef: historySidebarComponent,
+  autoCollapseTargetRef: draftPrimaryHeading,
 })
 const historyNavigationMode = computed(() => (
   historySidebarPreference.value === 'collapsed'
@@ -281,6 +285,7 @@ async function openEvent(eventId) {
     outlineVersions.value = await getDraftEventOutlines(eventId)
     selectedOutline.value = eventResult.value?.latestOutline || outlineVersions.value[0] || null
     if (selectedOutline.value?.outlineId) await loadOutline(selectedOutline.value.outlineId)
+    draftLifecycleStatus.value = selectedOutline.value?.outlineId ? 'completed' : 'idle'
   } catch (error) {
     showError(error)
   }
@@ -988,6 +993,7 @@ watch(() => props.initialEventId, (eventId) => {
         <button v-if="leftPanelOpen || rightPanelOpen" class="draft-panel-backdrop" type="button" aria-label="关闭侧栏" @click="closeResponsivePanels"></button>
         <DraftHistorySidebar
           v-if="historyNavigationMode"
+          ref="historySidebarComponent"
           :class="{ open: leftPanelOpen }"
           :collapsed="historySidebarCollapsed"
           :preference="historySidebarPreference"
@@ -999,7 +1005,15 @@ watch(() => props.initialEventId, (eventId) => {
           @search-focus-change="historySearchFocused = $event"
           @use-auto="useAutomaticHistoryPreference"
         />
-        <aside v-else class="draft-panel draft-left" :class="{ open: leftPanelOpen }">
+        <button
+          v-if="historyNavigationMode && !historySidebarCollapsed && !leftPanelOpen"
+          class="draft-mobile-history-trigger"
+          type="button"
+          aria-label="打开历史事件"
+          title="打开历史事件"
+          @click="leftPanelOpen = true"
+        >历</button>
+        <aside v-if="!historyNavigationMode" class="draft-panel draft-left" :class="{ open: leftPanelOpen }">
           <button class="draft-panel-close" type="button" aria-label="关闭事件栏" @click="leftPanelOpen = false">×</button>
           <div class="draft-panel-head">
             <h2>事件源输入</h2>
@@ -1172,7 +1186,7 @@ watch(() => props.initialEventId, (eventId) => {
               <div class="draft-event-basic-head">
                 <div>
                   <span>当前编辑对象</span>
-                  <h2>{{ currentEventTitle }}</h2>
+                  <h2 ref="draftPrimaryHeading" tabindex="-1">{{ currentEventTitle }}</h2>
                 </div>
                 <span class="draft-event-version">{{ editingVersionLabel }}</span>
               </div>
@@ -1340,7 +1354,7 @@ watch(() => props.initialEventId, (eventId) => {
             <div class="draft-main-head">
               <div>
                 <span class="draft-state-kicker">{{ currentStepKey === 'confirm' ? 'Step 4' : 'Step 3' }}</span>
-                <h2>{{ currentStepKey === 'confirm' ? '确认提纲版本' : '拟稿提纲' }}</h2>
+                <h2 ref="draftPrimaryHeading" tabindex="-1">{{ currentStepKey === 'confirm' ? '确认提纲版本' : '拟稿提纲' }}</h2>
                 <p>{{ currentStepKey === 'confirm' ? '请确认当前版本后再导入深度编报。' : '当前版本以论文目录式结构展示。' }}</p>
               </div>
               <div class="draft-outline-version-chip">
@@ -1831,6 +1845,10 @@ watch(() => props.initialEventId, (eventId) => {
 
 .draft-panel-close,
 .draft-panel-backdrop {
+  display: none;
+}
+
+.draft-mobile-history-trigger {
   display: none;
 }
 
@@ -3413,6 +3431,27 @@ watch(() => props.initialEventId, (eventId) => {
     transform: none;
     box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
   }
+  .draft-mobile-history-trigger {
+    position: fixed;
+    top: 140px;
+    left: 12px;
+    z-index: 36;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid #bfdbfe;
+    background: #fff;
+    color: #1d4ed8;
+    border-radius: 8px;
+    box-shadow: 0 6px 14px rgba(37, 99, 235, 0.14);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 900;
+  }
+  .draft-mobile-history-trigger:hover { background: #eff6ff; border-color: #60a5fa; }
+  .draft-mobile-history-trigger:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.24); outline-offset: 2px; }
 }
 
 @media (max-width: 860px) {

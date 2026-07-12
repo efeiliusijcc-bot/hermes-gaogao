@@ -5,14 +5,20 @@ import {
   writeHistorySidebarPreference,
 } from '../lib/draftHistorySidebar.js'
 
-export function useCollapsibleHistorySidebar({ currentEventId, currentStep, draftStatus, editorMode, searchFocused }) {
+export function useCollapsibleHistorySidebar({
+  currentEventId,
+  currentStep,
+  draftStatus,
+  editorMode,
+  searchFocused,
+  sidebarComponentRef,
+  autoCollapseTargetRef,
+}) {
   const storage = typeof window !== 'undefined' ? window.localStorage : null
   const preference = ref(readHistorySidebarPreference(storage))
   const collapsed = ref(preference.value === 'collapsed')
   const manuallyChangedForCurrentEvent = ref(false)
   const autoCollapseNoticeVisible = ref(false)
-  const sidebarRef = ref(null)
-  const toggleRef = ref(null)
   const notifiedEvents = new Set()
   let noticeTimer = null
   let previousEventId = ''
@@ -43,9 +49,15 @@ export function useCollapsibleHistorySidebar({ currentEventId, currentStep, draf
     collapsed.value = searchFocused?.value && nextCollapsed && !collapsed.value ? false : nextCollapsed
     previousEventId = eventId
     if (!wasCollapsed && collapsed.value && preference.value === 'auto') showAutoCollapseNotice(eventId)
-    if (collapsed.value && sidebarRef.value?.contains(document.activeElement)) {
+    if (!wasCollapsed && collapsed.value && preference.value === 'auto') {
+      const sidebarRoot = sidebarComponentRef?.value?.root
+      const focusWasInSidebar = sidebarRoot?.contains(document.activeElement)
       await nextTick()
-      toggleRef.value?.focus()
+      if (focusWasInSidebar) {
+        sidebarComponentRef?.value?.toggleButton?.focus({ preventScroll: true })
+      } else {
+        autoCollapseTargetRef?.value?.focus({ preventScroll: true })
+      }
     }
   }
 
@@ -85,8 +97,6 @@ export function useCollapsibleHistorySidebar({ currentEventId, currentStep, draf
     preference,
     manuallyChangedForCurrentEvent,
     autoCollapseNoticeVisible,
-    sidebarRef,
-    toggleRef,
     toggle,
     expand,
     collapse,

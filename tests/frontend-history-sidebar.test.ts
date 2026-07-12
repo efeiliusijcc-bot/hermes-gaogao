@@ -26,6 +26,7 @@ assert.equal(resolveHistorySidebarCollapsed({ currentStep: 4, eventChanged: true
 // 3. generating -> generated triggers collapse only after completion.
 assert.equal(shouldAutoCollapseHistory({ currentStep: 3, draftStatus: 'generating' }), false);
 assert.equal(shouldAutoCollapseHistory({ currentStep: 3, draftStatus: 'generated' }), true);
+assert.equal(shouldAutoCollapseHistory({ currentStep: 3, draftStatus: 'completed' }), true);
 
 // 4. A manual expanded preference wins over autosave and ordinary refreshes.
 assert.equal(resolveHistorySidebarCollapsed({ preference: 'expanded', currentStep: 4, draftStatus: 'completed' }), false);
@@ -60,6 +61,10 @@ const assistantSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftAssistant.vue', import.meta.url),
   'utf8',
 );
+const composableSource = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/composables/useCollapsibleHistorySidebar.js', import.meta.url),
+  'utf8',
+);
 
 // 10. Collapsed mode hides full titles visually but keeps accessible labels/tooltips.
 assert.match(sidebarSource, /v-if="collapsed"/);
@@ -69,6 +74,8 @@ assert.match(sidebarSource, /:aria-label="`\$\{item\.title\}/);
 // 11. Toggle exposes aria-expanded and aria-controls.
 assert.match(sidebarSource, /:aria-expanded="!collapsed"/);
 assert.match(sidebarSource, /aria-controls="draft-history-sidebar-content"/);
+assert.match(sidebarSource, /@keydown\.enter\.prevent="requestToggle"/);
+assert.match(sidebarSource, /@keydown\.space\.prevent="requestToggle"/);
 
 // 12. Reduced-motion disables both sidebar and grid transitions.
 assert.match(sidebarSource, /prefers-reduced-motion: reduce/);
@@ -78,6 +85,12 @@ assert.match(assistantSource, /grid-template-columns 210ms ease/);
 // 13. Collapse code never mutates scrollTop or calls scrollTo.
 assert.doesNotMatch(sidebarSource, /scrollTop\s*=|scrollTo\s*\(/);
 assert.doesNotMatch(assistantSource, /historySidebarCollapsed[\s\S]{0,200}(scrollTop\s*=|scrollTo\s*\()/);
+assert.match(composableSource, /focus\(\{ preventScroll: true \}\)/);
+assert.match(assistantSource, /ref="draftPrimaryHeading" tabindex="-1"/);
+assert.match(assistantSource, /selectedOutline\.value\?\.outlineId \? 'completed' : 'idle'/);
+assert.match(assistantSource, /aria-label="打开历史事件"/);
+assert.match(assistantSource, /@media \(max-width: 1099px\)[\s\S]*\.draft-mobile-history-trigger/);
+assert.match(assistantSource, /<aside v-if="!historyNavigationMode" class="draft-panel draft-left"/);
 
 // 14. Generation failure does not auto-collapse.
 assert.equal(shouldAutoCollapseHistory({ currentStep: 3, draftStatus: 'failed' }), false);
