@@ -9,6 +9,7 @@ import type {
 const LEADING_PREFIX_PATTERN = /^(【[^】]{1,20}】|\[[^\]]{1,20}\]|快讯[:：]?|突发[:：]?|独家[:：]?|最新[:：]?)+/i;
 const SOURCE_SUFFIX_PATTERN = /([_-]\s*)?(bbc|cnn|reuters|ap|法新社|路透社|新华社|央视新闻|环球网|观察者网)$/i;
 const MOJIBAKE_PREFIX_PATTERN = /^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\]+(?=[\p{L}\p{N}\u4e00-\u9fff])/u;
+const MOJIBAKE_SUFFIX_PATTERN = /(?<=[\p{L}\p{N}\u4e00-\u9fff])[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u;
 const MOSTLY_PLACEHOLDER_PATTERN = /^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u;
 
 export function buildDailyMaterialWindow(targetDate: string, lookbackHours = 24) {
@@ -42,6 +43,7 @@ export function sanitizeSourceText(value: unknown): string {
   const text = String(value || '')
     .replace(/\u0000/g, '')
     .replace(MOJIBAKE_PREFIX_PATTERN, '')
+    .replace(MOJIBAKE_SUFFIX_PATTERN, '')
     .trim();
   if (!text || MOSTLY_PLACEHOLDER_PATTERN.test(text)) return '';
   return text;
