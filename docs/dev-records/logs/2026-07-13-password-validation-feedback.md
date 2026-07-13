@@ -24,12 +24,13 @@
 * 首尾空格边界失败验证：` user12 ` 初次被前端误判为有效，测试准确捕获与后端规则不一致。
 * `npx tsx tests/user-create-validation.test.ts`：通过。
 * `npx pnpm@9.15.9 --dir b_k3ewYvsOEc1 build`：通过；仅有已有的 Browserslist 数据更新提示，不影响构建。
+* 线上部署验证：Vercel 已切换至资源 `index-IG5HTi0H.js`，线上构建中包含“密码还需…”和“密码要求已满足”提示。
 
 ## 额外操作
 
 * 本次未修改数据库、环境变量和依赖。
 * 本次不需要后端服务重启。
-* 前端提交并推送后需要等待 Vercel 完成部署。
+* Git 提交 `4693c00` 已推送至 `origin/main`，Vercel 前端部署已生效。
 
 ## 已知风险
 
