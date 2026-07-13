@@ -32,15 +32,6 @@ const {
   planSearchSelections,
   planSourceInput,
   planSupplement,
-  crawlerPlan,
-  planningSessionId,
-  planningCrawlerTask,
-  planningCrawlerItems,
-  selectedCrawlerItemIds,
-  planningCrawlerStatus,
-  planningCrawlerError,
-  planningCrawlerNotice,
-  planningCrawlerExpandedIds,
   databaseSourceEnabled,
   useMyPreferences,
   databaseSources,
@@ -86,11 +77,6 @@ const {
   togglePlanOption,
   addPlanOption,
   togglePlanSearchQuery,
-  runPlanningCrawler,
-  togglePlanningCrawlerItem,
-  selectPlanningCrawlerItems,
-  togglePlanningCrawlerItemExpanded,
-  removeLowQualityPlanningCrawlerItems,
   nextPlanStep,
   prevPlanStep,
   refreshHealth,
@@ -628,17 +614,8 @@ function jobActionLabel(status) {
         :planStepIndex="planStepIndex"
         :planSelections="planSelections"
         :planSearchSelections="planSearchSelections"
-        :planningSessionId="planningSessionId"
-        :planningCrawlerTask="planningCrawlerTask"
-        :planningCrawlerItems="planningCrawlerItems"
-        :selectedCrawlerItemIds="selectedCrawlerItemIds"
-        :planningCrawlerStatus="planningCrawlerStatus"
-        :planningCrawlerError="planningCrawlerError"
-        :planningCrawlerNotice="planningCrawlerNotice"
-        :planningCrawlerExpandedIds="planningCrawlerExpandedIds"
         v-model:planSourceInput="planSourceInput"
         v-model:planSupplement="planSupplement"
-        v-model:crawlerPlan="crawlerPlan"
         v-model:databaseSourceEnabled="databaseSourceEnabled"
         v-model:useMyPreferences="useMyPreferences"
         :planError="planError"
@@ -658,11 +635,6 @@ function jobActionLabel(status) {
         @toggle-plan-option="togglePlanOption"
         @add-plan-option="addPlanOption"
         @toggle-plan-search-query="togglePlanSearchQuery"
-        @run-planning-crawler="runPlanningCrawler"
-        @toggle-planning-crawler-item="togglePlanningCrawlerItem"
-        @select-planning-crawler-items="selectPlanningCrawlerItems"
-        @toggle-planning-crawler-item-expanded="togglePlanningCrawlerItemExpanded"
-        @remove-low-quality-planning-crawler-items="removeLowQualityPlanningCrawlerItems"
         @next-plan-step="nextPlanStep"
         @prev-plan-step="prevPlanStep"
         @update:homeMode="setHomeMode"

@@ -1,7 +1,6 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   createReportPlan,
-  createCrawlerTask,
   createReportJob,
   deleteReportJob,
   fetchHermesHealth,
@@ -12,12 +11,10 @@ import {
   fetchReportProgress,
   fetchReportResult,
   fetchVectorSourceStatus,
-  getCrawlerTaskItems,
   getAuthToken,
   getJobEventsUrl,
   permanentlyDeleteReportJob,
   restoreReportJob,
-  runCrawlerTask,
 } from '../lib/api.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
@@ -144,15 +141,6 @@ export function useReportJobs() {
   const planSearchSelections = ref([])
   const planSourceInput = ref('')
   const planSupplement = ref('')
-  const crawlerPlan = ref(createDefaultCrawlerPlan())
-  const planningSessionId = ref(createPlanningSessionId())
-  const planningCrawlerTask = ref(null)
-  const planningCrawlerItems = ref([])
-  const selectedCrawlerItemIds = ref([])
-  const planningCrawlerStatus = ref('idle')
-  const planningCrawlerError = ref('')
-  const planningCrawlerNotice = ref('')
-  const planningCrawlerExpandedIds = ref([])
   const databaseSourceEnabled = ref(true)
   const useMyPreferences = ref(false)
   const planError = ref('')
@@ -207,14 +195,6 @@ export function useReportJobs() {
   const seenExecutionEventsByJobId = new Map()
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-  function createPlanningSessionId() {
-    try {
-      return window.crypto?.randomUUID?.() || `planning-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    } catch {
-      return `planning-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    }
-  }
-
   const isHistoryMode = computed(() => Boolean(openedHistoryJobId.value) && phase.value === 'done')
   const hasActiveWorkspace = computed(() => {
     return Boolean(activeWorkspaceSnapshot.value) || phase.value !== 'idle' || Boolean(job.value) || Boolean(title.value.trim()) || Boolean(generatedHtml.value)
@@ -1005,21 +985,8 @@ export function useReportJobs() {
     planSearchSelections.value = []
     planSourceInput.value = ''
     planSupplement.value = ''
-    crawlerPlan.value = createDefaultCrawlerPlan()
-    resetPlanningCrawlerState(true)
     databaseSourceEnabled.value = true
     planError.value = ''
-  }
-
-  function resetPlanningCrawlerState(newSession = false) {
-    if (newSession) planningSessionId.value = createPlanningSessionId()
-    planningCrawlerTask.value = null
-    planningCrawlerItems.value = []
-    selectedCrawlerItemIds.value = []
-    planningCrawlerStatus.value = 'idle'
-    planningCrawlerError.value = ''
-    planningCrawlerNotice.value = ''
-    planningCrawlerExpandedIds.value = []
   }
 
   function isVectorSourceUsable(status = vectorSourceStatus.value) {
@@ -1087,7 +1054,7 @@ export function useReportJobs() {
       const recommended = recommendedIds.has(option.id)
       return {
         ...option,
-        detail: `${option.detail} 这是联网检索方向，采集结果以实际命中为准。`,
+        detail: `${option.detail} 这是本次编报的联网检索方向。`,
         selected: recommended,
         sourceGroup: 'network',
         statusLabel: recommended ? '主题推荐' : '检索方向',
@@ -1243,16 +1210,6 @@ export function useReportJobs() {
       .split(/\r?\n|；|;/)
       .map((item) => item.trim())
       .filter(Boolean)
-    const normalizedCrawlerPlan = normalizeCrawlerPlan(crawlerPlan.value, {
-      topic: title.value.trim(),
-      selectedQueries,
-      userProvidedSources,
-      forPayload: true,
-    })
-    const crawlerTaskIds = planningCrawlerTask.value?.taskId ? [planningCrawlerTask.value.taskId] : []
-    const selectedCrawlerItems = selectedPlanningCrawlerItems()
-    const crawlerSourceContext = buildPlanningCrawlerSourceContext()
-
     const context = {
       version: 1,
       kind: 'structured_report_context',
@@ -1271,175 +1228,18 @@ export function useReportJobs() {
         storageMode: 'pgvector_single_table',
         sourceTable: vectorSourceStatus.value?.sourceTable || 'vector_materials_qwen3',
       },
-      crawlerPlan: normalizedCrawlerPlan,
-      crawlerTaskIds,
-      selectedCrawlerItemIds: selectedCrawlerItems.map((item) => item.itemId),
-      ...(crawlerSourceContext ? { crawlerSourceContext } : {}),
       selectedModules,
       parameterValues: selectedParameterValues,
       freeTextContext: contextText.value.trim(),
       supplement: planSupplement.value.trim(),
       instructions: {
-        researchPhase: 'Use PostgreSQL pgvector source recall first when databaseSourceOptions.enabled is true. If crawlerPlan.executePhase is planning and crawlerPlan.alreadyExecuted is true, use only crawlerSourceContext.items selected on the planning page and do not call source-collection-agent or controlled-web-collector unless allowFurtherCollectionInResearch is explicitly true. Do not override report_plan, databaseSourceOptions, userPreferenceContext, or draftAssistantContext. Return evidence cards, key findings, verification-needed items, and information gaps as internal material.',
+        researchPhase: 'Use PostgreSQL pgvector source recall first when databaseSourceOptions.enabled is true, then use accepted internet sources as needed. Do not override report_plan, databaseSourceOptions, userPreferenceContext, or draftAssistantContext. Return evidence cards, key findings, verification-needed items, and information gaps as internal material.',
         writeHbPhase: 'Use write-hb after research to draft the final report by sectionTitle. Expand only the selectedDirections under each selected report section.',
         citationPolicy: 'Do not put raw URLs in report body paragraphs; keep full URLs only in the final references section.',
       },
     }
 
     return JSON.stringify(context, null, 2)
-  }
-
-  function createDefaultCrawlerPlan(topic = '') {
-    const subject = String(topic || title.value || '').trim()
-    const queryPrefix = subject || '本次编报主题'
-    return {
-      enabled: false,
-      mode: 'hybrid',
-      goal: subject ? `补充${subject}相关公开资料` : '补充本次编报相关公开资料',
-      autoGapFilling: true,
-      directions: [
-        {
-          name: '官方政策与公告',
-          enabled: true,
-          description: '补充政府公告、监管文件和官方表态。',
-          queries: [`${queryPrefix} 官方 公告 政策 监管`],
-          targetDomains: [],
-        },
-        {
-          name: '主流媒体报道',
-          enabled: true,
-          description: '补充权威媒体报道、事实进展和时间线。',
-          queries: [`${queryPrefix} 主流媒体 报道 时间线`],
-          targetDomains: [],
-        },
-        {
-          name: '行业组织与专家分析',
-          enabled: true,
-          description: '补充行业组织、智库和专家对影响路径的分析。',
-          queries: [`${queryPrefix} 行业组织 专家 分析`],
-          targetDomains: [],
-        },
-        {
-          name: '企业与主体动态',
-          enabled: true,
-          description: '补充相关企业、机构或关键主体的公开动态。',
-          queries: [`${queryPrefix} 企业 主体 动态`],
-          targetDomains: [],
-        },
-        {
-          name: '社交舆情与争议点',
-          enabled: false,
-          description: '补充公开舆情、争议点和传播风险线索。',
-          queries: [`${queryPrefix} 舆情 争议 风险`],
-          targetDomains: [],
-        },
-      ],
-      manualUrls: [],
-      manualDomains: [],
-      manualKeywords: [],
-      maxPages: 10,
-      maxDepth: 1,
-      lookbackHours: '',
-      language: 'zh-CN',
-      executePhase: 'planning',
-      alreadyExecuted: false,
-      allowFurtherCollectionInResearch: false,
-      sourcePhase: 'planning',
-    }
-  }
-
-  function normalizeStringList(value, limit = 50) {
-    const raw = Array.isArray(value) ? value : String(value || '').split(/\r?\n|；|;|,|，/)
-    return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, limit)
-  }
-
-  function normalizeCrawlerDirections(value) {
-    const fallback = createDefaultCrawlerPlan().directions
-    const list = Array.isArray(value) && value.length ? value : fallback
-    return list
-      .map((direction, index) => ({
-        name: String(direction?.name || fallback[index]?.name || `采集方向 ${index + 1}`).trim(),
-        enabled: direction?.enabled !== false,
-        description: String(direction?.description || '').trim(),
-        queries: normalizeStringList(direction?.queries, 12),
-        targetDomains: normalizeStringList(direction?.targetDomains, 12),
-      }))
-      .filter((direction) => direction.name)
-      .slice(0, 12)
-  }
-
-  function normalizeCrawlerItemForContext(item) {
-    const metadata = item?.metadata && typeof item.metadata === 'object' ? item.metadata : {}
-    return {
-      itemId: String(item?.itemId || item?.id || '').trim(),
-      taskId: String(item?.taskId || '').trim(),
-      title: String(item?.title || item?.url || '未命名采集信源').trim(),
-      url: String(item?.url || '').trim(),
-      publisher: String(item?.publisher || metadata.publisher || '').trim(),
-      publishedAt: item?.publishedAt || metadata.publishedAt || null,
-      fetchedAt: item?.fetchedAt || item?.createdAt || null,
-      contentSummary: String(item?.contentSummary || item?.summary || '').trim(),
-      contentText: String(item?.contentText || '').trim(),
-      sourceType: 'crawler',
-      sourcePhase: 'planning',
-      relevanceScore: item?.relevanceScore ?? metadata.relevanceScore ?? null,
-      credibilityScore: item?.credibilityScore ?? metadata.credibilityScore ?? null,
-    }
-  }
-
-  function selectedPlanningCrawlerItems() {
-    const selected = new Set(selectedCrawlerItemIds.value)
-    return planningCrawlerItems.value
-      .map(normalizeCrawlerItemForContext)
-      .filter((item) => item.itemId && selected.has(item.itemId))
-  }
-
-  function buildPlanningCrawlerSourceContext() {
-    const selectedItems = selectedPlanningCrawlerItems()
-    const task = planningCrawlerTask.value
-    if (!selectedItems.length && !task?.taskId) return null
-    return {
-      source: 'planning_selected_sources',
-      planningSessionId: planningSessionId.value,
-      tasks: task?.taskId
-        ? [{
-            taskId: task.taskId,
-            status: task.status || planningCrawlerStatus.value,
-            itemCount: planningCrawlerItems.value.length,
-            selectedCount: selectedItems.length,
-          }]
-        : [],
-      items: selectedItems,
-    }
-  }
-
-  function normalizeCrawlerPlan(value, context = {}) {
-    const base = createDefaultCrawlerPlan(context.topic)
-    const plan = value && typeof value === 'object' ? value : {}
-    const maxPages = Number(plan.maxPages)
-    const maxDepth = Number(plan.maxDepth)
-    const lookbackHours = Number(plan.lookbackHours)
-    const hasExecutedPlanningCrawler = planningCrawlerStatus.value === 'completed' && Boolean(planningCrawlerTask.value?.taskId)
-    return {
-      enabled: context.forPayload ? (plan.enabled === true && hasExecutedPlanningCrawler) : plan.enabled === true,
-      mode: ['auto', 'manual', 'hybrid'].includes(plan.mode) ? plan.mode : 'hybrid',
-      goal: String(plan.goal || base.goal).trim(),
-      autoGapFilling: plan.autoGapFilling !== false,
-      directions: normalizeCrawlerDirections(plan.directions),
-      manualUrls: normalizeStringList(plan.manualUrls),
-      manualDomains: normalizeStringList(plan.manualDomains),
-      manualKeywords: normalizeStringList(plan.manualKeywords || context.selectedQueries),
-      maxPages: Number.isFinite(maxPages) ? Math.max(1, Math.min(50, Math.floor(maxPages))) : 10,
-      maxDepth: Number.isFinite(maxDepth) ? Math.max(0, Math.min(3, Math.floor(maxDepth))) : 1,
-      lookbackHours: Number.isFinite(lookbackHours) && lookbackHours > 0 ? Math.max(1, Math.min(720, Math.floor(lookbackHours))) : null,
-      language: String(plan.language || 'zh-CN').trim() || 'zh-CN',
-      executePhase: 'planning',
-      alreadyExecuted: hasExecutedPlanningCrawler,
-      allowFurtherCollectionInResearch: plan.allowFurtherCollectionInResearch === true,
-      planningSessionId: planningSessionId.value,
-      sourcePhase: 'planning',
-      reportTitle: title.value.trim(),
-    }
   }
 
   function buildPlanningFocusAreas(extraContext = '') {
@@ -1621,8 +1421,6 @@ export function useReportJobs() {
         .map((option) => option.id)
     }
     planSelections.value = selections
-    resetPlanningCrawlerState(true)
-    crawlerPlan.value = createDefaultCrawlerPlan(title.value.trim())
   }
 
   function togglePlanOption(stepId, optionId) {
@@ -1699,134 +1497,6 @@ export function useReportJobs() {
 
   function prevPlanStep() {
     planStepIndex.value = Math.max(planStepIndex.value - 1, 0)
-  }
-
-  function crawlerItemId(item) {
-    return String(item?.itemId || item?.id || '').trim()
-  }
-
-  function crawlerScore(value) {
-    const score = Number(value)
-    return Number.isFinite(score) ? score : 0
-  }
-
-  async function runPlanningCrawler() {
-    if (planningCrawlerStatus.value === 'running') return
-    const normalized = normalizeCrawlerPlan(crawlerPlan.value, {
-      topic: title.value.trim(),
-      selectedQueries: planSearchSelections.value,
-      userProvidedSources: planSourceInput.value,
-    })
-    if (!normalized.enabled) {
-      planningCrawlerError.value = '请先启用资料采集。'
-      return
-    }
-    if (!getAuthToken()) {
-      planningCrawlerError.value = '请先登录后再执行资料采集。'
-      return
-    }
-
-    planningCrawlerStatus.value = 'running'
-    planningCrawlerError.value = ''
-    planningCrawlerNotice.value = '资料采集工具正在采集公开信源，请稍候。'
-    planningCrawlerItems.value = []
-    selectedCrawlerItemIds.value = []
-    planningCrawlerExpandedIds.value = []
-
-    try {
-      const created = await createCrawlerTask({
-        planningSessionId: planningSessionId.value,
-        title: title.value.trim() || '规划阶段资料采集',
-        goal: normalized.goal,
-        crawlerPlan: {
-          ...normalized,
-          executePhase: 'planning',
-          alreadyExecuted: false,
-          allowFurtherCollectionInResearch: false,
-        },
-        sourcePhase: 'planning',
-        reportTitle: title.value.trim(),
-        maxPages: normalized.maxPages,
-        maxDepth: normalized.maxDepth,
-      })
-      const task = created?.task || created
-      planningCrawlerTask.value = task
-      const taskId = task?.taskId
-      if (!taskId) throw new Error('资料采集任务创建失败：缺少 taskId。')
-
-      const runResult = await runCrawlerTask(taskId)
-      const latestTask = runResult?.task || task
-      planningCrawlerTask.value = latestTask
-      const responseItems = Array.isArray(runResult?.items) ? runResult.items : []
-      const itemResponse = responseItems.length ? { items: responseItems } : await getCrawlerTaskItems(taskId)
-      const items = Array.isArray(itemResponse?.items) ? itemResponse.items : []
-      planningCrawlerItems.value = items
-      selectedCrawlerItemIds.value = items.map(crawlerItemId).filter(Boolean)
-      planningCrawlerStatus.value = latestTask?.status === 'failed' || !items.length ? 'failed' : 'completed'
-      planningCrawlerNotice.value = items.length
-        ? `已采集 ${items.length} 条公开信源，已选择 ${selectedCrawlerItemIds.value.length} 条纳入正式编报。`
-        : '资料采集完成，但未采集到可用公开信源。'
-      crawlerPlan.value = {
-        ...normalized,
-        enabled: true,
-        executePhase: 'planning',
-        alreadyExecuted: items.length > 0,
-        allowFurtherCollectionInResearch: false,
-        planningSessionId: planningSessionId.value,
-        sourcePhase: 'planning',
-        reportTitle: title.value.trim(),
-      }
-    } catch (error) {
-      planningCrawlerStatus.value = 'failed'
-      planningCrawlerError.value = error instanceof Error ? error.message : String(error)
-      planningCrawlerNotice.value = ''
-    }
-  }
-
-  function togglePlanningCrawlerItem(itemId) {
-    const id = String(itemId || '').trim()
-    if (!id) return
-    const current = new Set(selectedCrawlerItemIds.value)
-    if (current.has(id)) current.delete(id)
-    else current.add(id)
-    selectedCrawlerItemIds.value = Array.from(current)
-    planningCrawlerNotice.value = `已采集 ${planningCrawlerItems.value.length} 条公开信源，已选择 ${selectedCrawlerItemIds.value.length} 条纳入正式编报。`
-  }
-
-  function selectPlanningCrawlerItems(mode = 'all') {
-    const items = planningCrawlerItems.value
-    let next = []
-    if (mode === 'none') next = []
-    else if (mode === 'high-relevance') {
-      next = items.filter((item) => crawlerScore(item?.relevanceScore) >= 70).map(crawlerItemId).filter(Boolean)
-    } else if (mode === 'high-credibility') {
-      next = items.filter((item) => crawlerScore(item?.credibilityScore) >= 70).map(crawlerItemId).filter(Boolean)
-    } else {
-      next = items.map(crawlerItemId).filter(Boolean)
-    }
-    selectedCrawlerItemIds.value = next
-    planningCrawlerNotice.value = `已采集 ${items.length} 条公开信源，已选择 ${next.length} 条纳入正式编报。`
-  }
-
-  function togglePlanningCrawlerItemExpanded(itemId) {
-    const id = String(itemId || '').trim()
-    if (!id) return
-    const current = new Set(planningCrawlerExpandedIds.value)
-    if (current.has(id)) current.delete(id)
-    else current.add(id)
-    planningCrawlerExpandedIds.value = Array.from(current)
-  }
-
-  function removeLowQualityPlanningCrawlerItems() {
-    const kept = planningCrawlerItems.value.filter((item) => {
-      const relevance = crawlerScore(item?.relevanceScore)
-      const credibility = crawlerScore(item?.credibilityScore)
-      return relevance >= 40 || credibility >= 40
-    })
-    const keptIds = new Set(kept.map(crawlerItemId).filter(Boolean))
-    planningCrawlerItems.value = kept
-    selectedCrawlerItemIds.value = selectedCrawlerItemIds.value.filter((id) => keptIds.has(id))
-    planningCrawlerNotice.value = `已保留 ${kept.length} 条公开信源，已选择 ${selectedCrawlerItemIds.value.length} 条纳入正式编报。`
   }
 
   function cancelReportPlan() {
@@ -2251,15 +1921,6 @@ export function useReportJobs() {
     planSearchSelections,
     planSourceInput,
     planSupplement,
-    crawlerPlan,
-    planningSessionId,
-    planningCrawlerTask,
-    planningCrawlerItems,
-    selectedCrawlerItemIds,
-    planningCrawlerStatus,
-    planningCrawlerError,
-    planningCrawlerNotice,
-    planningCrawlerExpandedIds,
     databaseSourceEnabled,
     useMyPreferences,
     planError,
@@ -2309,11 +1970,6 @@ export function useReportJobs() {
     togglePlanOption,
     addPlanOption,
     togglePlanSearchQuery,
-    runPlanningCrawler,
-    togglePlanningCrawlerItem,
-    selectPlanningCrawlerItems,
-    togglePlanningCrawlerItemExpanded,
-    removeLowQualityPlanningCrawlerItems,
     nextPlanStep,
     prevPlanStep,
     refreshHealth,

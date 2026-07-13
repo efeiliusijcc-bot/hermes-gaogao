@@ -60,42 +60,6 @@ const props = defineProps({
     type: String,
     default: '',
   },
-  crawlerPlan: {
-    type: Object,
-    default: () => ({}),
-  },
-  planningSessionId: {
-    type: String,
-    default: '',
-  },
-  planningCrawlerTask: {
-    type: Object,
-    default: null,
-  },
-  planningCrawlerItems: {
-    type: Array,
-    default: () => [],
-  },
-  selectedCrawlerItemIds: {
-    type: Array,
-    default: () => [],
-  },
-  planningCrawlerStatus: {
-    type: String,
-    default: 'idle',
-  },
-  planningCrawlerError: {
-    type: String,
-    default: '',
-  },
-  planningCrawlerNotice: {
-    type: String,
-    default: '',
-  },
-  planningCrawlerExpandedIds: {
-    type: Array,
-    default: () => [],
-  },
   databaseSourceEnabled: {
     type: Boolean,
     default: true,
@@ -164,7 +128,6 @@ const emit = defineEmits([
   'update:activeParameters',
   'update:planSourceInput',
   'update:planSupplement',
-  'update:crawlerPlan',
   'update:databaseSourceEnabled',
   'update:useMyPreferences',
   'update:homeMode',
@@ -176,11 +139,6 @@ const emit = defineEmits([
   'toggle-plan-option',
   'add-plan-option',
   'toggle-plan-search-query',
-  'run-planning-crawler',
-  'toggle-planning-crawler-item',
-  'select-planning-crawler-items',
-  'toggle-planning-crawler-item-expanded',
-  'remove-low-quality-planning-crawler-items',
   'next-plan-step',
   'prev-plan-step',
   'open-daily-awareness',
@@ -298,27 +256,6 @@ const verifiedPlanSourceOptions = computed(() => (currentPlanStep.value?.options
 const networkPlanSourceOptions = computed(() => (currentPlanStep.value?.options || []).filter((option) => option.sourceGroup !== 'verified' && option.id !== 'database-source'))
 const isSupplementPlanStep = computed(() => currentPlanStep.value?.type === 'supplement')
 const manualPlanSources = computed(() => parseManualPlanSources(props.planSourceInput))
-const crawlerPlanView = computed(() => normalizeCrawlerPlanForView(props.crawlerPlan))
-const selectedCrawlerItemSet = computed(() => new Set((props.selectedCrawlerItemIds || []).map((item) => String(item))))
-const planningCrawlerStats = computed(() => ({
-  taskCount: props.planningCrawlerTask?.taskId ? 1 : 0,
-  itemCount: props.planningCrawlerItems?.length || 0,
-  selectedCount: props.selectedCrawlerItemIds?.length || 0,
-  failedUrlCount: Number(props.planningCrawlerTask?.crawlerPlan?.failedUrlCount || 0),
-  blockedUrlCount: Number(props.planningCrawlerTask?.crawlerPlan?.blockedUrlCount || 0),
-}))
-const planningCrawlerStatusLabel = computed(() => {
-  if (props.planningCrawlerStatus === 'running') return '采集中'
-  if (props.planningCrawlerStatus === 'completed') return '采集完成'
-  if (props.planningCrawlerStatus === 'failed') return '采集失败'
-  return '未开始'
-})
-const planningCrawlerStatusClass = computed(() => {
-  if (props.planningCrawlerStatus === 'running') return 'running'
-  if (props.planningCrawlerStatus === 'completed') return 'completed'
-  if (props.planningCrawlerStatus === 'failed') return 'failed'
-  return 'idle'
-})
 const reportTypeLabel = computed(() => {
   if (effectiveReportType.value === 'person-intelligence-report') return '人物报'
   if (effectiveReportType.value === 'risk-assessment-reports') return '风险报'
@@ -2035,154 +1972,6 @@ function parseManualPlanSources(value) {
     })
 }
 
-function parseCrawlerList(value) {
-  const seen = new Set()
-  const source = Array.isArray(value) ? value : String(value || '').split(/\r?\n|[；;,，]/)
-  return source
-    .map((item) => String(item || '').trim())
-    .filter(Boolean)
-    .filter((item) => {
-      const key = item.toLowerCase()
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-}
-
-function defaultCrawlerDirections() {
-  const topic = String(props.title || '').trim() || '本次编报主题'
-  return [
-    {
-      name: '官方政策与公告',
-      enabled: true,
-      description: '补充政府公告、监管文件和官方表态。',
-      queries: [`${topic} 官方 公告 政策 监管`],
-      targetDomains: [],
-    },
-    {
-      name: '主流媒体报道',
-      enabled: true,
-      description: '补充权威媒体报道、事实进展和时间线。',
-      queries: [`${topic} 主流媒体 报道 时间线`],
-      targetDomains: [],
-    },
-    {
-      name: '行业组织与专家分析',
-      enabled: true,
-      description: '补充行业组织、智库和专家对影响路径的分析。',
-      queries: [`${topic} 行业组织 专家 分析`],
-      targetDomains: [],
-    },
-    {
-      name: '企业与主体动态',
-      enabled: true,
-      description: '补充相关企业、机构或关键主体的公开动态。',
-      queries: [`${topic} 企业 主体 动态`],
-      targetDomains: [],
-    },
-    {
-      name: '社交舆情与争议点',
-      enabled: false,
-      description: '补充公开舆情、争议点和传播风险线索。',
-      queries: [`${topic} 舆情 争议 风险`],
-      targetDomains: [],
-    },
-  ]
-}
-
-function normalizeCrawlerPlanForView(plan = {}) {
-  const directions = Array.isArray(plan.directions) && plan.directions.length ? plan.directions : defaultCrawlerDirections()
-  return {
-    enabled: plan.enabled === true,
-    mode: ['auto', 'manual', 'hybrid'].includes(plan.mode) ? plan.mode : 'hybrid',
-    goal: String(plan.goal || `补充${props.title || '本次编报主题'}相关公开资料`).trim(),
-    autoGapFilling: plan.autoGapFilling !== false,
-    directions: directions.map((direction, index) => ({
-      name: String(direction?.name || `采集方向 ${index + 1}`).trim(),
-      enabled: direction?.enabled !== false,
-      description: String(direction?.description || '').trim(),
-      queries: parseCrawlerList(direction?.queries),
-      targetDomains: parseCrawlerList(direction?.targetDomains),
-    })),
-    manualUrls: parseCrawlerList(plan.manualUrls),
-    manualDomains: parseCrawlerList(plan.manualDomains),
-    manualKeywords: parseCrawlerList(plan.manualKeywords),
-    maxPages: Number(plan.maxPages || 10),
-    maxDepth: Number(plan.maxDepth ?? 1),
-    lookbackHours: plan.lookbackHours ?? '',
-    language: String(plan.language || 'zh-CN'),
-    executePhase: 'planning',
-    alreadyExecuted: plan.alreadyExecuted === true,
-    allowFurtherCollectionInResearch: plan.allowFurtherCollectionInResearch === true,
-    planningSessionId: String(plan.planningSessionId || props.planningSessionId || ''),
-    sourcePhase: 'planning',
-  }
-}
-
-function updateCrawlerPlan(patch) {
-  emit('update:crawlerPlan', {
-    ...crawlerPlanView.value,
-    ...patch,
-    executePhase: 'planning',
-    sourcePhase: 'planning',
-    allowFurtherCollectionInResearch: false,
-  })
-}
-
-function updateCrawlerList(key, value) {
-  updateCrawlerPlan({ [key]: parseCrawlerList(value) })
-}
-
-function crawlerListText(value) {
-  return parseCrawlerList(value).join('\n')
-}
-
-function updateCrawlerDirection(index, patch) {
-  const directions = crawlerPlanView.value.directions.map((direction, directionIndex) => (
-    directionIndex === index ? { ...direction, ...patch } : direction
-  ))
-  updateCrawlerPlan({ directions })
-}
-
-function updateCrawlerDirectionList(index, key, value) {
-  updateCrawlerDirection(index, { [key]: parseCrawlerList(value) })
-}
-
-function crawlerItemId(item) {
-  return String(item?.itemId || item?.id || '').trim()
-}
-
-function isCrawlerItemSelected(item) {
-  return selectedCrawlerItemSet.value.has(crawlerItemId(item))
-}
-
-function isCrawlerItemExpanded(item) {
-  return (props.planningCrawlerExpandedIds || []).map((id) => String(id)).includes(crawlerItemId(item))
-}
-
-function crawlerItemTitle(item) {
-  return String(item?.title || item?.url || '未命名采集信源').trim()
-}
-
-function crawlerItemSummary(item) {
-  return String(item?.contentSummary || item?.summary || item?.contentText || '').trim()
-}
-
-function crawlerScoreLabel(value) {
-  const score = Number(value)
-  return Number.isFinite(score) ? Math.round(score) : '--'
-}
-
-function crawlerItemTime(item) {
-  const value = item?.publishedAt || item?.fetchedAt || item?.createdAt || ''
-  if (!value) return '--'
-  try {
-    return new Date(value).toLocaleString('zh-CN', { hour12: false })
-  } catch {
-    return String(value)
-  }
-}
-
 function commitManualPlanSources(items) {
   emit('update:planSourceInput', parseManualPlanSources(items.join('\n')).join('\n'))
 }
@@ -2282,10 +2071,6 @@ function classifyToolDisplayName(rawValue) {
   const raw = String(rawValue || '').toLowerCase()
   if (!raw.trim()) return ''
 
-  if (/资料采集工具|controlled-web-collector|crawler\.|crawler_sources|crawlersourcecontext/.test(raw)) {
-    return '资料采集工具'
-  }
-
   if (
     /pg-sources__query|mysql-test__mysql_query|database_sources\.json|database_query_plan\.json|vector_sources\.json/.test(raw) ||
     /\b(pg|postgres|postgresql|mysql|sql|vector|embedding|database|db)\b/.test(raw) ||
@@ -2374,7 +2159,6 @@ function workflowLogView(phase, rawLog, status) {
   if (lower.includes('sessions_yield') && lower.includes('synthesis')) return { stage: 'WAITING_SYNTHESIS', title: views.synthesis_waiting[1], description: views.synthesis_waiting[2], status }
   if (lower.includes('sessions_yield')) return { stage: 'WAITING_RESEARCH', title: views.research_waiting[1], description: views.research_waiting[2], status }
   if (lower.includes('成稿自检') || lower.includes('quality_review')) return { stage: 'QUALITY_REVIEW', title: '成稿自检', description: '系统正在检查成稿质量并生成建议。', status }
-  if (lower.includes('资料采集工具') || lower.includes('controlled-web-collector') || lower.includes('crawler.')) return { stage: 'CRAWLER', title: '资料采集', description: '系统正在按规划补充公开信源。', status }
   if (lower.includes('pg-sources__query') || lower.includes('vector_sources.json') || lower.includes('database_sources.json') || lower.includes('database_query_plan.json')) return { stage: 'PG_RECALL', title: '数据库检索', description: '系统正在优先召回 PG 向量库和数据库信源。', status }
   if (lower.includes('harness_cli.py plan') || lower.includes('plan.json')) return { stage: 'HARNESS_PLAN', title: '任务规划', description: '系统正在整理编报要求、确定信源范围并拆解调研任务。', status }
   if (lower.includes('harness_cli.py run') || lower.includes('research_') || lower.includes('research/research')) return { stage: 'RESEARCH_RUN', title: '资料采集', description: '系统正在采集公开资料并提取关键事实。', status }
@@ -2811,10 +2595,8 @@ const sourceSupplementStatus = computed(() => {
   const performance = retrievalMetrics.performance || {}
   const database = diagnostics.database || props.databaseSources?.diagnostics || {}
   const web = diagnostics.web || {}
-  const crawler = diagnostics.crawler || {}
   const databaseAccepted = Number(database.acceptedCount ?? props.databaseSources?.sources?.length ?? 0)
   const webAccepted = Number(web.acceptedCount ?? 0)
-  const crawlerAccepted = Number(crawler.acceptedCount ?? 0)
   return {
     visible: supplement.triggered === true || Boolean(supplement.reason),
     triggered: supplement.triggered === true,
@@ -2823,9 +2605,9 @@ const sourceSupplementStatus = computed(() => {
     queryCount: Array.isArray(supplement.queries) ? supplement.queries.length : 0,
     searchResultCount: Number(supplement.searchResultCount ?? web.searchResultCount ?? 0),
     fetchedCount: Number(supplement.fetchedCount ?? web.fetchedCount ?? 0),
-    acceptedCount: Number(supplement.acceptedCount ?? (webAccepted + crawlerAccepted)),
+    acceptedCount: Number(supplement.acceptedCount ?? webAccepted),
     rejectedCount: Number(supplement.rejectedCount ?? 0),
-    finalCount: databaseAccepted + webAccepted + crawlerAccepted,
+    finalCount: databaseAccepted + webAccepted,
     fetchSuccessRate: Number(webMetrics.fetchSuccessRate ?? 0),
     deduplicationRemoved: Number(deduplication.removedCount ?? 0),
     referencedCount: Number(retrievalMetrics.final?.referencedSourceCount ?? 0),
@@ -2980,10 +2762,6 @@ const sourceOverviewStats = computed(() => {
     summary.toolSearchCount,
     loadedSourceCountFor('tool_search'),
   )
-  const crawler = firstAvailableCount(
-    summary.crawlerCount,
-    loadedSourceCountFor('crawler'),
-  )
   const structuredSources = firstPositiveCount(summary.structuredSourceCount, normalizedSources.value.length)
   const reportCitations = firstPositiveCount(summary.reportReferenceCount, reportCitationNumbers.value.length)
   const failed = normalizedSources.value.filter((item) => item.status === 'failed').length
@@ -2995,7 +2773,6 @@ const sourceOverviewStats = computed(() => {
     : normalizedSources.value.filter((item) => item.status === 'snippet_only' || item.status === 'used').length
   return {
     databaseRecall,
-    crawler,
     toolSearch,
     reportCitations,
     structuredSources,
@@ -3008,13 +2785,12 @@ const sourceOverviewStats = computed(() => {
 const sourceTypeOptions = [
   { key: 'all', label: '全部' },
   { key: 'database_recall', label: '数据库检索工具' },
-  { key: 'crawler', label: '资料采集工具' },
   { key: 'tool_search', label: '互联网搜索工具' },
   { key: 'report_refs', label: '最终引用' },
   { key: 'candidate_hits', label: '被过滤候选' },
 ]
 
-const sourceKindOptions = ['全部', '官方文件', '媒体报道', '研究报告', '数据库记录', '数据库检索工具', '资料采集', '互联网搜索工具', '其他']
+const sourceKindOptions = ['全部', '官方文件', '媒体报道', '研究报告', '数据库记录', '数据库检索工具', '互联网搜索工具', '其他']
 const sourceTimeOptions = [
   { key: 'all', label: '全部时间' },
   { key: '7d', label: '近 7 天', days: 7 },
@@ -3036,14 +2812,6 @@ const sourceCardConfigs = computed(() => [
     desc: '来自 PG 向量库 / 数据库检索',
     icon: '◎',
     tone: 'blue',
-  },
-  {
-    key: 'crawler',
-    title: '资料采集工具',
-    value: sourceOverviewStats.value.crawler ?? '--',
-    desc: '来自 crawlerPlan 的受控公开采集',
-    icon: '◇',
-    tone: 'cyan',
   },
   {
     key: 'tool_search',
@@ -3072,8 +2840,7 @@ const activeSourceConfig = computed(() => {
     desc: '',
   }
   const descriptions = {
-    database_recall: ['数据库检索工具信源', '以下信源来自 PG 向量库或数据库检索，并已保留引用编号和结构化整理状态。', '暂无数据库检索工具信源', '当前报告没有数据库检索工具信源记录，您可以切换资料采集工具或互联网搜索工具查看。'],
-    crawler: ['资料采集工具信源', '以下信源来自规划阶段 crawlerPlan 触发的受控公开资料采集。', '暂无资料采集工具信源', '当前报告没有资料采集工具信源记录，您可以切换数据库检索工具或互联网搜索工具查看。'],
+    database_recall: ['数据库检索工具信源', '以下信源来自 PG 向量库或数据库检索，并已保留引用编号和结构化整理状态。', '暂无数据库检索工具信源', '当前报告没有数据库检索工具信源记录，您可以切换互联网搜索工具查看。'],
     tool_search: ['互联网搜索工具信源', '以下信源来自联网检索或正文抽取结果。', '暂无互联网搜索工具信源', '当前报告没有互联网搜索工具信源记录，您可以切换数据库检索工具查看。'],
     report_refs: ['报告引用信源', '以下信源来自报告正文中的参考编号和引用依据。', '暂无对应信源', '当前报告没有该类型的信源记录，您可以切换其他类型查看。'],
     structured_sources: ['结构化信源', '以下信源来自数据库或向量召回结果，已完成结构化整理。', '暂无对应信源', '当前报告没有该类型的信源记录，您可以切换其他类型查看。'],
@@ -3163,7 +2930,6 @@ const progressStageOrder = {
   AGENT_START: 0,
   PREPARING: 0,
   PG_RECALL: 1,
-  CRAWLER: 2,
   PLANNING: 0,
   HARNESS_PLAN: 0,
   RESEARCH_TASK: 2,
@@ -3194,7 +2960,6 @@ function rawProgressStageIndex(rawLog) {
   if (lower.includes('synthesis_writing')) return 4
   if (lower.includes('synthesis')) return 3
   if (lower.includes('consolidated.json')) return 3
-  if (lower.includes('资料采集工具') || lower.includes('controlled-web-collector') || lower.includes('crawler.')) return 2
   if (lower.includes('harness_cli.py run') || lower.includes('research_') || lower.includes('research/research') || lower.includes('sessions_yield')) return 2
   if (lower.includes('harness_cli.py plan') || lower.includes('plan.json') || lower.includes('group_')) return 0
   if (lower.includes('pg-sources__query') || lower.includes('vector_sources.json') || lower.includes('database_sources.json') || lower.includes('database_query_plan.json')) return 1
@@ -3314,7 +3079,8 @@ function scrubSourceDisplayText(value) {
 }
 
 function inferSourceGroup(source, fallbackGroup = activeSourceType.value) {
-  return resolveSourceGroup(source, fallbackGroup)
+  const group = resolveSourceGroup(source, fallbackGroup)
+  return group === 'crawler' ? 'tool_search' : group
 }
 
 function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType.value) {
@@ -3331,9 +3097,7 @@ function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType
   const sourceGroup = inferSourceGroup(source, fallbackGroup)
   const sourceType = sourceGroup === 'tool_search'
     ? '互联网搜索工具'
-    : sourceGroup === 'crawler'
-      ? '资料采集'
-      : normalizeSourceKind(firstText(source, ['source_type', 'type', 'tag', 'designated_tag', 'sourceType'], '其他'), source)
+    : normalizeSourceKind(firstText(source, ['source_type', 'type', 'tag', 'designated_tag', 'sourceType'], '其他'), source)
   const status = scrubSourceDisplayText(firstText(source, ['status', 'extract_status', 'source_status'], ''))
   const method = scrubSourceDisplayText(firstText(source, ['method', 'retrievalMode', 'collection_method'], ''))
   const failedReason = scrubSourceDisplayText(firstText(source, ['failedReason', 'failure_reason', 'error', 'message', 'note'], ''))
@@ -3365,7 +3129,7 @@ function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType
 function normalizeSourceKind(value, source = null) {
   const engine = String(source?.engine || source?.search_engine || source?.provider || '').trim().toLowerCase()
   const origin = String(source?.sourceOrigin || source?.source_origin || source?.sourceGroup || '').trim().toLowerCase()
-  if (engine === 'crawler' || /crawler/.test(origin)) return '资料采集'
+  if (engine === 'crawler' || /crawler/.test(origin)) return '互联网搜索工具'
   if (engine === 'exa') return '互联网搜索工具'
   if (engine === 'firecrawl') return '互联网搜索工具'
   if (engine === 'tavily_extract') return '互联网搜索工具'
@@ -3373,7 +3137,7 @@ function normalizeSourceKind(value, source = null) {
   if (engine === 'pg_vector' || /database_recall|pg_vector|vector/.test(origin)) return '数据库检索工具'
   const text = String(value || '').trim()
   if (!text) return '其他'
-  if (/crawler|资料采集/i.test(text)) return '资料采集'
+  if (/crawler|controlled_fetch/i.test(text)) return '互联网搜索工具'
   if (/exa|firecrawl|tavily/i.test(text)) return '互联网搜索工具'
   if (/pg|向量|vector/i.test(text)) return '数据库检索工具'
   if (/官方|政府|公告|声明|文件|policy|gov/i.test(text)) return '官方文件'
@@ -3521,7 +3285,6 @@ function localSourcePool(type = activeSourceType.value) {
 
   if (type === 'all') return [
     ...grouped.database_recall,
-    ...grouped.crawler,
     ...grouped.tool_search,
   ].sort((a, b) => b.numericScore - a.numericScore)
   return grouped[type] || []
@@ -4443,7 +4206,7 @@ function exportPdf() {
               <section class="plan-source-section">
                 <div class="plan-source-section-head">
                   <strong>联网检索方向</strong>
-                  <span>采集结果以实际命中为准</span>
+                  <span>按本次编报需要选择</span>
                 </div>
                 <div class="plan-source-option-grid">
                   <button
@@ -4465,221 +4228,9 @@ function exportPdf() {
                     <p>{{ option.detail }}</p>
                   </button>
                 </div>
-              </section>
-              <section class="plan-source-section crawler-plan-section">
-                <div class="plan-source-section-head">
-                  <strong>资料采集与补充信源</strong>
-                  <span :class="['crawler-status-pill', planningCrawlerStatusClass]">{{ planningCrawlerStatusLabel }}</span>
-                </div>
-                <p class="crawler-plan-notice">
-                  在执行正式编报任务前，可先采集公开信源。采集完成后，请选择需要纳入本次编报的材料。
-                </p>
-
-                <div class="crawler-plan-controls">
-                  <label class="crawler-plan-toggle">
-                    <input
-                      type="checkbox"
-                      :checked="crawlerPlanView.enabled"
-                      @change="updateCrawlerPlan({ enabled: $event.target.checked })"
-                    />
-                    <span>启用资料采集</span>
-                  </label>
-                  <label class="crawler-plan-toggle">
-                    <input
-                      type="checkbox"
-                      :checked="crawlerPlanView.autoGapFilling"
-                      @change="updateCrawlerPlan({ autoGapFilling: $event.target.checked })"
-                    />
-                    <span>根据缺口自动补采</span>
-                  </label>
-                  <label>
-                    <span>采集模式</span>
-                    <select
-                      class="sci-input text-sm bg-black/15"
-                      :value="crawlerPlanView.mode"
-                      @change="updateCrawlerPlan({ mode: $event.target.value })"
-                    >
-                      <option value="auto">auto：智能体根据材料缺口自动补采</option>
-                      <option value="manual">manual：仅使用人工指定线索</option>
-                      <option value="hybrid">hybrid：自动补采 + 人工线索</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>采集目标</span>
-                    <input
-                      class="sci-input text-sm bg-black/15"
-                      :value="crawlerPlanView.goal"
-                      placeholder="例如：补充英国未成年人社交媒体禁令相关公开资料"
-                      @input="updateCrawlerPlan({ goal: $event.target.value })"
-                    />
-                  </label>
-                </div>
-
-                <div class="planning-crawler-action-bar">
-                  <div>
-                    <strong>规划采集会话</strong>
-                    <span>{{ planningSessionId || '--' }}</span>
-                  </div>
-                  <button
-                    class="sci-btn text-[10px] px-4 py-2 border-neon-cyan"
-                    type="button"
-                    :disabled="planningCrawlerStatus === 'running' || !crawlerPlanView.enabled"
-                    @click="emit('run-planning-crawler')"
-                  >
-                    {{ planningCrawlerStatus === 'running' ? '采集中...' : '开始采集' }}
-                  </button>
-                </div>
-
-                <div class="planning-crawler-stats">
-                  <div><span>采集任务数</span><b>{{ planningCrawlerStats.taskCount }}</b></div>
-                  <div><span>采集结果数</span><b>{{ planningCrawlerStats.itemCount }}</b></div>
-                  <div><span>已选择结果数</span><b>{{ planningCrawlerStats.selectedCount }}</b></div>
-                  <div><span>失败 URL 数</span><b>{{ planningCrawlerStats.failedUrlCount }}</b></div>
-                  <div><span>安全规则拦截</span><b>{{ planningCrawlerStats.blockedUrlCount }}</b></div>
-                </div>
-
-                <div v-if="planningCrawlerNotice" class="crawler-result-notice">
-                  {{ planningCrawlerNotice }}
-                </div>
-                <div v-if="planningCrawlerError" class="crawler-result-error">
-                  {{ planningCrawlerError }}
-                </div>
-
-                <div class="crawler-direction-list">
-                  <article
-                    v-for="(direction, index) in crawlerPlanView.directions"
-                    :key="`${direction.name}-${index}`"
-                    class="crawler-direction-card"
-                  >
-                    <div class="crawler-direction-head">
-                      <label>
-                        <input
-                          type="checkbox"
-                          :checked="direction.enabled"
-                          @change="updateCrawlerDirection(index, { enabled: $event.target.checked })"
-                        />
-                        <span>启用</span>
-                      </label>
-                      <input
-                        class="sci-input text-sm bg-black/15"
-                        :value="direction.name"
-                        @input="updateCrawlerDirection(index, { name: $event.target.value })"
-                      />
-                    </div>
-                    <textarea
-                      class="sci-textarea text-sm bg-black/15"
-                      rows="2"
-                      :value="direction.description"
-                      placeholder="方向说明"
-                      @input="updateCrawlerDirection(index, { description: $event.target.value })"
-                    ></textarea>
-                    <div class="crawler-direction-fields">
-                      <label>
-                        <span>queries</span>
-                        <textarea
-                          class="sci-textarea text-sm bg-black/15"
-                          rows="2"
-                          :value="crawlerListText(direction.queries)"
-                          placeholder="一行一个检索词"
-                          @input="updateCrawlerDirectionList(index, 'queries', $event.target.value)"
-                        ></textarea>
-                      </label>
-                      <label>
-                        <span>targetDomains</span>
-                        <textarea
-                          class="sci-textarea text-sm bg-black/15"
-                          rows="2"
-                          :value="crawlerListText(direction.targetDomains)"
-                          placeholder="一行一个域名，例如 gov.uk"
-                          @input="updateCrawlerDirectionList(index, 'targetDomains', $event.target.value)"
-                        ></textarea>
-                      </label>
-                    </div>
-                  </article>
-                </div>
-
-                <div class="crawler-manual-grid">
-                  <label>
-                    <span>manualUrls</span>
-                    <textarea
-                      class="sci-textarea text-sm bg-black/15"
-                      rows="3"
-                      :value="crawlerListText(crawlerPlanView.manualUrls)"
-                      placeholder="一行一个 URL"
-                      @input="updateCrawlerList('manualUrls', $event.target.value)"
-                    ></textarea>
-                  </label>
-                  <label>
-                    <span>manualDomains</span>
-                    <textarea
-                      class="sci-textarea text-sm bg-black/15"
-                      rows="3"
-                      :value="crawlerListText(crawlerPlanView.manualDomains)"
-                      placeholder="一行一个域名"
-                      @input="updateCrawlerList('manualDomains', $event.target.value)"
-                    ></textarea>
-                  </label>
-                  <label>
-                    <span>manualKeywords</span>
-                    <textarea
-                      class="sci-textarea text-sm bg-black/15"
-                      rows="3"
-                      :value="crawlerListText(crawlerPlanView.manualKeywords)"
-                      placeholder="一行一个关键词"
-                      @input="updateCrawlerList('manualKeywords', $event.target.value)"
-                    ></textarea>
-                  </label>
-                </div>
-
-                <div class="crawler-limit-grid">
-                  <label>
-                    <span>maxPages</span>
-                    <input
-                      class="sci-input text-sm bg-black/15"
-                      type="number"
-                      min="1"
-                      max="50"
-                      :value="crawlerPlanView.maxPages"
-                      @input="updateCrawlerPlan({ maxPages: Number($event.target.value) || 10 })"
-                    />
-                  </label>
-                  <label>
-                    <span>maxDepth</span>
-                    <input
-                      class="sci-input text-sm bg-black/15"
-                      type="number"
-                      min="0"
-                      max="3"
-                      :value="crawlerPlanView.maxDepth"
-                      @input="updateCrawlerPlan({ maxDepth: Number($event.target.value) || 0 })"
-                    />
-                  </label>
-                  <label>
-                    <span>lookbackHours</span>
-                    <input
-                      class="sci-input text-sm bg-black/15"
-                      type="number"
-                      min="1"
-                      max="720"
-                      :value="crawlerPlanView.lookbackHours || ''"
-                      placeholder="可选"
-                      @input="updateCrawlerPlan({ lookbackHours: $event.target.value })"
-                    />
-                  </label>
-                  <label>
-                    <span>language</span>
-                    <input
-                      class="sci-input text-sm bg-black/15"
-                      :value="crawlerPlanView.language"
-                      placeholder="zh-CN"
-                      @input="updateCrawlerPlan({ language: $event.target.value })"
-                    />
-                  </label>
-                </div>
-
                 <div class="manual-source-compat">
-                  <strong>兼容补充信源</strong>
-                  <p class="manual-source-hint">保留原有规划信源字段，作为本次规划页采集和正式编报的人工线索。</p>
+                  <strong>人工指定信源（可选）</strong>
+                  <p class="manual-source-hint">可补充 URL、机构名、媒体名或其他信源说明。</p>
                 </div>
                 <div class="manual-source-entry">
                   <textarea
@@ -4696,67 +4247,6 @@ function exportPdf() {
                     <span>{{ source }}</span>
                     <button type="button" @click="removeManualPlanSource(index)">删除</button>
                   </div>
-                </div>
-
-                <div class="planning-crawler-results">
-                  <div class="planning-crawler-results-head">
-                    <div>
-                      <strong>采集结果</strong>
-                      <span>已采集 {{ planningCrawlerStats.itemCount }} 条公开信源，已选择 {{ planningCrawlerStats.selectedCount }} 条纳入正式编报。</span>
-                    </div>
-                    <div class="planning-crawler-result-actions">
-                      <button type="button" @click="emit('select-planning-crawler-items', 'all')">全选</button>
-                      <button type="button" @click="emit('select-planning-crawler-items', 'none')">取消全选</button>
-                      <button type="button" @click="emit('select-planning-crawler-items', 'high-relevance')">只选择高相关</button>
-                      <button type="button" @click="emit('select-planning-crawler-items', 'high-credibility')">只选择高可信</button>
-                      <button type="button" @click="emit('remove-low-quality-planning-crawler-items')">移除低质量结果</button>
-                    </div>
-                  </div>
-                  <div v-if="planningCrawlerStatus === 'running'" class="planning-crawler-empty">
-                    资料采集工具正在采集公开信源，请稍候。
-                  </div>
-                  <div v-else-if="!planningCrawlerItems.length" class="planning-crawler-empty">
-                    尚未采集公开信源。确认采集配置后点击“开始采集”。
-                  </div>
-                  <div v-else class="planning-crawler-item-list">
-                    <article
-                      v-for="item in planningCrawlerItems"
-                      :key="crawlerItemId(item)"
-                      class="planning-crawler-item"
-                      :class="{ selected: isCrawlerItemSelected(item) }"
-                    >
-                      <label class="planning-crawler-check">
-                        <input
-                          type="checkbox"
-                          :checked="isCrawlerItemSelected(item)"
-                          @change="emit('toggle-planning-crawler-item', crawlerItemId(item))"
-                        />
-                        <span>纳入正式编报</span>
-                      </label>
-                      <div class="planning-crawler-item-main">
-                        <div class="planning-crawler-item-title">
-                          <strong>{{ crawlerItemTitle(item) }}</strong>
-                          <a v-if="item.url" :href="item.url" target="_blank" rel="noopener noreferrer">打开来源</a>
-                        </div>
-                        <div class="planning-crawler-item-meta">
-                          <span>来源：{{ item.publisher || '公开网页' }}</span>
-                          <span>时间：{{ crawlerItemTime(item) }}</span>
-                          <span>相关性：{{ crawlerScoreLabel(item.relevanceScore) }}</span>
-                          <span>可信度：{{ crawlerScoreLabel(item.credibilityScore) }}</span>
-                        </div>
-                        <p>{{ crawlerItemSummary(item) || '暂无摘要。' }}</p>
-                        <button
-                          class="planning-crawler-expand"
-                          type="button"
-                          @click="emit('toggle-planning-crawler-item-expanded', crawlerItemId(item))"
-                        >
-                          {{ isCrawlerItemExpanded(item) ? '收起正文' : '查看正文' }}
-                        </button>
-                        <pre v-if="isCrawlerItemExpanded(item)" class="planning-crawler-fulltext">{{ item.contentText || item.contentSummary || '暂无正文。' }}</pre>
-                      </div>
-                    </article>
-                  </div>
-                  <p class="crawler-submit-hint">正式编报将使用你已选择的采集信源，不会默认重复采集。</p>
                 </div>
               </section>
             </div>
@@ -4841,10 +4331,9 @@ function exportPdf() {
                 v-else
                 class="sci-btn text-[10px] px-4 py-2 border-neon-green text-neon-green shadow-[0_0_18px_rgba(0,255,159,0.12)]"
                 type="button"
-                :disabled="planningCrawlerStatus === 'running'"
                 @click="emit('confirm-plan')"
               >
-                {{ planningCrawlerStatus === 'running' ? '等待采集完成' : '确认并开始编写' }}
+                确认并开始编写
               </button>
             </div>
           </div>
@@ -5807,7 +5296,7 @@ function exportPdf() {
             </div>
 
             <div class="source-count-note">
-              口径说明：数据库检索工具来自 PG 向量库/数据库；资料采集工具来自 crawlerPlan 触发的受控公开采集；互联网搜索工具来自联网检索服务。报告引用编号和结构化整理状态作为信源属性展示，不作为主分类混算。
+              口径说明：数据库检索工具来自 PG 向量库/数据库；互联网搜索工具来自联网检索与正文抽取。报告引用编号和结构化整理状态作为信源属性展示，不作为主分类混算。
             </div>
 
             <section v-if="sourceSupplementStatus.visible" class="source-supplement-status">
@@ -6203,7 +5692,6 @@ function exportPdf() {
                   <h3>信源使用情况</h3>
                   <div class="quality-source-usage">
                     <span>数据库信源 <b>{{ qualityReview.sourceUsage?.databaseSourcesUsed ?? 0 }}</b></span>
-                    <span>资料采集 <b>{{ qualityReview.sourceUsage?.crawlerSourcesUsed ?? 0 }}</b></span>
                     <span>互联网搜索 <b>{{ qualityReview.sourceUsage?.internetSourcesUsed ?? 0 }}</b></span>
                     <span>未核实判断 <b>{{ qualityReview.sourceUsage?.unverifiedClaims ?? 0 }}</b></span>
                   </div>
