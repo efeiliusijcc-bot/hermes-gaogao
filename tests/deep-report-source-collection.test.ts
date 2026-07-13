@@ -206,6 +206,22 @@ async function testDeepReportWritesSkillResultIntoGenerationPayload() {
   assert.equal(service.buildInitialProgressState(deepJob).stages.some((stage) => stage.key === 'deep_collection'), true);
 }
 
+async function testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults() {
+  const service = reportsService({
+    execute: async () => { throw new Error('provider unavailable'); },
+  });
+  const failedJob = job(true);
+  await assert.rejects(
+    service.enrichPayloadWithDeepReportSources(failedJob, failedJob.payload as Record<string, unknown>),
+    /深度资料采集失败：provider unavailable/,
+  );
+  assert.equal((failedJob.artifacts as Record<string, unknown>).deepReportSourceCollection, undefined);
+  assert.ok(failedJob.events.some((event: Record<string, unknown>) => (
+    event.stage === 'deep_source_collection_failed'
+    && String(event.message).includes('深度资料采集失败')
+  )));
+}
+
 async function testFrontendAndDeploymentExposeOnlyTheDeepReportToggle() {
   const [canvas, app, jobs, draft, deploy, hermes, reports, appModule, skill] = await Promise.all([
     readFile(new URL('b_k3ewYvsOEc1/src/components/DataCanvas.vue', root), 'utf8'),
@@ -282,6 +298,7 @@ await testSkillNotAvailableResponseIsNeverNormalizedAsSuccess();
 await testIncompleteSkillOutputFailsInsteadOfInventingEmptySuccess();
 await testNormalReportSkipsSkillAndKeepsProgressUnchanged();
 await testDeepReportWritesSkillResultIntoGenerationPayload();
+await testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults();
 await testFrontendAndDeploymentExposeOnlyTheDeepReportToggle();
 testOrdinaryReportPromptIsByteForByteUnchangedByFalseFlag();
 console.log('deep report source collection tests passed');
