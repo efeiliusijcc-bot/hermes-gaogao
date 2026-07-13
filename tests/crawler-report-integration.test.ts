@@ -314,7 +314,7 @@ async function testSourceOverviewDistinguishesCrawlerSources() {
   assert.equal(result?.meta?.summary && (result.meta.summary as Record<string, unknown>).crawlerCount, 1);
 }
 
-function testHermesPromptConsumesBackendCrawlerContext() {
+function testHermesPromptConsumesBackendCrawlerContextAndUsesOpenClawLengthLimit() {
   const hermes = new HermesService({} as never, {} as never) as HermesService & {
     buildReportPrompt: (input: Record<string, unknown>) => string;
     getSkillRequirements: (input: Record<string, unknown>) => string[];
@@ -336,6 +336,8 @@ function testHermesPromptConsumesBackendCrawlerContext() {
   assert.match(prompt, /只读取 context\.json\.crawlerSourceContext/);
   assert.match(prompt, /不得再次调用 source-collection-agent、controlled-web-collector、crawler\.create_task、crawler\.run_task 或 crawler\.get_items/);
   assert.match(prompt, /不得重复创建或执行采集任务/);
+  assert.match(prompt, /最低不得低于 8000 个中文字符/);
+  assert.doesNotMatch(prompt, /最低不得低于 8500 个中文字符/);
   assert.match(prompt, /优先官方和高质量来源/);
   assert.match(prompt, /数据库\/Web\/crawler 只是渠道，不代表固定质量顺序/);
   assert.match(prompt, /URL \/ publisher \/ fetchedAt/);
@@ -393,7 +395,7 @@ await testCrawlerPlanEnabledWritesCrawlerSourceContextAndSources();
 await testPlanningSelectedCrawlerItemsSkipResearchCollection();
 await testPlanningCrawlerDoesNotIncludeUnselectedFallbackItems();
 await testSourceOverviewDistinguishesCrawlerSources();
-testHermesPromptConsumesBackendCrawlerContext();
+testHermesPromptConsumesBackendCrawlerContextAndUsesOpenClawLengthLimit();
 testHermesPromptForPlanningSelectedCrawlerSkipsResearchCollection();
 testControlledWebCollectorSkillForbidsArbitraryExecution();
 

@@ -60,6 +60,8 @@ test('builds candidates with merged sources and related material ids', () => {
 
 test('sanitizes mojibake question mark prefixes from source labels', () => {
   assert.equal(sanitizeSourceText('??????Fox News'), 'Fox News');
+  assert.equal(sanitizeSourceText('Fox News?'), 'Fox News');
+  assert.equal(sanitizeSourceText('CBS?'), 'CBS');
   assert.equal(sanitizeSourceText('?????(?)'), '');
   assert.equal(sanitizeSourceText('���Reuters'), 'Reuters');
   assert.equal(sanitizeSourceText('新华社'), '新华社');
