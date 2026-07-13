@@ -50,7 +50,7 @@ export const WEB_SUPPLEMENT_LIMITS = {
   candidatesPerQuery: boundedEnvInt('WEB_SUPPLEMENT_CANDIDATES_PER_QUERY', 8, 5, 10),
   maxUniqueUrls: boundedEnvInt('WEB_SUPPLEMENT_MAX_UNIQUE_URLS', 30, 5, 60),
   maxFullContentFetches: boundedEnvInt('WEB_SUPPLEMENT_MAX_FULL_CONTENT_FETCHES', 20, 1, 30),
-  maxCrawlerFallbackUrls: boundedEnvInt('WEB_SUPPLEMENT_MAX_CRAWLER_FALLBACK_URLS', 10, 1, 20),
+  maxControlledFetchUrls: boundedEnvInt('WEB_SUPPLEMENT_MAX_CONTROLLED_FETCH_URLS', 10, 1, 20),
   retryCount: boundedEnvInt('WEB_SUPPLEMENT_RETRY_COUNT', 1, 0, 1),
   searchTimeoutMs: boundedEnvInt('WEB_SUPPLEMENT_SEARCH_TIMEOUT_MS', 12_000, 2_000, 30_000),
   totalTimeoutMs: boundedEnvInt('WEB_SUPPLEMENT_TOTAL_TIMEOUT_MS', 120_000, 90_000, 180_000),
@@ -135,7 +135,7 @@ export class WebSupplementService {
             search_depth: 'advanced',
             max_results: Math.max(1, Math.min(10, maxResults)),
             include_answer: false,
-            include_raw_content: true,
+            include_raw_content: false,
           }),
         });
         if (!response.ok) {
@@ -166,15 +166,12 @@ export class WebSupplementService {
 export function decideWebSupplementTrigger(input: SupplementTriggerInput): SupplementTriggerDecision {
   const context = input.context || {};
   const minimum = boundInt(input.minimumAcceptedDatabaseSources, 3, 1, 20);
-  const crawlerPlan = plainObject(context.crawlerPlan);
   const databaseOptions = plainObject(context.databaseSourceOptions);
   const webOptions = plainObject(context.webSearchOptions || context.internetSearchOptions);
   const supplementOptions = plainObject(context.sourceSupplementOptions);
   const offline = context.offlineMode === true || context.offline === true || String(context.sourceMode || '').toLowerCase() === 'offline';
   const internalOnly = context.internalDatabaseOnly === true || context.internalOnly === true || /internal[_-]?only|database[_-]?only/i.test(String(context.sourceMode || ''));
   const internetExplicitlyDisabled = webOptions.enabled === false || context.internetSearchEnabled === false || context.webSearchEnabled === false;
-  const crawlerExplicitlyDisabled = crawlerPlan.enabled === false;
-  const planningLocked = String(crawlerPlan.executePhase || '') === 'planning' && crawlerPlan.alreadyExecuted === true && crawlerPlan.allowFurtherCollectionInResearch !== true;
 
   if (databaseOptions.enabled !== true && String(databaseOptions.enabled || '').toLowerCase() !== 'true') {
     return { triggered: false, reason: '数据库信源选项未启用，不执行数据库不足补充。', minimumAcceptedDatabaseSources: minimum };
@@ -182,8 +179,7 @@ export function decideWebSupplementTrigger(input: SupplementTriggerInput): Suppl
   if (supplementOptions.enabled === false) return { triggered: false, reason: '用户已关闭公开信源自动补充。', minimumAcceptedDatabaseSources: minimum };
   if (offline) return { triggered: false, reason: '当前任务为离线模式。', minimumAcceptedDatabaseSources: minimum };
   if (internalOnly) return { triggered: false, reason: '当前任务仅允许使用内部数据库。', minimumAcceptedDatabaseSources: minimum };
-  if (planningLocked) return { triggered: false, reason: '规划阶段已完成资料采集，且禁止 Research Phase 继续采集。', minimumAcceptedDatabaseSources: minimum };
-  if (internetExplicitlyDisabled && crawlerExplicitlyDisabled) return { triggered: false, reason: '用户已关闭互联网搜索和资料采集。', minimumAcceptedDatabaseSources: minimum };
+  if (internetExplicitlyDisabled) return { triggered: false, reason: '用户已关闭互联网搜索。', minimumAcceptedDatabaseSources: minimum };
   if (input.acceptedDatabaseCount >= minimum) return { triggered: false, reason: `数据库已有 ${input.acceptedDatabaseCount} 条有效信源，达到最低阈值 ${minimum}。`, minimumAcceptedDatabaseSources: minimum };
   return {
     triggered: true,

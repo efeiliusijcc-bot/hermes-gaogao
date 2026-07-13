@@ -28,7 +28,7 @@ async function testContextContainsAcceptedSourcesOnly() {
   const topic = 'NEO下属子公司麦格昆磁近期在生产工艺、中试、量产的主要动向';
   const policy = buildRuleBasedEntityPolicy({ topic });
   const officialBody = 'Neo Performance Materials official Magnequench production process, pilot-scale validation and mass production readiness update. '.repeat(3);
-  const crawlerBody = 'Magnequench production process improvement, pilot line trials and mass production preparation are described in detail. '.repeat(3);
+  const fetchedBody = 'Magnequench 麦格昆磁生产工艺改进、中试线验证和量产准备情况已有明确披露。'.repeat(6);
   const webSupplement = {
     search: async () => [
       {
@@ -61,15 +61,14 @@ async function testContextContainsAcceptedSourcesOnly() {
     ],
   };
   const crawler = {
-    createTask: async () => ({ taskId: 'supplement-task' }),
-    runTask: async () => ({
-      task: { taskId: 'supplement-task' },
+    fetchPublicUrls: async () => ({
       items: [{
-        itemId: 'crawler-item-1', taskId: 'supplement-task', url: 'https://industry.example/crawler-needed',
+        requestedUrl: 'https://industry.example/crawler-needed', url: 'https://industry.example/crawler-needed',
         title: 'Magnequench pilot line report', publisher: 'Industry Technology News', publishedAt: '2026-07-01',
-        fetchedAt: '2026-07-10', contentSummary: 'Magnequench pilot and mass production.', contentText: crawlerBody,
-        metadata: {}, relevanceScore: 85, credibilityScore: 75,
+        fetchedAt: '2026-07-10', contentSummary: 'Magnequench pilot and mass production.', contentText: fetchedBody,
+        retrievalMethod: 'controlled_fetch', metadata: {},
       }],
+      failures: [],
     }),
   };
   const remoteFs = remoteFsStub();
@@ -88,12 +87,10 @@ async function testContextContainsAcceptedSourcesOnly() {
     entityPolicy: policy,
     databaseSourceOptions: { enabled: true },
     webSearchOptions: { enabled: true },
-    crawlerPlan: { enabled: true, executePhase: 'research' },
     vectorDatabaseSources: [{
       title: 'Magnequench database material', url: 'https://database.example/mq',
       summary: '麦格昆磁生产工艺、中试和量产数据库材料。', websiteName: 'Database', relevanceScore: 0.86,
     }],
-    crawlerSourceContext: { tasks: [], items: [] },
     sourceDiagnostics: { database: { acceptedCount: 1 } },
   };
   const job = {
@@ -104,12 +101,11 @@ async function testContextContainsAcceptedSourcesOnly() {
   const output = await service.enrichPayloadWithWebSupplement(job, job.payload as Record<string, unknown>);
   const finalContext = JSON.parse(String(output.known_context));
   assert.equal(finalContext.vectorDatabaseSources.length, 1);
-  assert.equal(finalContext.webSources.length, 1);
-  assert.equal(finalContext.crawlerSourceContext.items.length, 1);
+  assert.equal(finalContext.webSources.length, 2, JSON.stringify({ webSources: finalContext.webSources, diagnostics: finalContext.sourceDiagnostics }));
+  assert.equal(finalContext.crawlerSourceContext, undefined);
   assert.doesNotMatch(JSON.stringify({
     database: finalContext.vectorDatabaseSources,
     web: finalContext.webSources,
-    crawler: finalContext.crawlerSourceContext.items,
   }), /Micron|美光|DRAM|NAND/);
   assert.equal(finalContext.sourceDiagnostics.supplement.triggered, true);
   assert.equal(finalContext.sourceDiagnostics.supplement.acceptedCount, 2);
@@ -121,7 +117,6 @@ async function testContextContainsAcceptedSourcesOnly() {
   assert.doesNotMatch(JSON.stringify({
     database: savedContext.vectorDatabaseSources,
     web: savedContext.webSources,
-    crawler: savedContext.crawlerSourceContext?.items,
   }), /Micron|美光|DRAM|NAND/);
 }
 
