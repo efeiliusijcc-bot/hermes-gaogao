@@ -91,7 +91,10 @@ async function testRuntimeAndDeploymentNoLongerReferenceLegacyCollection() {
     source('report-e2e-production-validation.md'),
   ]);
   assert.doesNotMatch(`${liveReport}\n${liveRetrieval}`, /crawlerPlan|planningCollection/);
-  assert.doesNotMatch(deploy, /controlled-web-collector|source-collection-agent/);
+  assert.doesNotMatch(deploy, /scp[^\n]*(controlled-web-collector|source-collection-agent)/);
+  assert.match(deploy, /rm -f ['"]?\$SRC_DIR\/server\/crawler\.controller\.ts/);
+  assert.match(deploy, /rm -f[^\n]*\/opt\/hermes\/workspace\/report-agent\/agents\/source-collection-agent\.md/);
+  assert.match(deploy, /rm -rf \/opt\/hermes\/workspace\/report-agent\/skills\/controlled-web-collector/);
   assert.doesNotMatch(validationDoc, /资料采集工具|crawlerPlan/);
 }
 

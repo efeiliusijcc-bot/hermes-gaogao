@@ -91,7 +91,11 @@ write_env PGVECTOR_EMBEDDING_BASE_URL "${PGVECTOR_EMBEDDING_BASE_URL:-https://da
 write_env OPENAI_API_KEY "${OPENAI_API_KEY:-}"
 
 echo "=== 1. Upload backend source ==="
-ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p '$SRC_DIR/server/artifact-storage' '$SRC_DIR/src/types' '$SRC_DIR/scripts' /opt/hermes/workspace/report-agent/agents /opt/hermes/workspace/report-agent/skills"
+ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "
+  mkdir -p '$SRC_DIR/server/artifact-storage' '$SRC_DIR/src/types' '$SRC_DIR/scripts' /opt/hermes/workspace/report-agent/agents /opt/hermes/workspace/report-agent/skills
+  rm -f '$SRC_DIR/server/crawler.controller.ts' /opt/hermes/workspace/report-agent/agents/source-collection-agent.md
+  rm -rf /opt/hermes/workspace/report-agent/skills/controlled-web-collector
+"
 
 scp -i "$SSH_KEY" \
   package.json pnpm-lock.yaml tsconfig.server.json Dockerfile \
