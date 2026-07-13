@@ -3079,8 +3079,7 @@ function scrubSourceDisplayText(value) {
 }
 
 function inferSourceGroup(source, fallbackGroup = activeSourceType.value) {
-  const group = resolveSourceGroup(source, fallbackGroup)
-  return group === 'crawler' ? 'tool_search' : group
+  return resolveSourceGroup(source, fallbackGroup)
 }
 
 function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType.value) {
@@ -3129,7 +3128,7 @@ function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType
 function normalizeSourceKind(value, source = null) {
   const engine = String(source?.engine || source?.search_engine || source?.provider || '').trim().toLowerCase()
   const origin = String(source?.sourceOrigin || source?.source_origin || source?.sourceGroup || '').trim().toLowerCase()
-  if (engine === 'crawler' || /crawler/.test(origin)) return '互联网搜索工具'
+  if (engine === 'controlled_fetch' || /controlled_fetch/.test(origin)) return '互联网搜索工具'
   if (engine === 'exa') return '互联网搜索工具'
   if (engine === 'firecrawl') return '互联网搜索工具'
   if (engine === 'tavily_extract') return '互联网搜索工具'
@@ -3137,7 +3136,7 @@ function normalizeSourceKind(value, source = null) {
   if (engine === 'pg_vector' || /database_recall|pg_vector|vector/.test(origin)) return '数据库检索工具'
   const text = String(value || '').trim()
   if (!text) return '其他'
-  if (/crawler|controlled_fetch/i.test(text)) return '互联网搜索工具'
+  if (/controlled_fetch/i.test(text)) return '互联网搜索工具'
   if (/exa|firecrawl|tavily/i.test(text)) return '互联网搜索工具'
   if (/pg|向量|vector/i.test(text)) return '数据库检索工具'
   if (/官方|政府|公告|声明|文件|policy|gov/i.test(text)) return '官方文件'

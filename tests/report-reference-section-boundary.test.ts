@@ -6,7 +6,6 @@ const service = Object.create(ReportsService.prototype) as ReportsService & {
   buildReportReferenceItems(job: Record<string, unknown>, markdown: string): Promise<Array<Record<string, unknown>>>;
   structuredReportSources(job: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
   toolSearchSources(job: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
-  crawlerReportSources(job: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
   reportReferencesArtifactCandidatePaths(job: Record<string, unknown>): Promise<string[]>;
   readJsonFile(filePath: string): Promise<unknown>;
   readReportReferencesArtifact(job: Record<string, unknown>): Promise<Array<Record<string, unknown>> | null>;
@@ -46,7 +45,6 @@ service.toolSearchSources = async () => [{
   evidenceKind: 'research_source',
   matchStatus: 'matched',
 }];
-service.crawlerReportSources = async () => [];
 
 const matchedReferences = await service.buildReportReferenceItems({ jobId: 'job-web-reference' }, markdown);
 

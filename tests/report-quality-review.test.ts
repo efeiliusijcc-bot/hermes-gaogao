@@ -169,7 +169,6 @@ function createService(pool = createPool(), files: Record<string, string> = {}) 
     '/tmp/hermes-reports/quality-job-1/final/report.md': makeJob().markdown || '',
     '/tmp/hermes-reports/quality-job-1/context.json': String(makeJob().payload.known_context),
     '/tmp/hermes-reports/quality-job-1/database/database_sources.json': JSON.stringify([{ title: '数据库材料' }]),
-    '/tmp/hermes-reports/quality-job-1/crawler/crawler_sources.json': JSON.stringify({ items: [{ title: '采集材料', sourceType: 'crawler' }] }),
     ...files,
   });
   const service = new ReportsService({} as never, remoteFs as never, {} as never) as ReportsService & {

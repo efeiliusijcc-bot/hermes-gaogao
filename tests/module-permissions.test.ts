@@ -15,7 +15,9 @@ function sameMembers(actual: string[], expected: string[]) {
 function testPermissionModuleMappings() {
   const reportPermissions = permissionsFromModules(['report']);
   assert.ok(reportPermissions.includes('report:create'));
-  assert.ok(reportPermissions.includes('crawler:execute'));
+  assert.ok(!reportPermissions.includes('crawler:create'));
+  assert.ok(!reportPermissions.includes('crawler:read'));
+  assert.ok(!reportPermissions.includes('crawler:execute'));
   assert.ok(reportPermissions.includes('template:update'));
   assert.ok(reportPermissions.includes('preference:update'));
   assert.ok(!reportPermissions.includes('crawler:delete'));

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
+import { resolveSourceGroup } from '../b_k3ewYvsOEc1/src/lib/sourceDisplay.js';
 
 const root = process.cwd();
 
@@ -65,7 +66,31 @@ async function testReportModuleNoLongerGrantsCrawlerPermissions() {
   }
 }
 
+async function testControlledFetchUsesInternetSourceChannel() {
+  const [canvas, display] = await Promise.all([
+    source('b_k3ewYvsOEc1/src/components/DataCanvas.vue'),
+    source('b_k3ewYvsOEc1/src/lib/sourceDisplay.js'),
+  ]);
+  assert.equal(resolveSourceGroup({ retrievalMethod: 'controlled_fetch' }), 'tool_search');
+  assert.doesNotMatch(canvas, /key: 'crawler'|label: '资料采集工具'/);
+  assert.doesNotMatch(display, /return 'crawler'/);
+}
+
+async function testRuntimeAndDeploymentNoLongerReferenceLegacyCollection() {
+  const [liveReport, liveRetrieval, deploy, validationDoc] = await Promise.all([
+    source('scripts/run-live-report-e2e-validation.ts'),
+    source('scripts/run-live-retrieval-validation.ts'),
+    source('deploy.sh'),
+    source('report-e2e-production-validation.md'),
+  ]);
+  assert.doesNotMatch(`${liveReport}\n${liveRetrieval}`, /crawlerPlan|planningCollection/);
+  assert.doesNotMatch(deploy, /controlled-web-collector|source-collection-agent/);
+  assert.doesNotMatch(validationDoc, /资料采集工具|crawlerPlan/);
+}
+
 await testPlanningCollectionUiIsRemoved();
 await testCrawlerHttpApiIsRemoved();
 await testReportModuleNoLongerGrantsCrawlerPermissions();
+await testControlledFetchUsesInternetSourceChannel();
+await testRuntimeAndDeploymentNoLongerReferenceLegacyCollection();
 console.log('planning collection removal tests passed');

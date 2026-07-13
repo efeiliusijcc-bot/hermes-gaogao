@@ -108,7 +108,6 @@ scp -i "$SSH_KEY" \
   "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/scripts/"
 
 scp -i "$SSH_KEY" agents/*.md "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/report-agent/agents/"
-scp -i "$SSH_KEY" -r skills/controlled-web-collector "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/report-agent/skills/"
 scp -i "$SSH_KEY" "$DEPLOY_ENV_FILE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_ENV_FILE.tmp"
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "install -m 600 '$REMOTE_ENV_FILE.tmp' '$REMOTE_ENV_FILE' && rm -f '$REMOTE_ENV_FILE.tmp'"
 
