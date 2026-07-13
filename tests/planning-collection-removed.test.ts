@@ -35,6 +35,13 @@ async function testPlanningCollectionUiIsRemoved() {
   assert.doesNotMatch(canvas, /兼容补充信源|采集结果以实际命中为准/);
 }
 
+async function testPlanningModalHeightTracksItsCanvasContainer() {
+  const styles = await source('b_k3ewYvsOEc1/src/styles/main.css');
+
+  assert.match(styles, /\.plan-modal-panel\s*\{\s*max-height:\s*calc\(100% - 48px\);/);
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.plan-modal-panel\s*\{\s*max-height:\s*calc\(100% - 24px\);/);
+}
+
 async function testCrawlerHttpApiIsRemoved() {
   const [api, appModule] = await Promise.all([
     source('b_k3ewYvsOEc1/src/lib/api.js'),
@@ -89,6 +96,7 @@ async function testRuntimeAndDeploymentNoLongerReferenceLegacyCollection() {
 }
 
 await testPlanningCollectionUiIsRemoved();
+await testPlanningModalHeightTracksItsCanvasContainer();
 await testCrawlerHttpApiIsRemoved();
 await testReportModuleNoLongerGrantsCrawlerPermissions();
 await testControlledFetchUsesInternetSourceChannel();

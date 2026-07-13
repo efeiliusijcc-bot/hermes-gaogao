@@ -3693,7 +3693,7 @@ canvas {
 }
 
 .plan-modal-panel {
-  max-height: calc(100vh - 48px);
+  max-height: calc(100% - 48px);
 }
 
 .plan-modal-body {
@@ -6737,7 +6737,7 @@ canvas {
   }
 
   .plan-modal-panel {
-    max-height: calc(100vh - 24px);
+    max-height: calc(100% - 24px);
     border-radius: 18px !important;
   }
 
