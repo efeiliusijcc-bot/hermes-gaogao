@@ -172,6 +172,7 @@ async function testRolesServiceCrud() {
 async function testUsersServiceMultiRolesAndLastAdmin() {
   const passwordHash = await bcrypt.hash('password123', 4);
   const queries: Query[] = [];
+  let assignedRoles = ['viewer', 'editor'];
   const pool = {
     query: async (text: string, params?: unknown[]) => {
       queries.push({ text, params });
@@ -186,6 +187,18 @@ async function testUsersServiceMultiRolesAndLastAdmin() {
           display_name: params?.[2],
           email: params?.[3],
           role: params?.[4],
+          is_active: true,
+          created_at: '2026-07-05T00:00:00.000Z',
+          updated_at: '2026-07-05T00:00:00.000Z',
+        }] };
+      }
+      if (text.includes('UPDATE users') && text.includes('RETURNING id, username')) {
+        return { rows: [{
+          id: String(params?.[params.length - 1] || ''),
+          username: 'user1',
+          display_name: '用户1',
+          email: null,
+          role: String(params?.[0] || 'viewer'),
           is_active: true,
           created_at: '2026-07-05T00:00:00.000Z',
           updated_at: '2026-07-05T00:00:00.000Z',
@@ -215,9 +228,18 @@ async function testUsersServiceMultiRolesAndLastAdmin() {
           is_active: true,
           created_at: '2026-07-05T00:00:00.000Z',
           updated_at: '2026-07-05T00:00:00.000Z',
-          roles: ['viewer', 'editor'],
-          permissions: ['report:read', 'report:update'],
+          roles: assignedRoles.slice(),
+          permissions: assignedRoles.includes('editor') ? ['report:read', 'report:update'] : assignedRoles.includes('viewer') ? ['report:read'] : [],
         }] };
+      }
+      if (text.includes('DELETE FROM user_roles WHERE user_id = $1')) {
+        assignedRoles = [];
+        return { rows: [] };
+      }
+      if (text.includes('INSERT INTO user_roles')) {
+        const roleId = String(params?.[1] || '');
+        assignedRoles.push(roleId.replace(/^role-/, ''));
+        return { rows: [] };
       }
       if (text.includes('FROM users') && params?.[0] === 'user1') {
         return { rows: [{
@@ -262,6 +284,21 @@ async function testUsersServiceMultiRolesAndLastAdmin() {
   const login = await auth.login('user1', 'password123');
   assert.deepEqual(login.user.roles, ['viewer', 'editor']);
   assert.ok(login.user.permissions.includes('report:update'));
+
+  const cleared = await users.updateUser('user-1', { roles: [] }, authUser('admin-1', 'admin', ['user:manage']));
+  assert.deepEqual(cleared.roles, []);
+  assert.deepEqual(cleared.modules, []);
+  assert.deepEqual(cleared.permissions, []);
+
+  const createdWithoutRoles = await users.createUser({
+    username: 'no-role-user',
+    password: 'password123',
+    displayName: '暂无角色用户',
+    roles: [],
+  });
+  assert.deepEqual(createdWithoutRoles.roles, []);
+  assert.deepEqual(createdWithoutRoles.modules, []);
+  assert.deepEqual(createdWithoutRoles.permissions, []);
 
   await assert.rejects(
     () => users.updateUser('admin-1', { roles: ['viewer'], role: 'viewer' }, authUser('admin-1', 'admin', ['user:manage'])),

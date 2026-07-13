@@ -327,7 +327,8 @@ export class UsersService implements OnModuleDestroy {
   }
 
   private resolveRequestedRoles(input: { role?: string; roles?: string[] }, fallback: string): string[] {
-    const raw = Array.isArray(input.roles) && input.roles.length ? input.roles : [input.role || fallback];
+    const hasExplicitRoles = Object.prototype.hasOwnProperty.call(input, 'roles') && Array.isArray(input.roles);
+    const raw = hasExplicitRoles ? input.roles! : [input.role || fallback];
     const roles = Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)));
     if (!roles.length) return [];
     roles.forEach((role) => {

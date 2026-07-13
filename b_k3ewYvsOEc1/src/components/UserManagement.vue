@@ -209,7 +209,10 @@ function switchTab(tab) {
 }
 
 function userRoleNames(user) {
-  return Array.isArray(user?.roles) && user.roles.length ? user.roles : [user?.role || 'viewer']
+  if (user && Object.prototype.hasOwnProperty.call(user, 'roles') && Array.isArray(user.roles)) {
+    return user.roles.filter(Boolean)
+  }
+  return user?.role ? [user.role] : []
 }
 
 function toggleRole(target, roleName) {
@@ -300,7 +303,7 @@ async function submitCreateUser() {
       password: createForm.password,
       displayName: createForm.displayName.trim(),
       email: createForm.email.trim() || null,
-      role: createForm.roles[0] || 'viewer',
+      role: createForm.roles[0] || undefined,
       roles: createForm.roles,
     })
     noticeMessage.value = '用户已创建'
@@ -333,7 +336,7 @@ async function submitEditUser(user) {
     await updateUser(user.id, {
       displayName: editForm.displayName.trim(),
       email: editForm.email.trim() || null,
-      role: editForm.roles[0] || user.role || 'viewer',
+      role: editForm.roles[0] || undefined,
       roles: editForm.roles,
       isActive: Boolean(editForm.isActive),
     })
@@ -558,6 +561,7 @@ async function confirmDeleteRole(role) {
               <div class="user-management__cell user-management__username">{{ user.username }}</div>
               <div class="user-management__cell user-management__roles">
                 <span v-for="role in userRoleNames(user)" :key="role" class="user-management__role">{{ roleLabel(role) }}</span>
+                <span v-if="!userRoleNames(user).length" class="user-management__muted">暂无角色</span>
               </div>
               <div class="user-management__cell user-management__modules">
                 <span v-for="module in userModules(user)" :key="module" class="user-management__module">{{ moduleLabel(module) }}</span>

@@ -88,6 +88,7 @@ export function roleDisplayName(role) {
 }
 
 export function displayUserRoleNames(user) {
-  const roles = uniqueStrings(Array.isArray(user?.roles) && user.roles.length ? user.roles : [user?.role])
-  return roles.map((role) => roleDisplayName(role)).join('、') || '--'
+  const hasExplicitRoles = user && Object.prototype.hasOwnProperty.call(user, 'roles') && Array.isArray(user.roles)
+  const roles = uniqueStrings(hasExplicitRoles ? user.roles : [user?.role])
+  return roles.map((role) => roleDisplayName(role)).join('、') || '暂无角色'
 }
