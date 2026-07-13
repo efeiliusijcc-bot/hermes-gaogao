@@ -96,6 +96,11 @@ assert.match(assistantSource, /<EventPreviewPanel/);
 assert.match(assistantSource, /grid-template-columns:\s*64px minmax\(720px, 1fr\)/);
 assert.doesNotMatch(assistantSource, /draft-strategy-grid/);
 assert.doesNotMatch(assistantSource, /expandedStrategyCards|sourceTypeTags|strategyVisibleItems|toggleStrategyCard/);
+assert.match(assistantSource, /<textarea[^>]*v-model="outlineEdit\.reportTitle"[^>]*data-autogrow/);
+assert.match(assistantSource, /<textarea[^>]*v-model="outlineEdit\.reportTheme"[^>]*data-autogrow/);
+assert.match(assistantSource, /<textarea[^>]*v-model="outlineEdit\.coreArgument"[^>]*data-autogrow/);
+assert.match(assistantSource, /function resizeDraftTextareas/);
+assert.match(assistantSource, /\.draft-autogrow-textarea[\s\S]*overflow-y:\s*hidden/);
 
 const navigationSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftStepNavigation.vue', import.meta.url),

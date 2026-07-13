@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   analyzeDraftEvent,
   generateDraftOutline,
@@ -82,6 +82,7 @@ const historySearchFocused = ref(false)
 const draftLifecycleStatus = ref('idle')
 const historySidebarComponent = ref(null)
 const draftPrimaryHeading = ref(null)
+const draftEditFields = ref(null)
 const openOutlineMenu = ref(-1)
 
 const outlineEdit = reactive({
@@ -901,6 +902,16 @@ function shortId(value) {
   return text.length > 12 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text
 }
 
+function resizeDraftTextareas(target) {
+  const textareas = target
+    ? [target]
+    : Array.from(draftEditFields.value?.querySelectorAll('[data-autogrow]') || [])
+  textareas.forEach((textarea) => {
+    textarea.style.height = 'auto'
+    textarea.style.height = `${textarea.scrollHeight}px`
+  })
+}
+
 onMounted(async () => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   await loadEvents()
@@ -912,6 +923,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', handleBeforeUnl
 watch(() => props.initialEventId, (eventId) => {
   if (eventId && eventId !== currentEventId.value) void openEvent(eventId)
 })
+
+watch(
+  () => [outlineEdit.reportTitle, outlineEdit.reportTheme, outlineEdit.coreArgument, editMode.value, previewMode.value],
+  async () => {
+    await nextTick()
+    resizeDraftTextareas()
+  },
+  { flush: 'post' },
+)
 </script>
 
 <template>
@@ -1157,7 +1177,7 @@ watch(() => props.initialEventId, (eventId) => {
             </template>
 
             <template v-else>
-              <div class="draft-edit-fields">
+              <div ref="draftEditFields" class="draft-edit-fields">
                 <section class="draft-edit-info-card title">
                   <div class="draft-edit-info-head">
                     <span class="draft-edit-info-icon">T</span>
@@ -1166,7 +1186,15 @@ watch(() => props.initialEventId, (eventId) => {
                       <small>{{ outlineEdit.reportTitle.length }}/80</small>
                     </div>
                   </div>
-                  <input v-model="outlineEdit.reportTitle" class="sci-input" maxlength="80" placeholder="报告建议标题" />
+                  <textarea
+                    v-model="outlineEdit.reportTitle"
+                    data-autogrow
+                    class="sci-input draft-autogrow-textarea"
+                    rows="2"
+                    maxlength="80"
+                    placeholder="报告建议标题"
+                    @input="resizeDraftTextareas($event.target)"
+                  ></textarea>
                 </section>
                 <section class="draft-edit-info-card theme">
                   <div class="draft-edit-info-head">
@@ -1176,7 +1204,15 @@ watch(() => props.initialEventId, (eventId) => {
                       <small>{{ outlineEdit.reportTheme.length }}/120</small>
                     </div>
                   </div>
-                  <input v-model="outlineEdit.reportTheme" class="sci-input" maxlength="120" placeholder="报告主题立意" />
+                  <textarea
+                    v-model="outlineEdit.reportTheme"
+                    data-autogrow
+                    class="sci-input draft-autogrow-textarea"
+                    rows="3"
+                    maxlength="120"
+                    placeholder="报告主题立意"
+                    @input="resizeDraftTextareas($event.target)"
+                  ></textarea>
                 </section>
                 <section class="draft-edit-info-card argument">
                   <div class="draft-edit-info-head">
@@ -1186,7 +1222,15 @@ watch(() => props.initialEventId, (eventId) => {
                       <small>{{ outlineEdit.coreArgument.length }}/180</small>
                     </div>
                   </div>
-                  <textarea v-model="outlineEdit.coreArgument" class="sci-input draft-compact-textarea" maxlength="180" placeholder="一句话说明核心判断"></textarea>
+                  <textarea
+                    v-model="outlineEdit.coreArgument"
+                    data-autogrow
+                    class="sci-input draft-autogrow-textarea"
+                    rows="4"
+                    maxlength="180"
+                    placeholder="一句话说明核心判断"
+                    @input="resizeDraftTextareas($event.target)"
+                  ></textarea>
                 </section>
               </div>
 
@@ -2341,8 +2385,9 @@ watch(() => props.initialEventId, (eventId) => {
 
 .draft-edit-fields {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.1fr) minmax(0, 1.35fr);
   gap: 14px;
+  align-items: start;
   margin-bottom: 18px;
 }
 
@@ -2415,6 +2460,20 @@ watch(() => props.initialEventId, (eventId) => {
   font-size: 11px;
   font-weight: 800;
 }
+
+.draft-autogrow-textarea {
+  display: block;
+  min-height: 76px;
+  max-height: none;
+  overflow-y: hidden;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
+
+.draft-edit-info-card.theme .draft-autogrow-textarea { min-height: 96px; }
+.draft-edit-info-card.argument .draft-autogrow-textarea { min-height: 116px; }
 
 .draft-edit-outline {
   display: grid;
