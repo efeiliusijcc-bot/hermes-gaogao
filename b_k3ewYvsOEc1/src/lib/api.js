@@ -1,3 +1,5 @@
+import { resolveApiErrorMessage } from './apiError.js'
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_BASE || 'http://localhost:3001/api'
 export const AUTH_TOKEN_KEY = 'gaogao_access_token'
 export const AUTH_USER_KEY = 'gaogao_current_user'
@@ -74,7 +76,7 @@ async function refreshAuthSession() {
       .then(async (response) => {
         const text = await response.text()
         const data = text ? JSON.parse(text) : null
-        if (!response.ok) throw new ApiError(data?.error || data?.message || `HTTP ${response.status}`, response.status, data)
+        if (!response.ok) throw new ApiError(resolveApiErrorMessage(data, `HTTP ${response.status}`), response.status, data)
         setAuthSession(data?.access_token || '', data?.user || null)
         return data
       })
@@ -103,7 +105,7 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const fallbackMessage = response.status === 403 ? '无权限访问用户管理' : `HTTP ${response.status}`
-    const error = new ApiError(data?.error || data?.message || data?.details?.[0] || fallbackMessage, response.status, data)
+    const error = new ApiError(resolveApiErrorMessage(data, fallbackMessage), response.status, data)
     if (response.status === 401 && !options.skipRefresh) {
       try {
         await refreshAuthSession()
@@ -143,7 +145,7 @@ async function blobRequest(path, options = {}) {
       data = null
     }
     const fallbackMessage = response.status === 403 ? '无权限访问该资源' : `HTTP ${response.status}`
-    const error = new ApiError(data?.error || data?.message || data?.details?.[0] || fallbackMessage, response.status, data)
+    const error = new ApiError(resolveApiErrorMessage(data, fallbackMessage), response.status, data)
     if (response.status === 401 && !options.skipRefresh) {
       try {
         await refreshAuthSession()

@@ -11,6 +11,7 @@ import {
   updateRole,
   updateUser,
 } from '../lib/api.js'
+import { userPasswordValidationMessage } from '../lib/userValidation.js'
 import { deriveRoleModules, deriveUserModules } from '../lib/permissionModules.js'
 
 const props = defineProps({
@@ -284,8 +285,13 @@ function closeRoleDrawer() {
 }
 
 async function submitCreateUser() {
-  saving.value = true
   clearMessages()
+  const passwordError = userPasswordValidationMessage(createForm.password)
+  if (passwordError) {
+    errorMessage.value = passwordError
+    return
+  }
+  saving.value = true
   try {
     await createUser({
       username: createForm.username.trim(),
@@ -351,8 +357,13 @@ function cancelResetPassword() {
 }
 
 async function submitResetPassword(user) {
-  saving.value = true
   clearMessages()
+  const passwordError = userPasswordValidationMessage(passwordValue.value)
+  if (passwordError) {
+    errorMessage.value = passwordError
+    return
+  }
+  saving.value = true
   try {
     await resetUserPassword(user.id, passwordValue.value)
     noticeMessage.value = '密码已重置'
@@ -484,7 +495,8 @@ async function confirmDeleteRole(role) {
             </label>
             <label>
               <span>密码</span>
-              <input v-model="createForm.password" class="sci-input" required type="password" autocomplete="new-password" />
+              <input v-model="createForm.password" class="sci-input" required type="password" minlength="8" pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}" title="至少 8 位，并同时包含字母和数字" autocomplete="new-password" />
+              <small>至少 8 位，并同时包含字母和数字</small>
             </label>
             <label>
               <span>显示名称</span>
@@ -580,7 +592,8 @@ async function confirmDeleteRole(role) {
               <form v-if="passwordUserId === user.id" class="user-management__inline-form is-password" @submit.prevent="submitResetPassword(user)">
                 <label>
                   <span>新密码</span>
-                  <input v-model="passwordValue" class="sci-input" required type="password" autocomplete="new-password" />
+                  <input v-model="passwordValue" class="sci-input" required type="password" minlength="8" pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}" title="至少 8 位，并同时包含字母和数字" autocomplete="new-password" />
+                  <small>至少 8 位，并同时包含字母和数字</small>
                 </label>
                 <div class="user-management__inline-actions">
                   <button class="sci-btn" type="button" :disabled="saving" @click="cancelResetPassword">取消</button>
