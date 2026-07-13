@@ -51,15 +51,14 @@ export function resolveSourceGroup(source, fallbackGroup = 'all') {
   if (['report_refs', 'candidate_hits', 'extract_failed', 'structured_sources'].includes(explicit)) return explicit
 
   const origin = source?.sourceOrigin || source?.source_origin
-  if (['database_recall', 'crawler', 'tool_search'].includes(origin)) return origin
-  if (['database_recall', 'crawler', 'tool_search'].includes(explicit)) return explicit
+  if (['database_recall', 'tool_search'].includes(origin)) return origin
+  if (['database_recall', 'tool_search'].includes(explicit)) return explicit
 
-  const text = `${explicit || ''} ${source?.type || ''} ${source?.source_type || ''} ${source?.sourceType || ''} ${source?.tag || ''} ${source?.designated_tag || ''} ${source?.status || ''} ${source?.extract_status || ''} ${source?.method || ''} ${source?.engine || ''}`.toLowerCase()
+  const text = `${explicit || ''} ${source?.type || ''} ${source?.source_type || ''} ${source?.sourceType || ''} ${source?.tag || ''} ${source?.designated_tag || ''} ${source?.status || ''} ${source?.extract_status || ''} ${source?.method || ''} ${source?.retrievalMethod || ''} ${source?.engine || ''}`.toLowerCase()
   if (/candidate_hits|candidate|hit|候选|命中/.test(text)) return 'candidate_hits'
   if (/extract_failed|failed|failure|error|失败|不可用/.test(text)) return 'extract_failed'
   if (/report_refs|report_ref|citation|reference|引用|参考/.test(text)) return 'report_refs'
-  if (/crawler|资料采集/.test(text)) return 'crawler'
-  if (/tool_search|exa|firecrawl|tavily|工具调用|公开搜索/.test(text)) return 'tool_search'
+  if (/tool_search|controlled_fetch|exa|firecrawl|tavily|工具调用|公开搜索/.test(text)) return 'tool_search'
   if (/database_recall|pg_vector|pgvector|database|vector|结构化|数据库|向量/.test(text)) return 'database_recall'
   if (/structured_sources|structured/.test(text)) return 'structured_sources'
   return fallbackGroup === 'all' ? 'database_recall' : fallbackGroup

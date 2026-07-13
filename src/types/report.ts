@@ -7,6 +7,8 @@ export type OutputDepth = 'brief' | 'standard' | 'detailed';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting_approval';
 
 export interface RiskAssessmentPayload {
+  deepReportEnabled?: boolean;
+  deepReportSources?: Record<string, unknown>;
   scenario: RiskScenario;
   target_country?: string;
   target_city?: string;
@@ -20,6 +22,8 @@ export interface RiskAssessmentPayload {
 }
 
 export interface PersonReportPayload {
+  deepReportEnabled?: boolean;
+  deepReportSources?: Record<string, unknown>;
   target_name: string;
   country_or_region: string;
   current_position: string;
@@ -33,6 +37,8 @@ export interface PersonReportPayload {
 }
 
 export interface WriteHbPayload {
+  deepReportEnabled?: boolean;
+  deepReportSources?: Record<string, unknown>;
   topic: string;
   report_type: WriteHbReportType;
   title?: string;

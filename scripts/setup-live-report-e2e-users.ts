@@ -5,7 +5,7 @@ import { UsersService } from '../server/users.service.js';
 if (process.env.RUN_LIVE_REPORT_E2E_TESTS !== 'true') throw new Error('RUN_LIVE_REPORT_E2E_TESTS=true is required.');
 
 const roleName = 'retrieval_e2e_reporter';
-const reporterPermissions = ['report:create', 'report:read', 'report:update', 'crawler:create', 'crawler:read', 'crawler:execute', 'preference:read', 'preference:update', 'template:read'];
+const reporterPermissions = ['report:create', 'report:read', 'report:update', 'preference:read', 'preference:update', 'template:read'];
 const roles = new RolesService();
 const users = new UsersService();
 

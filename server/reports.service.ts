@@ -5,10 +5,11 @@ import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { HERMES_RUN_MODE, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL, REPORT_AGENT_PROVIDER } from './config.js';
 import { CrawlerService } from './crawler.service.js';
+import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { ArtifactPathResolver } from './artifact-path-resolver.service.js';
 import { ArtifactSyncService, type ArtifactSyncResult } from './artifact-storage/artifact-sync.service.js';
-import type { CrawlerItemResponse, CrawlerTaskResponse } from './crawler.types.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
+import { sanitizeLegacyPlanningContext, sanitizeReportPayload } from './legacy-planning-context.js';
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
@@ -158,9 +159,6 @@ interface SupplementChannelResult {
   acceptedWebSources: Record<string, unknown>[];
   uncertainWebSources: Record<string, unknown>[];
   rejectedWebSources: Record<string, unknown>[];
-  acceptedCrawlerSources: Record<string, unknown>[];
-  uncertainCrawlerSources: Record<string, unknown>[];
-  rejectedCrawlerSources: Record<string, unknown>[];
   diagnostics: {
     triggered: boolean;
     triggerReason: string;
@@ -178,12 +176,12 @@ interface SupplementChannelResult {
   };
 }
 
-type ReportSourceListType = 'all' | 'database_recall' | 'crawler' | 'tool_search' | 'report_refs' | 'structured_sources' | 'candidate_hits' | 'extract_failed';
-type ReportSourceOrigin = 'database_recall' | 'crawler' | 'tool_search';
-type ReportEvidenceKind = 'report_reference' | 'structured_source' | 'research_source' | 'evidence_card' | 'crawler_source';
-type ReportSourceEngine = 'exa' | 'firecrawl' | 'tavily' | 'tavily_extract' | 'pg_vector' | 'database' | 'crawler';
+type ReportSourceListType = 'all' | 'database_recall' | 'tool_search' | 'report_refs' | 'structured_sources' | 'candidate_hits' | 'extract_failed';
+type ReportSourceOrigin = 'database_recall' | 'tool_search';
+type ReportEvidenceKind = 'report_reference' | 'structured_source' | 'research_source' | 'evidence_card';
+type ReportSourceEngine = 'exa' | 'firecrawl' | 'tavily' | 'tavily_extract' | 'controlled_fetch' | 'pg_vector' | 'database';
 
-const PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'>> = [
+const BASE_PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'>> = [
   { key: 'plan', title: '任务规划', desc: '整理编报要求、确定信源范围并拆解调研任务' },
   { key: 'database', title: '数据库检索', desc: '优先召回 PG 向量库和数据库信源' },
   { key: 'research', title: '资料采集', desc: '按规划补充公开信源并提取关键事实' },
@@ -191,6 +189,12 @@ const PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'
   { key: 'report', title: '报告撰写', desc: '撰写报告正文并完成校验' },
   { key: 'quality', title: '成稿自检', desc: '检查主题一致性、信源依据、风险推理和写作质量' },
 ];
+
+const DEEP_COLLECTION_PROGRESS_STAGE: Omit<ReportProgressStage, 'status' | 'evidence'> = {
+  key: 'deep_collection',
+  title: '资料深度采集',
+  desc: '调用深度编报资料采集 Skill 补充并核验公开资料',
+};
 
 interface ReportSourcesOptions {
   type?: string;
@@ -235,7 +239,6 @@ interface ReportSourcesResponse {
 
 interface ReportSourceSummary {
   databaseRecallCount: number;
-  crawlerCount: number;
   toolSearchCount: number;
   reportReferenceCount: number;
   structuredSourceCount: number;
@@ -269,6 +272,7 @@ export class ReportsService implements OnModuleDestroy {
     @Optional() @Inject(WebSupplementService) private readonly webSupplement?: WebSupplementService,
     @Optional() @Inject(ArtifactPathResolver) private readonly artifactResolver?: ArtifactPathResolver,
     @Optional() @Inject(ArtifactSyncService) private readonly artifactSync?: ArtifactSyncService,
+    @Optional() @Inject(DeepReportSourceCollectionService) private readonly deepReportSourceCollection?: DeepReportSourceCollectionService,
   ) {
     this.jobsReady = this.loadPersistedJobs();
   }
@@ -281,7 +285,8 @@ export class ReportsService implements OnModuleDestroy {
     if (!this.canCreateReport(user)) {
       throw new ForbiddenException({ error: 'Viewer cannot create report jobs' });
     }
-    const payload = await this.enhancePayloadWithUserPreferences(req.payload as unknown as Record<string, unknown>, user);
+    const inputPayload = sanitizeReportPayload(req.payload as unknown as Record<string, unknown>);
+    const payload = sanitizeReportPayload(await this.enhancePayloadWithUserPreferences(inputPayload, user));
     const planId = this.optionalId(payload.planId);
     const planBundle = planId ? await this.loadDraftAssistantPlanBundle(planId, user) : null;
     const eventId = this.optionalId(payload.eventId) || planBundle?.eventId;
@@ -601,7 +606,7 @@ export class ReportsService implements OnModuleDestroy {
     return {
       jobId: job.jobId,
       skill: job.skill,
-      payload: job.payload,
+      payload: sanitizeReportPayload(job.payload as unknown as Record<string, unknown>),
       eventId: job.eventId,
       outlineId: job.outlineId,
       planId: job.planId,
@@ -885,11 +890,12 @@ export class ReportsService implements OnModuleDestroy {
 
   private buildInitialProgressState(job: JobRecord): ReportProgressState {
     const now = new Date().toISOString();
+    const stageDefs = this.progressStageDefs(job);
     return {
       jobId: job.jobId,
       currentStage: job.status === 'queued' || job.status === 'running' ? 'plan' : null,
       updatedAt: now,
-      stages: PROGRESS_STAGE_DEFS.map((stage, index) => ({
+      stages: stageDefs.map((stage, index) => ({
         ...stage,
         status: index === 0 && (job.status === 'queued' || job.status === 'running') ? 'running' : 'not_started',
         evidence: index === 0
@@ -951,7 +957,7 @@ export class ReportsService implements OnModuleDestroy {
     for (const item of artifactEvidence) addEvidence(item.key, item.status, item.evidence);
 
     if (job.status === 'succeeded') {
-      for (const stage of PROGRESS_STAGE_DEFS) {
+      for (const stage of this.progressStageDefs(job)) {
         if (stage.key === 'quality' && !job.artifacts?.qualityReview && !job.artifacts?.qualityReviewPath) continue;
         addEvidence(stage.key, 'done', {
           source: stage.key === 'report' ? 'report_file' : 'job_status',
@@ -962,7 +968,7 @@ export class ReportsService implements OnModuleDestroy {
     }
 
     if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'waiting_approval') {
-      const failedKey = this.lastStartedProgressStage(statusByStage) || 'plan';
+      const failedKey = this.lastStartedProgressStage(job, statusByStage) || 'plan';
       addEvidence(failedKey, 'failed', {
         source: 'job_status',
         message: job.errorMessage || `任务状态：${job.status}`,
@@ -970,7 +976,7 @@ export class ReportsService implements OnModuleDestroy {
       });
     }
 
-    const stages = this.ensureActiveProgressStage(this.normalizeProgressStageOrder(PROGRESS_STAGE_DEFS.map((stage) => ({
+    const stages = this.ensureActiveProgressStage(this.normalizeProgressStageOrder(this.progressStageDefs(job).map((stage) => ({
       ...stage,
       status: statusByStage.get(stage.key) || 'not_started',
       evidence: evidenceByStage.get(stage.key) || [],
@@ -994,8 +1000,8 @@ export class ReportsService implements OnModuleDestroy {
           : 'running';
 
     if (/waiting_final_report|gateway_fallback|hermes:|^start$|^running$|received/.test(entry.phase || '')) return null;
+    if (/deep_source_collection|资料深度采集|深度资料采集/.test(haystack)) return { key: 'deep_collection', status };
     if (/context_preparing|context\.json|preparing hermes/.test(haystack)) return { key: 'plan', status };
-    if (/资料采集工具|controlled-web-collector|crawler\.|crawler_source|crawlersourcecontext/.test(haystack)) return { key: 'research', status };
     if (/pg向量|pg-sources|pg_sources|vector_sources|database_sources|database_query_plan|数据库信源|数据库检索|信源检索/.test(haystack)) return { key: 'database', status };
     if (/research_planning|harness_cli\.py\s+plan|plan\.json|调研计划/.test(haystack)) return { key: 'plan', status };
     if (/synthesis_dispatch|synthesis_waiting/.test(entry.phase || '')) {
@@ -1034,7 +1040,6 @@ export class ReportsService implements OnModuleDestroy {
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'crawler', 'crawler_sources.json'), '资料采集信源文件已生成。');
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'plan.json'), '调研计划文件已生成。');
     try {
       const groupEntries = await this.remoteFs.readdir(this.remoteFs.joinPath(jobDir, 'groups'));
@@ -1088,7 +1093,6 @@ export class ReportsService implements OnModuleDestroy {
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'crawler', 'crawler_sources.json'), '资料采集信源文件已生成。');
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'plan.json'), '调研计划文件已生成。');
     try {
       const groupEntries = await this.remoteFs.readdir(this.remoteFs.joinPath(jobDir, 'groups'));
@@ -1120,12 +1124,25 @@ export class ReportsService implements OnModuleDestroy {
     return result;
   }
 
-  private lastStartedProgressStage(statusByStage: Map<ReportProgressStageKey, ReportProgressStageStatus>): ReportProgressStageKey | null {
+  private lastStartedProgressStage(
+    job: JobRecord,
+    statusByStage: Map<ReportProgressStageKey, ReportProgressStageStatus>,
+  ): ReportProgressStageKey | null {
     let result: ReportProgressStageKey | null = null;
-    for (const stage of PROGRESS_STAGE_DEFS) {
+    for (const stage of this.progressStageDefs(job)) {
       if (statusByStage.has(stage.key)) result = stage.key;
     }
     return result;
+  }
+
+  private progressStageDefs(job: JobRecord): Array<Omit<ReportProgressStage, 'status' | 'evidence'>> {
+    if ((job.payload as unknown as Record<string, unknown>)?.deepReportEnabled !== true) return BASE_PROGRESS_STAGE_DEFS;
+    const researchIndex = BASE_PROGRESS_STAGE_DEFS.findIndex((stage) => stage.key === 'research');
+    return [
+      ...BASE_PROGRESS_STAGE_DEFS.slice(0, researchIndex + 1),
+      DEEP_COLLECTION_PROGRESS_STAGE,
+      ...BASE_PROGRESS_STAGE_DEFS.slice(researchIndex + 1),
+    ];
   }
 
   private normalizeProgressStageOrder(stages: ReportProgressStage[]): ReportProgressStage[] {
@@ -1449,10 +1466,9 @@ export class ReportsService implements OnModuleDestroy {
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 10), 100);
 
-    const [reportRefs, structuredSources, crawlerSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
+    const [reportRefs, structuredSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
       this.reportReferenceSources(job),
       this.structuredReportSources(job),
-      this.crawlerReportSources(job),
       this.toolSearchSources(job),
       type === 'candidate_hits' ? this.candidateHitSources(job) : Promise.resolve({ items: [], total: 0, detailSaved: false }),
       type === 'extract_failed' ? this.extractFailedSources(job) : Promise.resolve([]),
@@ -1463,7 +1479,6 @@ export class ReportsService implements OnModuleDestroy {
     const sourceDiagnostics = await this.reportSourceDiagnostics(job);
     const summary: ReportSourceSummary = {
       databaseRecallCount: databaseRecall.length,
-      crawlerCount: crawlerSources.length,
       toolSearchCount: toolSearch.length,
       reportReferenceCount: reportRefs.length,
       structuredSourceCount: structuredSources.length,
@@ -1471,7 +1486,6 @@ export class ReportsService implements OnModuleDestroy {
 
     const groups: Record<Exclude<ReportSourceListType, 'all'>, ReportSourceListItem[]> = {
       database_recall: databaseRecall,
-      crawler: crawlerSources,
       tool_search: toolSearch,
       report_refs: reportRefs,
       structured_sources: structuredSources,
@@ -1479,7 +1493,7 @@ export class ReportsService implements OnModuleDestroy {
       extract_failed: extractFailed,
     };
     const allItems = type === 'all'
-      ? [...databaseRecall, ...crawlerSources, ...toolSearch].sort((a, b) => this.reportSourcePriority(b) - this.reportSourcePriority(a))
+      ? [...databaseRecall, ...toolSearch].sort((a, b) => this.reportSourcePriority(b) - this.reportSourcePriority(a))
       : groups[type] || [];
     const total = type === 'candidate_hits'
       ? (candidateResult.total || allItems.length)
@@ -1633,7 +1647,7 @@ export class ReportsService implements OnModuleDestroy {
 
     if (!decision.triggered) {
       const retrievalMetrics = this.retrievalMetrics(context, baseDiagnostics, { totalSupplementDurationMs: Date.now() - startedAt });
-      const nextContext = this.withSupplementDiagnostics(context, { ...baseDiagnostics, retrievalMetrics }, {}, {});
+      const nextContext = this.withSupplementDiagnostics(context, { ...baseDiagnostics, retrievalMetrics }, {});
       await this.writeWebSupplementArtifacts(job, nextContext, this.emptySupplementResult(baseDiagnostics));
       return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
     }
@@ -1694,60 +1708,34 @@ export class ReportsService implements OnModuleDestroy {
     const webAccepted: Record<string, unknown>[] = [];
     const webUncertain: Record<string, unknown>[] = [...searchFiltered.uncertainSources];
     const webRejected: Record<string, unknown>[] = [...searchFiltered.rejectedSources];
-    const urlsNeedingCrawler: string[] = [];
+    const urlsNeedingFetch: string[] = [];
     let fetchedCount = 0;
 
     const fetchStartedAt = Date.now();
     for (const source of acceptedSearchCandidates.slice(0, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches)) {
       if (!String(source.content || '').trim()) {
-        if (source.url) urlsNeedingCrawler.push(source.url);
+        if (source.url) urlsNeedingFetch.push(source.url);
         else webRejected.push(this.rejectedSupplementSource(source, '正文抓取缺失，无法完成二次校验。'));
         continue;
       }
       fetchedCount += 1;
-      const finalSource = { ...source, validationStage: 'fetched_content_validation', vectorScore: source.searchScore };
-      const bodyOnlyFiltered = filterSourcesByEntityPolicy([{
-        ...finalSource,
-        title: '',
-        summary: '',
-        snippet: '',
-      }], entityPolicy);
-      if (!this.fetchedBodyEntityConsistent(bodyOnlyFiltered)) {
-        webRejected.push(this.rejectedSupplementSource(finalSource, '搜索摘要命中实体，但抓取正文未通过核心实体校验或标题与正文不一致。'));
-        continue;
-      }
-      const finalFiltered = filterSourcesByEntityPolicy([finalSource], entityPolicy);
-      if (!finalFiltered.acceptedSources.length) {
-        webRejected.push(...finalFiltered.rejectedSources, ...finalFiltered.uncertainSources);
-        continue;
-      }
-      const guarded = finalFiltered.acceptedSources[0];
-      const quality = assessSourceQuality(guarded);
-      const enriched = { ...guarded, sourceQuality: quality };
-      enriched.sourcePriority = sourcePriority(enriched);
-      if (quality.status === 'accepted') webAccepted.push(enriched);
-      else if (quality.status === 'uncertain') webUncertain.push(enriched);
-      else webRejected.push(enriched);
+      this.classifyFetchedWebSource(
+        { ...source, validationStage: 'fetched_content_validation', vectorScore: source.searchScore },
+        entityPolicy,
+        webAccepted,
+        webUncertain,
+        webRejected,
+      );
     }
 
-    const fetchDurationMs = Date.now() - fetchStartedAt;
-    const crawlerStartedAt = Date.now();
-    const crawlerCandidates = await this.fetchSupplementUrlsWithCrawler(job, context, urlsNeedingCrawler, queries);
-    const crawlerDurationMs = Date.now() - crawlerStartedAt;
-    fetchedCount += crawlerCandidates.length;
-    const crawlerFiltered = filterSourcesByEntityPolicy(crawlerCandidates, entityPolicy);
-    const crawlerAccepted: Record<string, unknown>[] = [];
-    const crawlerUncertain: Record<string, unknown>[] = [...crawlerFiltered.uncertainSources];
-    const crawlerRejected: Record<string, unknown>[] = [...crawlerFiltered.rejectedSources];
-    for (const source of crawlerFiltered.acceptedSources) {
-      const quality = assessSourceQuality(source);
-      const enriched: Record<string, unknown> = { ...source, sourceQuality: quality };
-      enriched.sourcePriority = sourcePriority(enriched);
-      if (quality.status === 'accepted') crawlerAccepted.push(enriched);
-      else if (quality.status === 'uncertain') crawlerUncertain.push(enriched);
-      else crawlerRejected.push(enriched);
+    const inlineFetchDurationMs = Date.now() - fetchStartedAt;
+    const controlledFetchStartedAt = Date.now();
+    const controlledFetchCandidates = await this.fetchSupplementUrls(context, urlsNeedingFetch);
+    const controlledFetchDurationMs = Date.now() - controlledFetchStartedAt;
+    fetchedCount += controlledFetchCandidates.length;
+    for (const source of controlledFetchCandidates) {
+      this.classifyFetchedWebSource(source, entityPolicy, webAccepted, webUncertain, webRejected);
     }
-
     const databaseForDedupe = databaseSources.map((source) => ({
       ...source,
       sourceChannel: 'database',
@@ -1758,12 +1746,10 @@ export class ReportsService implements OnModuleDestroy {
     const acceptedBeforeDedupe = [
       ...databaseForDedupe,
       ...webAccepted.map((source) => ({ ...source, sourceChannel: 'web' })),
-      ...crawlerAccepted.map((source) => ({ ...source, sourceChannel: 'crawler' })),
     ];
     const acceptedAll = dedupeSupplementSources(acceptedBeforeDedupe);
     const acceptedDatabaseSources = acceptedAll.filter((source) => source.sourceChannel === 'database').map((source) => this.withoutChannel(source));
     const acceptedWebSources = acceptedAll.filter((source) => source.sourceChannel === 'web').map((source) => this.withoutChannel(source));
-    const acceptedCrawlerSources = acceptedAll.filter((source) => source.sourceChannel === 'crawler').map((source) => this.withoutChannel(source));
     const deduplication = {
       beforeCount: acceptedBeforeDedupe.length,
       afterCount: acceptedAll.length,
@@ -1774,43 +1760,31 @@ export class ReportsService implements OnModuleDestroy {
       searchResultCount: searchCandidates.length,
       searchValidatedCount: acceptedSearchCandidates.length,
       fetchedCount,
-      acceptedCount: acceptedWebSources.length + acceptedCrawlerSources.length,
-      uncertainCount: webUncertain.length + crawlerUncertain.length,
-      rejectedCount: webRejected.length + crawlerRejected.length,
+      acceptedCount: acceptedWebSources.length,
+      uncertainCount: webUncertain.length,
+      rejectedCount: webRejected.length,
       queryDiagnostics,
       deduplication,
     };
     diagnostics.retrievalMetrics = this.retrievalMetrics(context, diagnostics, {
       webSearchDurationMs: searchDurationMs,
-      fetchDurationMs,
-      crawlerDurationMs,
+      fetchDurationMs: inlineFetchDurationMs + controlledFetchDurationMs,
+      controlledFetchDurationMs,
       totalSupplementDurationMs: Date.now() - startedAt,
-      crawlerAttemptCount: urlsNeedingCrawler.length,
-      crawlerSuccessCount: crawlerCandidates.length,
+      controlledFetchAttemptCount: urlsNeedingFetch.length,
+      controlledFetchSuccessCount: controlledFetchCandidates.length,
       deduplication,
     });
     const result: SupplementChannelResult = {
       acceptedWebSources,
       uncertainWebSources: webUncertain,
       rejectedWebSources: webRejected,
-      acceptedCrawlerSources,
-      uncertainCrawlerSources: crawlerUncertain,
-      rejectedCrawlerSources: crawlerRejected,
       diagnostics,
     };
-    const previousCrawler = this.normalizeCrawlerSourceContext(context.crawlerSourceContext);
-    const nextCrawlerItems = dedupeSupplementSources([
-      ...previousCrawler.items.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'),
-      ...acceptedCrawlerSources,
-    ]);
     const nextContext = this.withSupplementDiagnostics({
       ...context,
       vectorDatabaseSources: acceptedDatabaseSources,
       webSources: acceptedWebSources,
-      crawlerSourceContext: {
-        ...previousCrawler,
-        items: nextCrawlerItems,
-      },
     }, diagnostics, {
       acceptedCount: acceptedWebSources.length,
       uncertainCount: webUncertain.length,
@@ -1818,17 +1792,12 @@ export class ReportsService implements OnModuleDestroy {
       searchResultCount: searchCandidates.length,
       fetchedCount,
       queryDiagnostics,
-    }, {
-      acceptedCount: acceptedCrawlerSources.length,
-      uncertainCount: crawlerUncertain.length,
-      rejectedCount: crawlerRejected.length,
     });
 
     job.artifacts = {
       ...job.artifacts,
       webSupplementDiagnostics: diagnostics,
       acceptedWebSources,
-      acceptedCrawlerSources,
     };
     await this.writeWebSupplementArtifacts(job, nextContext, result);
     this.pushEvent(job, {
@@ -1838,7 +1807,7 @@ export class ReportsService implements OnModuleDestroy {
     });
     this.pushEvent(job, {
       type: 'sources',
-      sources: [...acceptedWebSources, ...acceptedCrawlerSources],
+      sources: acceptedWebSources,
     });
     return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
   }
@@ -1848,9 +1817,6 @@ export class ReportsService implements OnModuleDestroy {
       acceptedWebSources: [],
       uncertainWebSources: [],
       rejectedWebSources: [],
-      acceptedCrawlerSources: [],
-      uncertainCrawlerSources: [],
-      rejectedCrawlerSources: [],
       diagnostics,
     };
   }
@@ -1859,7 +1825,6 @@ export class ReportsService implements OnModuleDestroy {
     context: Record<string, unknown>,
     supplement: SupplementChannelResult['diagnostics'],
     web: Record<string, unknown>,
-    crawler: Record<string, unknown>,
   ): Record<string, unknown> {
     const existing = this.plainObject(context.sourceDiagnostics);
     return {
@@ -1867,7 +1832,6 @@ export class ReportsService implements OnModuleDestroy {
       sourceDiagnostics: {
         ...existing,
         web: { ...this.plainObject(existing.web), ...web },
-        crawler: { ...this.plainObject(existing.crawler), ...crawler },
         supplement: {
           triggered: supplement.triggered,
           reason: supplement.triggerReason,
@@ -1900,18 +1864,14 @@ export class ReportsService implements OnModuleDestroy {
     const fetched = supplement.fetchedCount;
     const sourceDiagnostics = this.plainObject(context.sourceDiagnostics);
     const webAccepted = Number(this.plainObject(sourceDiagnostics.web).acceptedCount ?? supplement.acceptedCount);
-    const crawlerAccepted = Number(this.plainObject(sourceDiagnostics.crawler).acceptedCount ?? 0);
-    const acceptedTotal = databaseAccepted + webAccepted + crawlerAccepted;
+    const acceptedTotal = databaseAccepted + webAccepted;
     const acceptedSources = [
       ...(Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : []),
       ...(Array.isArray(context.webSources) ? context.webSources : []),
-      ...this.normalizeCrawlerSourceContext(context.crawlerSourceContext).items,
     ].filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object');
     const domains = new Set(acceptedSources.map((source) => this.sourceDomain(this.firstString(source, ['url', 'source_url', 'data_source_url']))).filter(Boolean));
     const officialCount = acceptedSources.filter((source) => this.plainObject(source.sourceQuality).tier === 'official').length;
     const mediaCount = acceptedSources.filter((source) => ['mainstream', 'industry'].includes(String(this.plainObject(source.sourceQuality).tier || ''))).length;
-    const crawlerAttempts = Number(durations.crawlerAttemptCount ?? 0);
-    const crawlerSuccess = Number(durations.crawlerSuccessCount ?? 0);
     return {
       database: {
         candidateCount: databaseCandidates,
@@ -1928,10 +1888,11 @@ export class ReportsService implements OnModuleDestroy {
         fetchAttemptCount: Math.min(supplement.searchValidatedCount, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches),
         fetchSuccessCount: fetched,
         fetchSuccessRate: Math.min(supplement.searchValidatedCount, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches) ? fetched / Math.min(supplement.searchValidatedCount, WEB_SUPPLEMENT_LIMITS.maxFullContentFetches) : 0,
-        contentAcceptedCount: supplement.acceptedCount - crawlerAccepted,
+        contentAcceptedCount: supplement.acceptedCount,
         contentRejectedCount: supplement.rejectedCount,
+        controlledFetchAttemptCount: Number(durations.controlledFetchAttemptCount ?? 0),
+        controlledFetchSuccessCount: Number(durations.controlledFetchSuccessCount ?? 0),
       },
-      crawler: { attemptCount: crawlerAttempts, successCount: crawlerSuccess, acceptedCount: crawlerAccepted },
       deduplication: durations.deduplication || { beforeCount: acceptedTotal, afterCount: acceptedTotal, removedCount: 0 },
       final: {
         acceptedSourceCount: acceptedTotal,
@@ -1944,7 +1905,7 @@ export class ReportsService implements OnModuleDestroy {
         databaseDurationMs: Number(database.durationMs ?? 0),
         webSearchDurationMs: Number(durations.webSearchDurationMs ?? 0),
         fetchDurationMs: Number(durations.fetchDurationMs ?? 0),
-        crawlerDurationMs: Number(durations.crawlerDurationMs ?? 0),
+        controlledFetchDurationMs: Number(durations.controlledFetchDurationMs ?? 0),
         totalSupplementDurationMs: Number(durations.totalSupplementDurationMs ?? 0),
       },
       limits: WEB_SUPPLEMENT_LIMITS,
@@ -1960,68 +1921,82 @@ export class ReportsService implements OnModuleDestroy {
     return options.enabled !== false && context.internetSearchEnabled !== false && context.webSearchEnabled !== false;
   }
 
-  private async fetchSupplementUrlsWithCrawler(
-    job: JobRecord,
+  private async fetchSupplementUrls(
     context: Record<string, unknown>,
     urls: string[],
-    queries: string[],
   ): Promise<Record<string, unknown>[]> {
-    if (!urls.length || !this.crawler || !job.ownerUserId) return [];
-    const crawlerPlan = this.plainObject(context.crawlerPlan);
+    if (!urls.length || !this.crawler) return [];
     const supplementOptions = this.plainObject(context.sourceSupplementOptions);
-    const crawlerAllowed = crawlerPlan.enabled === true || supplementOptions.allowCrawlerFetch === true;
-    if (!crawlerAllowed) return [];
-    try {
-      const uniqueUrls = Array.from(new Set(urls)).slice(0, WEB_SUPPLEMENT_LIMITS.maxCrawlerFallbackUrls);
-      const task = await this.crawler.createTask({
-        jobId: job.jobId,
-        ownerId: job.ownerUserId,
-        ownerUsername: job.ownerUsername || '',
-        title: `${String(context.topic || (job.payload as unknown as Record<string, unknown>).topic || '编报')}公开信源正文补充`,
-        goal: `抓取通过搜索摘要实体校验的公开来源正文，查询词：${queries.slice(0, 6).join('；')}`,
-        crawlerPlan: {
-          enabled: true,
-          mode: 'manual',
-          goal: '公开信源正文二次校验',
-          autoGapFilling: false,
-          directions: [],
-          manualUrls: uniqueUrls,
-          manualDomains: [],
-          manualKeywords: queries,
-          maxPages: uniqueUrls.length,
-          maxDepth: 0,
-          language: 'zh-CN',
-          executePhase: 'research',
-          sourcePhase: 'research',
-        },
-        maxPages: uniqueUrls.length,
-        maxDepth: 0,
-      });
-      const result = await this.crawler.runTask(task.taskId);
-      return result.items.map((item) => ({
-        itemId: item.itemId,
-        taskId: item.taskId,
-        title: item.title,
-        url: item.url,
-        publisher: item.publisher,
-        publishedAt: item.publishedAt,
-        fetchedAt: item.fetchedAt,
-        summary: item.contentSummary,
-        content: item.contentText,
-        contentSummary: item.contentSummary,
-        contentText: item.contentText,
-        metadata: item.metadata,
-        relevanceScore: item.relevanceScore,
-        credibilityScore: item.credibilityScore,
-        sourceType: 'crawler',
-        sourcePhase: 'research',
-        validationStage: 'fetched_content_validation',
-      }));
-    } catch {
-      return [];
-    }
+    if (supplementOptions.allowCrawlerFetch === false) return [];
+
+    const uniqueUrls = Array.from(new Set(urls)).slice(0, WEB_SUPPLEMENT_LIMITS.maxControlledFetchUrls);
+    const result = await this.crawler.fetchPublicUrls(uniqueUrls, {
+      maxUrls: uniqueUrls.length,
+      maxContentChars: 30_000,
+      maxSummaryChars: 1_000,
+    });
+    return result.items.map((item) => ({
+      title: item.title,
+      url: item.url,
+      publisher: item.publisher,
+      publishedAt: item.publishedAt,
+      fetchedAt: item.fetchedAt,
+      summary: item.contentSummary,
+      content: item.contentText,
+      contentSummary: item.contentSummary,
+      contentText: item.contentText,
+      metadata: item.metadata,
+      retrievalMethod: 'controlled_fetch',
+      sourceType: 'web',
+      engine: 'controlled_fetch',
+      validationStage: 'fetched_content_validation',
+    }));
   }
 
+  private classifyFetchedWebSource(
+    source: Record<string, unknown>,
+    entityPolicy: EntityPolicy,
+    accepted: Record<string, unknown>[],
+    uncertain: Record<string, unknown>[],
+    rejected: Record<string, unknown>[],
+  ): void {
+    const bodyOnlyFiltered = filterSourcesByEntityPolicy([{
+      ...source,
+      title: '',
+      url: '',
+      publisher: '',
+      summary: '',
+      contentSummary: '',
+      snippet: '',
+      content: this.firstString(source, ['contentText', 'content', 'rawContent', 'body']),
+    }], entityPolicy);
+    if (!this.fetchedBodyEntityConsistent(bodyOnlyFiltered)) {
+      rejected.push(this.rejectedSupplementSource(
+        source,
+        '搜索摘要命中实体，但抓取正文未通过核心实体校验或标题与正文不一致。',
+      ));
+      return;
+    }
+
+    const finalFiltered = filterSourcesByEntityPolicy([source], entityPolicy);
+    if (!finalFiltered.acceptedSources.length) {
+      rejected.push(...finalFiltered.rejectedSources, ...finalFiltered.uncertainSources);
+      return;
+    }
+
+    const guarded = finalFiltered.acceptedSources[0];
+    const quality = assessSourceQuality(guarded);
+    const enriched: Record<string, unknown> = {
+      ...guarded,
+      sourceType: 'web',
+      retrievalMethod: source.retrievalMethod || this.plainObject(source.metadata).retrievalMethod,
+      sourceQuality: quality,
+    };
+    enriched.sourcePriority = sourcePriority(enriched);
+    if (quality.status === 'accepted') accepted.push(enriched);
+    else if (quality.status === 'uncertain') uncertain.push(enriched);
+    else rejected.push(enriched);
+  }
   private rejectedSupplementSource(source: Record<string, unknown>, reason: string): Record<string, unknown> {
     return {
       ...source,
@@ -2054,7 +2029,6 @@ export class ReportsService implements OnModuleDestroy {
       this.remoteFs.writeFile(this.remoteFs.joinPath(jobDir, 'context.json'), `${JSON.stringify(context, null, 2)}\n`),
       this.remoteFs.writeFile(acceptedPath, `${JSON.stringify({
         acceptedWebSources: result.acceptedWebSources,
-        acceptedCrawlerSources: result.acceptedCrawlerSources,
       }, null, 2)}\n`),
       this.remoteFs.writeFile(diagnosticsPath, `${JSON.stringify(result, null, 2)}\n`),
     ]);
@@ -2066,42 +2040,6 @@ export class ReportsService implements OnModuleDestroy {
     await this.writeJobState(job);
   }
 
-  private guardCrawlerSources(items: unknown[], entityPolicy: EntityPolicy): {
-    acceptedSources: Record<string, unknown>[];
-    uncertainSources: Record<string, unknown>[];
-    rejectedSources: Record<string, unknown>[];
-  } {
-    const candidates = items
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-      .map((item) => ({
-        ...item,
-        summary: this.firstString(item, ['contentSummary', 'content_summary', 'summary']),
-        content: this.firstString(item, ['contentText', 'content_text', 'content']),
-        vectorScore: this.firstNumber(item, ['relevanceScore', 'relevance_score']) || 0,
-        validationStage: 'fetched_content_validation',
-      }));
-    const bodyValidated: Record<string, unknown>[] = [];
-    const bodyRejected: Record<string, unknown>[] = [];
-    for (const candidate of candidates) {
-      const bodyOnly = filterSourcesByEntityPolicy([{ ...candidate, title: '', summary: '', snippet: '' }], entityPolicy);
-      if (this.fetchedBodyEntityConsistent(bodyOnly)) bodyValidated.push(candidate);
-      else bodyRejected.push(this.rejectedSupplementSource(candidate, '抓取正文未通过核心实体校验或标题与正文不一致。'));
-    }
-    const filtered = filterSourcesByEntityPolicy(bodyValidated, entityPolicy);
-    const acceptedSources: Record<string, unknown>[] = [];
-    const uncertainSources: Record<string, unknown>[] = [...filtered.uncertainSources];
-    const rejectedSources: Record<string, unknown>[] = [...bodyRejected, ...filtered.rejectedSources];
-    for (const source of filtered.acceptedSources) {
-      const quality = assessSourceQuality(source);
-      const enriched = { ...source, sourceQuality: quality, sourcePriority: 0 };
-      enriched.sourcePriority = sourcePriority(enriched);
-      if (quality.status === 'accepted') acceptedSources.push(enriched);
-      else if (quality.status === 'uncertain') uncertainSources.push(enriched);
-      else rejectedSources.push(enriched);
-    }
-    return { acceptedSources, uncertainSources, rejectedSources };
-  }
-
   private fetchedBodyEntityConsistent(filtered: SourceFilterResult<Record<string, unknown>>): boolean {
     if (filtered.acceptedSources.length) return true;
     return filtered.uncertainSources.some((source) => {
@@ -2110,379 +2048,9 @@ export class ReportsService implements OnModuleDestroy {
     });
   }
 
-  private mergeAcceptedSourceChannels(context: Record<string, unknown>, crawlerSources: Record<string, unknown>[]): Record<string, unknown> {
-    const database = (Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : [])
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-      .map((item) => ({ ...item, sourceChannel: 'database' }));
-    const web = (Array.isArray(context.webSources) ? context.webSources : [])
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-      .map((item) => ({ ...item, sourceChannel: 'web' }));
-    const existingCrawler = this.normalizeCrawlerSourceContext(context.crawlerSourceContext).items
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-      .map((item) => ({ ...item, sourceChannel: 'crawler' }));
-    const combined = dedupeSupplementSources([
-      ...database,
-      ...web,
-      ...existingCrawler,
-      ...crawlerSources.map((item) => ({ ...item, sourceChannel: 'crawler' })),
-    ]);
-    return {
-      ...context,
-      vectorDatabaseSources: combined.filter((item) => item.sourceChannel === 'database').map((item) => this.withoutChannel(item)),
-      webSources: combined.filter((item) => item.sourceChannel === 'web').map((item) => this.withoutChannel(item)),
-      crawlerSourceContext: {
-        ...this.normalizeCrawlerSourceContext(context.crawlerSourceContext),
-        items: combined.filter((item) => item.sourceChannel === 'crawler').map((item) => this.withoutChannel(item)),
-      },
-    };
-  }
-
   private withoutChannel(source: Record<string, unknown>): Record<string, unknown> {
     const { sourceChannel: _sourceChannel, ...rest } = source;
     return rest;
-  }
-
-  private async writeCrawlerDiagnosticsArtifact(job: JobRecord, diagnostics: Record<string, unknown>): Promise<void> {
-    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
-    const crawlerDir = this.remoteFs.joinPath(jobDir, 'crawler');
-    await this.remoteFs.mkdir(crawlerDir);
-    const filePath = this.remoteFs.joinPath(crawlerDir, 'crawler_sources_diagnostics.json');
-    await this.remoteFs.writeFile(filePath, `${JSON.stringify(diagnostics, null, 2)}\n`);
-    job.artifacts = { ...job.artifacts, crawlerSourceDiagnosticsPath: filePath };
-    await this.writeJobState(job);
-  }
-
-  private async enrichPayloadWithCrawlerSources(job: JobRecord, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (job.skill !== 'write-hb') return payload;
-    const context = this.contextObjectFromPayload(payload);
-    const crawlerPlan = this.plainObject(context.crawlerPlan);
-    const isPlanningExecuted =
-      String(crawlerPlan.executePhase || '') === 'planning' &&
-      crawlerPlan.alreadyExecuted === true;
-    if (isPlanningExecuted) {
-      const selectedContext = await this.enrichPayloadWithPlanningCrawlerSources(job, payload, context, crawlerPlan);
-      return selectedContext;
-    }
-    const enabled = crawlerPlan.enabled === true || String(crawlerPlan.enabled || '').toLowerCase() === 'true';
-    if (!enabled) {
-      const nextContext = {
-        ...context,
-        crawlerPlan: {
-          ...crawlerPlan,
-          enabled: false,
-          mode: String(crawlerPlan.mode || 'hybrid'),
-          executePhase: 'research',
-        },
-        crawlerSourceContext: this.normalizeCrawlerSourceContext(context.crawlerSourceContext),
-      };
-      this.pushEvent(job, {
-        type: 'stage',
-        stage: 'crawler_skipped',
-        message: '资料采集工具：跳过，crawlerPlan.enabled=false',
-      });
-      await this.writeCrawlerContextArtifact(job, nextContext);
-      return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
-    }
-
-    if (!this.crawler) {
-      this.pushEvent(job, {
-        type: 'stage',
-        stage: 'crawler_unavailable',
-        message: '资料采集工具：跳过，后端采集模块不可用',
-      });
-      return payload;
-    }
-
-    try {
-      this.pushEvent(job, {
-        type: 'stage',
-        stage: 'crawler_create',
-        message: '资料采集工具：已创建采集任务',
-      });
-      const task = await this.crawler.createTask({
-        jobId: job.jobId,
-        ownerId: job.ownerUserId || '',
-        ownerUsername: job.ownerUsername || '',
-        title: String(payload.topic || payload.title || '资料采集任务'),
-        goal: String(crawlerPlan.goal || context.topic || payload.topic || ''),
-        crawlerPlan,
-        maxPages: crawlerPlan.maxPages,
-        maxDepth: crawlerPlan.maxDepth,
-      });
-      this.pushEvent(job, {
-        type: 'stage',
-        stage: 'crawler_run',
-        message: '资料采集工具：执行采集任务',
-      });
-      const result = await this.crawler.runTask(task.taskId);
-      const rawCrawlerSourceContext = this.buildCrawlerSourceContext(result.task, result.items);
-      const entityPolicy = parseEntityPolicy(context.entityPolicy);
-      const guardedCrawler = entityPolicy
-        ? this.guardCrawlerSources(rawCrawlerSourceContext.items, entityPolicy)
-        : {
-          acceptedSources: rawCrawlerSourceContext.items,
-          uncertainSources: [],
-          rejectedSources: [],
-        };
-      const mergedContext = this.mergeAcceptedSourceChannels(context, guardedCrawler.acceptedSources);
-      const crawlerSourceContext = {
-        ...rawCrawlerSourceContext,
-        items: this.normalizeCrawlerSourceContext(mergedContext.crawlerSourceContext).items,
-      };
-      const previousCrawlerDiagnostics = this.plainObject(this.plainObject(mergedContext.sourceDiagnostics).crawler);
-      const nextContext = {
-        ...mergedContext,
-        crawlerPlan,
-        crawlerSourceContext,
-        sourceDiagnostics: {
-          ...this.plainObject(mergedContext.sourceDiagnostics),
-          crawler: {
-            ...previousCrawlerDiagnostics,
-            acceptedCount: crawlerSourceContext.items.length,
-            uncertainCount: Number(previousCrawlerDiagnostics.uncertainCount || 0) + guardedCrawler.uncertainSources.length,
-            rejectedCount: Number(previousCrawlerDiagnostics.rejectedCount || 0) + guardedCrawler.rejectedSources.length,
-          },
-        },
-      };
-      job.artifacts = {
-        ...job.artifacts,
-        crawlerSourceContext,
-        crawlerTaskIds: crawlerSourceContext.tasks.map((item) => item.taskId),
-        crawlerItemCount: crawlerSourceContext.items.length,
-      };
-      await this.writeCrawlerContextArtifact(job, nextContext);
-      if (entityPolicy) {
-        await this.writeCrawlerDiagnosticsArtifact(job, {
-          entityPolicy,
-          acceptedCrawlerSources: guardedCrawler.acceptedSources,
-          uncertainCrawlerSources: guardedCrawler.uncertainSources,
-          rejectedCrawlerSources: guardedCrawler.rejectedSources,
-        });
-      }
-      this.pushEvent(job, {
-        type: 'stage',
-        stage: 'crawler_completed',
-        message: entityPolicy
-          ? `资料采集工具：抓取 ${result.items.length} 条，最终 accepted ${guardedCrawler.acceptedSources.length} 条，过滤 ${guardedCrawler.uncertainSources.length + guardedCrawler.rejectedSources.length} 条。`
-          : `资料采集工具：采集完成，获得 ${crawlerSourceContext.items.length} 条来源`,
-      });
-      this.pushEvent(job, {
-        type: 'sources',
-        sources: crawlerSourceContext.items.map((item) => ({
-          ...this.plainObject(item),
-          sourceGroup: 'crawler',
-          sourceOrigin: 'crawler',
-          sourceType: '资料采集',
-        })),
-      });
-      return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.pushEvent(job, {
-        type: 'stage',
-        stage: 'crawler_warning',
-        message: `资料采集工具：采集未完成，继续编报。${this.sanitizeUserVisibleText(message, 200)}`,
-      });
-      const nextContext = {
-        ...context,
-        crawlerPlan,
-        crawlerSourceContext: this.normalizeCrawlerSourceContext(context.crawlerSourceContext),
-      };
-      await this.writeCrawlerContextArtifact(job, nextContext);
-      return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
-    }
-  }
-
-  private async enrichPayloadWithPlanningCrawlerSources(
-    job: JobRecord,
-    payload: Record<string, unknown>,
-    context: Record<string, unknown>,
-    crawlerPlan: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const selectedIds = this.stringArray(context.selectedCrawlerItemIds, 80);
-    const selectedItems = await this.readSelectedCrawlerItemsForJob(job, selectedIds);
-    const fallbackContext = this.normalizeCrawlerSourceContext(context.crawlerSourceContext);
-    const fallbackItems = Array.isArray(fallbackContext.items)
-      ? fallbackContext.items.filter((item) => {
-        if (!selectedIds.length) return false;
-        const id = this.firstString(this.plainObject(item), ['itemId', 'item_id']);
-        return selectedIds.includes(id);
-      })
-      : [];
-    const items = selectedItems.length ? selectedItems : fallbackItems.map((item, index) => ({
-      ...this.plainObject(item),
-      itemId: this.firstString(this.plainObject(item), ['itemId', 'item_id']) || `planning-selected-${index + 1}`,
-      sourceType: 'crawler',
-      sourcePhase: 'planning',
-    }));
-    const entityPolicy = parseEntityPolicy(context.entityPolicy);
-    const guarded = entityPolicy
-      ? this.guardCrawlerSources(items, entityPolicy)
-      : { acceptedSources: items, uncertainSources: [], rejectedSources: [] };
-    const taskIds = this.stringArray(context.crawlerTaskIds, 20);
-    const crawlerSourceContext = {
-      source: 'planning_selected_sources',
-      tasks: this.buildPlanningCrawlerTaskSummaries(fallbackContext.tasks, taskIds, guarded.acceptedSources.length),
-      items: guarded.acceptedSources.map((item) => ({
-        ...item,
-        sourceType: 'crawler',
-        sourcePhase: 'planning',
-      })),
-    };
-    const previousCrawlerDiagnostics = this.plainObject(this.plainObject(context.sourceDiagnostics).crawler);
-    const nextContext = {
-      ...context,
-      crawlerPlan: {
-        ...crawlerPlan,
-        enabled: crawlerPlan.enabled !== false,
-        executePhase: 'planning',
-        alreadyExecuted: true,
-        allowFurtherCollectionInResearch: crawlerPlan.allowFurtherCollectionInResearch === true,
-      },
-      selectedCrawlerItemIds: selectedIds,
-      crawlerTaskIds: taskIds,
-      crawlerSourceContext,
-      sourceDiagnostics: {
-        ...this.plainObject(context.sourceDiagnostics),
-        crawler: {
-          ...previousCrawlerDiagnostics,
-          acceptedCount: crawlerSourceContext.items.length,
-          uncertainCount: Number(previousCrawlerDiagnostics.uncertainCount || 0) + guarded.uncertainSources.length,
-          rejectedCount: Number(previousCrawlerDiagnostics.rejectedCount || 0) + guarded.rejectedSources.length,
-        },
-      },
-    };
-    job.artifacts = {
-      ...job.artifacts,
-      crawlerSourceContext,
-      crawlerTaskIds: taskIds,
-      crawlerItemCount: crawlerSourceContext.items.length,
-    };
-    await this.writeCrawlerContextArtifact(job, nextContext);
-    if (entityPolicy) {
-      await this.writeCrawlerDiagnosticsArtifact(job, {
-        entityPolicy,
-        acceptedCrawlerSources: guarded.acceptedSources,
-        uncertainCrawlerSources: guarded.uncertainSources,
-        rejectedCrawlerSources: guarded.rejectedSources,
-      });
-    }
-    this.pushEvent(job, {
-      type: 'stage',
-      stage: 'crawler_planning_selected',
-      message: `资料采集工具：使用规划页面已选择的 ${crawlerSourceContext.items.length} 条采集信源。`,
-    });
-    this.pushEvent(job, {
-      type: 'sources',
-      sources: crawlerSourceContext.items.map((item) => ({
-        ...item,
-        sourceGroup: 'crawler',
-        sourceOrigin: 'crawler',
-        sourceType: '资料采集',
-        sourcePhase: 'planning',
-        method: '规划页面已选',
-      })),
-    });
-    return { ...payload, known_context: JSON.stringify(nextContext, null, 2) };
-  }
-
-  private async readSelectedCrawlerItemsForJob(job: JobRecord, selectedIds: string[]): Promise<Array<Record<string, unknown>>> {
-    if (!selectedIds.length) return [];
-    const pool = await this.getPool();
-    const isAdminOwner = job.ownerRole === 'admin';
-    const result = isAdminOwner
-      ? await pool.query(
-        `SELECT * FROM crawler_items WHERE item_id::text = ANY($1::text[]) ORDER BY created_at ASC`,
-        [selectedIds],
-      )
-      : await pool.query(
-        `SELECT * FROM crawler_items WHERE item_id::text = ANY($1::text[]) AND owner_id = $2 ORDER BY created_at ASC`,
-        [selectedIds, job.ownerUserId || ''],
-      );
-    return result.rows.map((row) => this.crawlerItemRowToContextItem(row));
-  }
-
-  private crawlerItemRowToContextItem(row: Record<string, unknown>): Record<string, unknown> {
-    return {
-      itemId: String(row.item_id || ''),
-      taskId: String(row.task_id || ''),
-      title: String(row.title || ''),
-      url: String(row.url || ''),
-      publisher: String(row.publisher || ''),
-      publishedAt: row.published_at ? this.isoString(row.published_at) : null,
-      fetchedAt: this.isoString(row.fetched_at),
-      contentSummary: String(row.content_summary || ''),
-      contentText: String(row.content_text || ''),
-      sourceType: 'crawler',
-      sourcePhase: 'planning',
-      relevanceScore: this.firstNumber(row, ['relevance_score']) ?? null,
-      credibilityScore: this.firstNumber(row, ['credibility_score']) ?? null,
-    };
-  }
-
-  private buildPlanningCrawlerTaskSummaries(tasks: unknown[], taskIds: string[], selectedCount: number): unknown[] {
-    const existing = Array.isArray(tasks) ? tasks : [];
-    if (existing.length) {
-      return existing.map((task) => ({
-        ...this.plainObject(task),
-        selectedCount,
-      }));
-    }
-    return taskIds.map((taskId) => ({
-      taskId,
-      status: 'completed',
-      itemCount: selectedCount,
-      selectedCount,
-    }));
-  }
-
-  private buildCrawlerSourceContext(task: CrawlerTaskResponse, items: CrawlerItemResponse[]) {
-    return {
-      tasks: [{
-        taskId: task.taskId,
-        status: task.status,
-        goal: task.goal,
-        itemCount: items.length,
-      }],
-      items: items.map((item) => ({
-        itemId: item.itemId,
-        title: item.title,
-        url: item.url,
-        publisher: item.publisher,
-        publishedAt: item.publishedAt,
-        fetchedAt: item.fetchedAt,
-        contentSummary: item.contentSummary,
-        contentText: item.contentText,
-        sourceType: 'crawler',
-        relevanceScore: item.relevanceScore,
-        credibilityScore: item.credibilityScore,
-      })),
-    };
-  }
-
-  private normalizeCrawlerSourceContext(value: unknown): { tasks: unknown[]; items: unknown[] } {
-    const context = this.plainObject(value);
-    return {
-      tasks: Array.isArray(context.tasks) ? context.tasks : [],
-      items: Array.isArray(context.items) ? context.items : [],
-    };
-  }
-
-  private async writeCrawlerContextArtifact(job: JobRecord, context: Record<string, unknown>): Promise<void> {
-    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
-    const crawlerDir = this.remoteFs.joinPath(jobDir, 'crawler');
-    const crawlerSourceContext = this.normalizeCrawlerSourceContext(context.crawlerSourceContext);
-    await this.remoteFs.mkdir(crawlerDir);
-    await Promise.all([
-      this.remoteFs.writeFile(this.remoteFs.joinPath(jobDir, 'context.json'), `${JSON.stringify(context, null, 2)}\n`),
-      this.remoteFs.writeFile(this.remoteFs.joinPath(crawlerDir, 'crawler_sources.json'), `${JSON.stringify(crawlerSourceContext, null, 2)}\n`),
-    ]);
-    job.artifacts = {
-      ...job.artifacts,
-      hermesJobDir: jobDir,
-      crawlerSourcesPath: this.remoteFs.joinPath(crawlerDir, 'crawler_sources.json'),
-    };
-    await this.writeJobState(job);
   }
 
   private async enrichPayloadWithDraftAssistantContext(
@@ -2601,7 +2169,7 @@ export class ReportsService implements OnModuleDestroy {
   private contextObjectFromPayload(payload: Record<string, unknown>): Record<string, unknown> {
     const knownContext = typeof payload.known_context === 'string' ? payload.known_context : '';
     const parsed = this.parseJsonObject(knownContext);
-    if (parsed) return parsed;
+    if (parsed) return sanitizeLegacyPlanningContext(parsed);
     return {
       topic: String(payload.topic || payload.title || ''),
       reportType: String(payload.report_type || ''),
@@ -2809,15 +2377,11 @@ export class ReportsService implements OnModuleDestroy {
     const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
     const databaseSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'database_sources.json'));
     const vectorSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'vector_sources.json'));
-    const crawlerSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources.json'));
     return {
       ...payloadContext,
       ...(contextJson && !Array.isArray(contextJson) ? contextJson : {}),
       database_sources: Array.isArray(databaseSources) ? databaseSources : payloadContext.database_sources,
       vector_sources: Array.isArray(vectorSources) ? vectorSources : payloadContext.vector_sources,
-      crawlerSourceContext: crawlerSources && !Array.isArray(crawlerSources)
-        ? crawlerSources
-        : payloadContext.crawlerSourceContext,
     };
   }
 
@@ -2869,7 +2433,7 @@ export class ReportsService implements OnModuleDestroy {
       checks: [],
       issues: [],
       recommendedEdits: [],
-      sourceUsage: { databaseSourcesUsed: 0, crawlerSourcesUsed: 0, internetSourcesUsed: 0, unverifiedClaims: 0 },
+      sourceUsage: { databaseSourcesUsed: 0, internetSourcesUsed: 0, unverifiedClaims: 0 },
       error: this.sanitizeUserVisibleText(message, 300),
     };
   }
@@ -2888,7 +2452,7 @@ export class ReportsService implements OnModuleDestroy {
     const hasMainContent = /基本情况|主要内容|事件概述|背景/.test(markdown) && /发生|推动|宣布|涉及|影响|进展/.test(markdown);
     const hasAttitudeTrace = /各方态度|立场|表态|回应|认为|表示/.test(markdown) && /年|月|日|媒体|公告|声明|报道|发布/.test(markdown);
     const hasRiskBasis = /涉我风险|风险/.test(markdown) && /基于|依据|显示|来源|监管|数据|报道|文件|逻辑/.test(markdown);
-    const hasSourceClarity = (sourceUsage.databaseSourcesUsed + sourceUsage.crawlerSourcesUsed + sourceUsage.internetSourcesUsed) > 0 || /\[\d+\]|参考资料|来源/.test(markdown);
+    const hasSourceClarity = (sourceUsage.databaseSourcesUsed + sourceUsage.internetSourcesUsed) > 0 || /\[\d+\]|参考资料|来源/.test(markdown);
     const plan = this.plainObject(context.report_plan);
     const planText = JSON.stringify(plan || {});
     const hasPlan = !planText || planText === '{}' || ['基本情况', '涉我风险', '对策建议', '事件概述'].some((section) => markdown.includes(section));
@@ -2953,7 +2517,7 @@ export class ReportsService implements OnModuleDestroy {
     return {
       factualClarity: this.clampScore((passed('main_content_clarity') ? 82 : 62) + (wordCount > 4000 ? 8 : 0)),
       planAlignment: this.clampScore(passed('topic_alignment') && passed('plan_coverage') ? 84 : 65),
-      sourceQuality: this.clampScore((passed('source_reference_clarity') ? 78 : 58) + Math.min(12, (sourceUsage.databaseSourcesUsed + sourceUsage.crawlerSourcesUsed + sourceUsage.internetSourcesUsed) * 2)),
+      sourceQuality: this.clampScore((passed('source_reference_clarity') ? 78 : 58) + Math.min(12, (sourceUsage.databaseSourcesUsed + sourceUsage.internetSourcesUsed) * 2)),
       attitudeTraceability: this.clampScore(passed('attitude_traceability') ? 78 : 60),
       riskReasoning: this.clampScore(passed('risk_reasoning_basis') ? 80 : 62),
       writingQuality: this.clampScore((passed('ai_boilerplate') ? 84 : 62) + (wordCount >= 2500 ? 4 : -8)),
@@ -2980,7 +2544,7 @@ export class ReportsService implements OnModuleDestroy {
       main_content_clarity: '请补充事件是什么、主体、时间、地点、进展和影响。',
       attitude_traceability: '请补充表态主体、表态时间、媒体或发布渠道和来源链接。',
       risk_reasoning_basis: '请用已有信源补充风险判断的事实依据、传导路径和不确定性。',
-      source_reference_clarity: '请区分数据库信源、资料采集信源和互联网搜索信源，并补充参考资料编号。',
+      source_reference_clarity: '请区分数据库信源和互联网信源，并补充参考资料编号。',
       plan_coverage: '请对照 report_plan 补齐未体现的章节重点。',
       ai_boilerplate: '请删除“以下是”“作为AI”等无用描述，改为正式编报表述。',
       word_count: '请扩充事实密度、分析层次、风险链条和对策建议。',
@@ -3003,19 +2567,17 @@ export class ReportsService implements OnModuleDestroy {
       ...(Array.isArray(context.vector_sources) ? context.vector_sources : []),
       ...(Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : []),
     ];
-    const crawlerContext = this.plainObject(context.crawlerSourceContext);
-    const crawlerSources = Array.isArray(crawlerContext.items) ? crawlerContext.items : [];
+    const webSources = Array.isArray(context.webSources) ? context.webSources : [];
     const draftContext = this.plainObject(context.draftAssistantContext);
     const draftSources = Array.isArray(draftContext.sources) ? draftContext.sources : [];
     const referenceCount = (markdown.match(/\[\d+\]/g) || []).length;
     const judgementCount = (markdown.match(/可能|预计|或将|风险|影响|认为/g) || []).length;
     return {
       databaseSourcesUsed: Math.min(databaseSources.length, referenceCount || databaseSources.length),
-      crawlerSourcesUsed: Math.min(crawlerSources.length, referenceCount || crawlerSources.length),
-      internetSourcesUsed: Math.max(0, referenceCount - databaseSources.length - crawlerSources.length),
+      internetSourcesUsed: Math.min(webSources.length, referenceCount || webSources.length),
       draftAssistantSourcesUsed: draftSources.length,
       userProvidedSourcesUsed: Array.isArray(context.userProvidedSources) ? context.userProvidedSources.length : 0,
-      unverifiedClaims: Math.max(0, judgementCount - referenceCount - databaseSources.length - crawlerSources.length),
+      unverifiedClaims: Math.max(0, judgementCount - referenceCount - databaseSources.length - webSources.length),
     };
   }
 
@@ -3298,6 +2860,79 @@ export class ReportsService implements OnModuleDestroy {
     return Math.max(min, Math.min(max, Math.floor(parsed)));
   }
 
+  private async enrichPayloadWithDeepReportSources(
+    job: JobRecord,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (payload.deepReportEnabled !== true) return payload;
+
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'deep_source_collection_preparing',
+      message: '深度资料采集准备中。',
+    });
+    if (!this.deepReportSourceCollection) {
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'deep_source_collection_failed',
+        message: '深度资料采集失败：Skill 服务未配置。',
+      });
+      throw new Error('深度资料采集失败：Skill 服务未配置。');
+    }
+
+    try {
+      const response = await this.deepReportSourceCollection.execute({
+        workflow: 'deep_report',
+        deepReportEnabled: true,
+        stage: 'source_collection',
+        planningSessionId: job.jobId,
+        topic: this.reportTopic(payload),
+        plan: this.contextObjectFromPayload(payload),
+        requestUser: this.buildRequestUser(job),
+        onEvent: (event) => this.pushEvent(job, event),
+      });
+      if (response.status === 'not_available') throw new Error(response.reason);
+
+      const deepReportSources = {
+        status: response.status,
+        acceptedSources: response.acceptedSources,
+        uncertainSources: response.uncertainSources,
+        coveredGaps: response.coveredGaps,
+        uncoveredGaps: response.uncoveredGaps,
+        summary: response.summary,
+      };
+      job.artifacts = {
+        ...job.artifacts,
+        deepReportSourceCollection: deepReportSources,
+      };
+      await this.writeJobState(job);
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: response.status === 'partial' ? 'deep_source_collection_partial' : 'deep_source_collection_completed',
+        message: response.status === 'partial'
+          ? '深度资料采集部分完成，未覆盖项将作为信息缺口传入编报。'
+          : '深度资料采集已完成。',
+      });
+      return { ...payload, deepReportSources };
+    } catch (error) {
+      const message = this.sanitizeUserVisibleText(error instanceof Error ? error.message : String(error), 240);
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'deep_source_collection_failed',
+        message: `深度资料采集失败：${message}`,
+      });
+      throw new Error(`深度资料采集失败：${message}`);
+    }
+  }
+
+  private reportTopic(payload: Record<string, unknown>): string {
+    for (const key of ['topic', 'title', 'target_name', 'target_country']) {
+      const value = payload[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    throw new Error('当前编报任务缺少明确主题。');
+  }
+
   private async runJob(job: JobRecord) {
     job.status = 'running';
     job.updatedAt = new Date().toISOString();
@@ -3308,11 +2943,11 @@ export class ReportsService implements OnModuleDestroy {
       const requestUser = this.buildRequestUser(job);
       const enrichedPayload = await this.enrichPayloadWithVectorSources(job);
       const supplementPayload = await this.enrichPayloadWithWebSupplement(job, enrichedPayload);
-      const crawlerPayload = await this.enrichPayloadWithCrawlerSources(job, supplementPayload);
-      const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, crawlerPayload, this.buildJobOwnerUser(job));
+      const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, supplementPayload, this.buildJobOwnerUser(job));
+      const preparedPayload = await this.enrichPayloadWithDeepReportSources(job, draftPayload);
       const runInput: RunInput = {
         skill: job.skill,
-        payload: draftPayload,
+        payload: preparedPayload,
         requestUser,
         onEvent: (event) => this.pushEvent(job, event),
         jobId: job.jobId,
@@ -4563,7 +4198,6 @@ export class ReportsService implements OnModuleDestroy {
     const normalized = String(type || '').trim();
     if (
       normalized === 'database_recall' ||
-      normalized === 'crawler' ||
       normalized === 'tool_search' ||
       normalized === 'report_refs' ||
       normalized === 'structured_sources' ||
@@ -4717,12 +4351,11 @@ export class ReportsService implements OnModuleDestroy {
   private async buildReportReferenceItems(job: JobRecord, markdown: string): Promise<ReportSourceListItem[]> {
     const references = this.parseReferenceEntriesRobust(markdown);
     const citationNumbers = this.parseCitationNumbers(markdown);
-    const [structured, toolSearch, crawler] = await Promise.all([
+    const [structured, toolSearch] = await Promise.all([
       this.structuredReportSources(job),
       this.toolSearchSources(job),
-      this.crawlerReportSources(job),
     ]);
-    const acceptedSources = [...structured, ...toolSearch, ...crawler];
+    const acceptedSources = [...structured, ...toolSearch];
     const acceptedByUrl = new Map(
       acceptedSources
         .map((source) => [this.normalizeSourceUrl(source.url), source] as const)
@@ -4942,60 +4575,6 @@ export class ReportsService implements OnModuleDestroy {
     }));
   }
 
-  private async crawlerReportSources(job: JobRecord): Promise<ReportSourceListItem[]> {
-    const contexts: unknown[] = [];
-    const payloadContext = this.contextObjectFromPayload(this.plainObject(job.payload));
-    contexts.push(payloadContext.crawlerSourceContext);
-    contexts.push(job.artifacts?.crawlerSourceContext);
-    const dir = await this.resolveHermesJobDir(job);
-    if (dir) {
-      const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
-      if (contextJson && !Array.isArray(contextJson)) contexts.push(contextJson.crawlerSourceContext);
-      const crawlerJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources.json'));
-      contexts.push(crawlerJson);
-    }
-
-    const items: unknown[] = [];
-    for (const context of contexts) {
-      const object = this.plainObject(context);
-      if (Array.isArray(object.items)) items.push(...object.items);
-      if (Array.isArray(context)) items.push(...context);
-    }
-
-    return items
-      .map((item, index) => this.normalizeCrawlerSourceItem(item, index))
-      .filter((item): item is ReportSourceListItem => Boolean(item));
-  }
-
-  private normalizeCrawlerSourceItem(item: unknown, index: number): ReportSourceListItem | null {
-    if (!item || typeof item !== 'object') return null;
-    const source = item as Record<string, unknown>;
-    const normalized = this.normalizeSourceRecord(source, index, 'crawler');
-    const sourcePhase = this.firstString(source, ['sourcePhase', 'source_phase']);
-    const method = sourcePhase === 'planning'
-      ? '规划页面已选'
-      : sourcePhase === 'research'
-        ? 'Research Phase 补采'
-        : normalized.method || '资料采集工具';
-    return {
-      ...normalized,
-      id: normalized.id || `crawler-${index + 1}`,
-      sourceGroup: 'crawler',
-      sourceOrigin: 'crawler',
-      evidenceKind: 'crawler_source',
-      engine: 'crawler',
-      title: normalized.title || this.firstString(source, ['title']) || `资料采集来源 ${index + 1}`,
-      sourceName: normalized.sourceName || this.firstString(source, ['publisher', 'sourceName']) || '',
-      publishTime: normalized.publishTime || this.firstString(source, ['publishedAt', 'published_at', 'fetchedAt']),
-      summary: normalized.summary || this.firstString(source, ['contentSummary', 'content_summary', 'summary']),
-      excerpt: normalized.excerpt || this.firstString(source, ['contentText', 'content_text']).slice(0, 1200),
-      sourceType: '资料采集',
-      relevanceScore: normalized.relevanceScore ?? this.firstNumber(source, ['relevanceScore', 'relevance_score']) ?? undefined,
-      status: normalized.status || 'collected',
-      method,
-    };
-  }
-
   private async candidateHitSources(job: JobRecord): Promise<{ items: ReportSourceListItem[]; total: number; detailSaved: boolean }> {
     const data = await this.getDatabaseSources(job.jobId);
     const total = this.candidateHitTotal(data);
@@ -5199,13 +4778,11 @@ export class ReportsService implements OnModuleDestroy {
       ]));
       const databaseDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(databaseDir, 'database_sources_diagnostics.json'));
       const webDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(dir, 'research', 'web_supplement_diagnostics.json'));
-      const crawlerDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources_diagnostics.json'));
-      for (const diagnostics of [databaseDiagnostics, webDiagnostics, crawlerDiagnostics]) {
+      for (const diagnostics of [databaseDiagnostics, webDiagnostics]) {
         if (!diagnostics || Array.isArray(diagnostics)) continue;
         for (const key of [
           'uncertainSources', 'rejectedSources',
           'uncertainWebSources', 'rejectedWebSources',
-          'uncertainCrawlerSources', 'rejectedCrawlerSources',
         ]) {
           if (Array.isArray(diagnostics[key])) fileItems.push(...diagnostics[key]);
         }

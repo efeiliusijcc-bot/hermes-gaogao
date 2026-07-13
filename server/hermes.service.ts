@@ -30,8 +30,10 @@ import {
   REPORT_TIMEOUT_MS,
 } from './config.js';
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
+import { sanitizeLegacyPlanningContext, sanitizeReportPayload } from './legacy-planning-context.js';
 import { ResearchKeysService } from './research-keys.service.js';
 import { ENTITY_POLICY_PROMPT, extractEntityPolicy as extractEntityPolicyWithFallback, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
+import type { DeepReportSourceCollectionInput } from './deep-report-source-collection.types.js';
 import type { HermesHealth, ReportPlanRequest, ReportPlanResponse, RunInput, RunResult, ServerEvent } from './types.js';
 import type { ReportPlanStepType } from './types.js';
 
@@ -124,6 +126,140 @@ export class HermesService {
     if (HERMES_RUN_MODE === 'http') return this.runReportViaHttpSse(input);
 
     return this.runReportViaHttpSse(input);
+  }
+
+  async runDeepReportSourceCollectionSkill(input: DeepReportSourceCollectionInput): Promise<Record<string, unknown>> {
+    this.assertDeepReportSourceCollectionInput(input);
+    const onEvent = input.onEvent || (() => undefined);
+    const prompt = this.buildDeepReportSourceCollectionPrompt(input);
+    onEvent({ type: 'stage', stage: 'deep_source_collection_preparing', message: '深度资料采集准备中。' });
+
+    let text = '';
+    if (HERMES_RUN_MODE === 'runs') {
+      text = await this.runStructuredSkillViaRunsApi(input, prompt);
+    } else if (HERMES_RUN_MODE === 'remote_cli') {
+      text = await this.runHermesRemoteCli('planning-source-collection', prompt);
+    } else if (HERMES_RUN_MODE === 'http') {
+      throw new Error('Deep Report source collection requires the Hermes report-agent tool runtime.');
+    } else {
+      text = await this.runStructuredSkillViaGateway(input, prompt);
+    }
+
+    const parsed = this.parseDeepReportSourceCollectionResult(text);
+    if (!parsed) throw new Error('Deep Report source collection returned invalid structured output.');
+    onEvent({ type: 'stage', stage: 'deep_source_collection_validating', message: '深度资料采集结果核验中。' });
+    return parsed;
+  }
+
+  private assertDeepReportSourceCollectionInput(input: DeepReportSourceCollectionInput): void {
+    if (
+      input?.workflow !== 'deep_report'
+      || input?.deepReportEnabled !== true
+      || input?.stage !== 'source_collection'
+      || !input?.planningSessionId?.trim()
+      || !input?.topic?.trim()
+    ) {
+      throw new Error('This skill is only available after Deep Report is enabled.');
+    }
+  }
+
+  private buildDeepReportSourceCollectionPrompt(input: DeepReportSourceCollectionInput): string {
+    const context = {
+      workflow: 'deep_report',
+      deepReportEnabled: true,
+      stage: 'source_collection',
+      planningSessionId: input.planningSessionId,
+      topic: input.topic,
+      plan: input.plan || {},
+    };
+    const serialized = JSON.stringify(context).slice(0, 120_000);
+    return [
+      'This is an internal Deep Report workflow step executed by report-agent.',
+      'Load and follow the planning-source-collection Skill from the report-agent skills directory.',
+      'Do not create a report, do not expose a standalone collection entrypoint, and do not call legacy Crawler task routes.',
+      'Use only the controlled research tools allowed by that Skill.',
+      'The required trusted workflow context is:',
+      serialized,
+      '',
+      'Return one strict JSON object and no Markdown fences or commentary:',
+      '{"acceptedSources":[],"uncertainSources":[],"coveredGaps":[],"uncoveredGaps":[],"summary":""}',
+      'Do not fabricate sources. Keep uncertain sources uncertain. A failed collection must be reported as an error, not an invented empty success.',
+    ].join('\n');
+  }
+
+  private async runStructuredSkillViaRunsApi(input: DeepReportSourceCollectionInput, prompt: string): Promise<string> {
+    const startedAt = Date.now();
+    const created = await this.fetchHermesRunsJson(HERMES_RUNS_URL, {
+      method: 'POST',
+      body: JSON.stringify({
+        model: HERMES_MODEL,
+        input: prompt,
+        ...(input.requestUser ? { user: input.requestUser } : {}),
+        metadata: {
+          jobId: input.planningSessionId,
+          skill: 'planning-source-collection',
+          workflow: 'deep_report',
+          stage: 'source_collection',
+          source: 'hermes-gaogao',
+        },
+      }),
+    });
+    const immediateText = this.extractRunsFinalText(created).trim();
+    if (this.parseDeepReportSourceCollectionResult(immediateText)) return immediateText;
+
+    const runId = this.extractRunsId(created);
+    if (!runId) throw new Error('Hermes runs API did not return a Deep Report collection run id.');
+    input.onEvent?.({ type: 'stage', stage: 'deep_source_collection_running', message: '深度资料采集中。' });
+
+    while (Date.now() - startedAt < REPORT_TIMEOUT_MS) {
+      await this.sleep(RUNS_API_POLL_INTERVAL_MS);
+      const run = await this.fetchHermesRunsJson(`${HERMES_RUNS_URL.replace(/\/$/, '')}/${encodeURIComponent(runId)}`, {
+        method: 'GET',
+      });
+      const text = this.extractRunsFinalText(run).trim();
+      if (this.parseDeepReportSourceCollectionResult(text)) return text;
+      if (this.isRunsTerminalStatus(this.extractRunsStatus(run))) {
+        throw new Error(`Deep Report source collection run ended without valid JSON: ${this.extractRunsError(run) || text.slice(0, 500)}`);
+      }
+    }
+    throw new Error('Deep Report source collection timed out.');
+  }
+
+  private async runStructuredSkillViaGateway(input: DeepReportSourceCollectionInput, prompt: string): Promise<string> {
+    const sessionKey = `agent:report-agent:deep-source-collection:${cryptoSafeLabel(input.planningSessionId)}`;
+    input.onEvent?.({ type: 'stage', stage: 'deep_source_collection_running', message: '深度资料采集中。' });
+    const payload = await this.gatewayDevice.runAgent({
+      agentId: 'report-agent',
+      message: prompt,
+      timeoutMs: REPORT_TIMEOUT_MS,
+      sessionKey,
+      label: `planning-source-collection: ${input.topic}`,
+      onEvent: (event) => this.forwardGatewayEvent(event, input.onEvent || (() => undefined)),
+    });
+    const text = this.extractAgentMarkdown(payload) || this.extractSessionFinalText(sessionKey);
+    const error = this.extractAgentError(payload, text);
+    if (error) throw new Error(error);
+    return text;
+  }
+
+  private parseDeepReportSourceCollectionResult(text: string): Record<string, unknown> | null {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return null;
+    const unfenced = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const start = unfenced.indexOf('{');
+    const end = unfenced.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      const parsed = JSON.parse(unfenced.slice(start, end + 1)) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+      const record = parsed as Record<string, unknown>;
+      const nested = record.collectionResult;
+      return nested && typeof nested === 'object' && !Array.isArray(nested)
+        ? nested as Record<string, unknown>
+        : record;
+    } catch {
+      return null;
+    }
   }
 
   async runReportViaRunsApi(input: RunInput): Promise<RunResult> {
@@ -942,8 +1078,12 @@ export class HermesService {
   }
 
   private buildReportPrompt(input: RunInput): string {
+    const sanitizedPayload = sanitizeReportPayload(input.payload as unknown as Record<string, unknown>);
+    const promptPayload = sanitizedPayload.deepReportEnabled === true
+      ? sanitizedPayload
+      : Object.fromEntries(Object.entries(sanitizedPayload).filter(([key]) => key !== 'deepReportEnabled' && key !== 'deepReportSources'));
     const payloadWithOutput = {
-      ...input.payload,
+      ...promptPayload,
       ...this.buildContextJsonPayload(input),
       output_dir: HERMES_CONTAINER_REPORT_DIR,
       output_file_instruction: `如果需要写入文件，请把最终 Markdown 报告保存到 ${HERMES_CONTAINER_REPORT_DIR}。`,
@@ -1052,15 +1192,16 @@ export class HermesService {
   private buildContextJsonPayload(input: RunInput): Record<string, unknown> {
     if (input.skill !== 'write-hb') return {};
 
-    const knownContext = typeof input.payload.known_context === 'string' ? input.payload.known_context : '';
-    const parsedContext = this.parseJsonObject(knownContext);
+    const payload = sanitizeReportPayload(input.payload as unknown as Record<string, unknown>);
+    const knownContext = typeof payload.known_context === 'string' ? payload.known_context : '';
+    const parsed = this.parseJsonObject(knownContext);
+    const parsedContext = parsed ? sanitizeLegacyPlanningContext(parsed) : null;
     const selectedModules = this.normalizeSelectedModules(parsedContext?.selectedModules);
     const userProvidedSources = this.normalizeStringArray(
       parsedContext?.userProvidedSources ?? parsedContext?.selectedSources,
     );
     const selectedSearchQueries = this.normalizeStringArray(parsedContext?.selectedSearchQueries);
     const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
-    const crawlerPlan = this.normalizeCrawlerPlan(parsedContext?.crawlerPlan);
     const parameterValues =
       parsedContext?.parameterValues && typeof parsedContext.parameterValues === 'object' && !Array.isArray(parsedContext.parameterValues)
         ? parsedContext.parameterValues
@@ -1070,31 +1211,34 @@ export class HermesService {
       3000,
     );
     const databaseQueryIntent = this.buildDatabaseQueryIntent({
-      topic: String(input.payload.topic ?? ''),
+      topic: String(payload.topic ?? ''),
       selectedSearchQueries,
       selectedModules,
       supplement,
     });
+    const deepReportEnabled = payload.deepReportEnabled === true;
+    const deepReportSources = deepReportEnabled
+      && payload.deepReportSources
+      && typeof payload.deepReportSources === 'object'
+      && !Array.isArray(payload.deepReportSources)
+      ? payload.deepReportSources as Record<string, unknown>
+      : null;
 
     const contextJson = {
       schema_version: 1,
       generated_by: 'backend',
       job_id: input.jobId,
       skill: input.skill,
-      topic: String(input.payload.topic ?? ''),
-      report_type: String(input.payload.report_type ?? ''),
+      topic: String(payload.topic ?? ''),
+      report_type: String(payload.report_type ?? ''),
       selectedSearchQueries,
       userProvidedSources,
       databaseSourceOptions,
       databaseQueryIntent,
-      crawlerPlan,
-      crawlerSourceContext: {
-        tasks: [],
-        items: [],
-      },
       selectedModules,
       parameterValues,
       supplement,
+      ...(deepReportEnabled ? { deepReportEnabled: true, deepReportSources: deepReportSources || {} } : {}),
     };
 
     return {
@@ -1315,59 +1459,23 @@ export class HermesService {
       .slice(0, 20);
   }
 
-  private normalizeCrawlerPlan(value: unknown): Record<string, unknown> {
-    const plan = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-    const enabled = plan.enabled === true;
-    const mode = ['auto', 'manual', 'hybrid'].includes(String(plan.mode)) ? String(plan.mode) : 'hybrid';
-    const directions = Array.isArray(plan.directions)
-      ? plan.directions
-          .map((item) => {
-            const direction = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {};
-            return {
-              name: this.sanitizeText(String(direction.name || ''), 120),
-              enabled: direction.enabled !== false,
-              description: this.sanitizeText(String(direction.description || ''), 300),
-              queries: this.normalizeStringArray(direction.queries, 12),
-              targetDomains: this.normalizeStringArray(direction.targetDomains, 12),
-            };
-          })
-          .filter((item) => item.name || item.queries.length || item.targetDomains.length)
-          .slice(0, 12)
-      : [];
-    return {
-      enabled,
-      mode,
-      goal: this.sanitizeText(String(plan.goal || ''), 300),
-      autoGapFilling: plan.autoGapFilling !== false,
-      directions,
-      manualUrls: this.normalizeStringArray(plan.manualUrls, 50),
-      manualDomains: this.normalizeStringArray(plan.manualDomains, 50),
-      manualKeywords: this.normalizeStringArray(plan.manualKeywords, 50),
-      maxPages: Math.max(1, Math.min(50, Number(plan.maxPages || 10) || 10)),
-      maxDepth: Math.max(0, Math.min(2, Number(plan.maxDepth ?? 1) || 0)),
-      lookbackHours: plan.lookbackHours == null ? null : Math.max(1, Math.min(720, Number(plan.lookbackHours) || 24)),
-      language: this.sanitizeText(String(plan.language || 'zh-CN'), 20),
-      executePhase: String(plan.executePhase || '') === 'planning' ? 'planning' : 'research',
-      alreadyExecuted: plan.alreadyExecuted === true,
-      allowFurtherCollectionInResearch: plan.allowFurtherCollectionInResearch === true,
-    };
-  }
-
   private getSkillRequirements(input: RunInput): string[] {
     if (input.skill !== 'write-hb') return [];
 
     const jobId = input.jobId;
     const jobIdShort = jobId.slice(0, 8);
-    const reportType = typeof input.payload.report_type === 'string' ? input.payload.report_type : 'K报或HB报';
-    const knownContext = typeof input.payload.known_context === 'string' ? input.payload.known_context : '';
-    const parsedContext = this.parseJsonObject(knownContext);
+    const payload = sanitizeReportPayload(input.payload as unknown as Record<string, unknown>);
+    const reportType = typeof payload.report_type === 'string' ? payload.report_type : 'K报或HB报';
+    const knownContext = typeof payload.known_context === 'string' ? payload.known_context : '';
+    const parsed = this.parseJsonObject(knownContext);
+    const parsedContext = parsed ? sanitizeLegacyPlanningContext(parsed) : null;
     const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
-    const crawlerPlan = this.normalizeCrawlerPlan(parsedContext?.crawlerPlan);
-    const crawlerEnabled = crawlerPlan.enabled === true;
-    const planningCrawlerAlreadyExecuted =
-      crawlerPlan.executePhase === 'planning' &&
-      crawlerPlan.alreadyExecuted === true;
-    const allowFurtherCrawlerCollection = crawlerPlan.allowFurtherCollectionInResearch === true;
+    const deepSourceRequirements = payload.deepReportEnabled === true
+      ? [
+          '10e. deepReportSources 是当前深度编报任务在正式生成前额外执行 planning-source-collection Skill 得到的结构化结果。acceptedSources 可作为补充证据参与后续素材整合；uncertainSources 只能作为待核验线索，不得写成已确认事实。',
+          '10f. deepReportSources.coveredGaps 用于确认已补齐的信息缺口；uncoveredGaps 必须在相关章节或文末信息缺口中明确保留。不得为补足未覆盖项而伪造来源，也不得重新调用旧 Crawler 任务流程。',
+        ]
+      : [];
     const databaseSourceRequirements = databaseSourceOptions.enabled
       ? [
           `18. databaseSourceOptions.enabled=true 时，Research Phase 必须先读取 context.json.databaseQueryIntent 分词词包，再在公开检索前调用 MCP 工具 pg-sources__query 检索 PostgreSQL 向量信源库；配置为 summary_first、storageMode=${databaseSourceOptions.storageMode}、sourceTable=public.${databaseSourceOptions.sourceTable}、lookbackDays=${databaseSourceOptions.lookbackDays}、maxMetadataRows=${databaseSourceOptions.maxMetadataRows}、maxContentRows=${databaseSourceOptions.maxContentRows}。`,
@@ -1391,7 +1499,7 @@ export class HermesService {
         '30. embeddingText/embedding_text is recall-debug text only. Do not include embeddingText, embedding_text, SQL, table names, MCP implementation details, database connection details, full content, raw_data, or embedding vectors in user-visible logs or the final report.',
         '31. context.json.entityPolicy and sourceDiagnostics.database are authoritative source-contamination guards. database_sources.json may contain only accepted database sources that match coreEntities or their aliases; uncertain, rejected, low relevance, entity mismatch, and only-vector-similar sources must be written only to database/database_sources_diagnostics.json.',
         '32. strict_hits=0 means expanded results are candidates only. Expanded results must pass core entity validation before entering database_sources.json, vector_sources.json, report context, synthesis evidence, or final references. Do not use unrelated but semantically similar companies, people, locations, or institutions to fill the database source quota.',
-        '33. If accepted database sources are empty, state internally that the database did not contain valid core-entity sources, continue Tavily/Exa/Firecrawl and crawler supplement, and do not put rejected database candidates into the writing context.',
+        '33. If accepted database sources are empty, state internally that the database did not contain valid core-entity sources, continue Tavily/Exa/Firecrawl and controlled public-page fetching, and do not put rejected database candidates into the writing context.',
       );
     }
     return [
@@ -1400,19 +1508,11 @@ export class HermesService {
       `8. Research Phase 必须执行完整 K/HB 全量流水线：先写入 reports/${jobId}/context.json；如启用数据库信源，再完成 pg-sources__query PG 向量库预召回并保存 database/database_query_plan.json、database/database_sources.json（仅在 PG 空结果/失败且已记录 fallback reason 后才可用 mysql-test__mysql_query 兜底）；随后必须调用 ${HERMES_CONTAINER_REPORT_DIR.replace(/\/reports$/, '')}/skills/web-research-firecrawl/scripts/harness_cli.py plan 生成 plan.json 和 groups/group_A.json 等分组文件；再启动 research-${jobIdShort}-{X} 调研子任务，由子任务调用 harness_cli.py run 产出 research/research_{X}.json；最后合并为 research/consolidated.json 后才能进入撰稿。`,
       '9. Research Phase 禁止把 research_cli.py brief 作为 K/HB 主调研路径；research_cli.py brief 只允许在 harness_cli.py plan/run 已失败且已记录 firecrawl_fallback_reason 时作为异常补充。PG 向量信源不能替代 Tavily、Exa、Firecrawl 三件套，不能减少 harness_cli.py run、research_*.json 或 consolidated.json 的生成要求。',
       '10. Research Phase 输出必须形成完整内部素材包：context.json、plan.json、至少一个 groups/group_*.json、至少一个 research/research_*.json、research/consolidated.json、sources、evidence_cards、key_findings、verification_needed 和信息缺口；consolidated.json 或 research_*.json 中必须能看到 Tavily、Exa、Firecrawl 调研记录，除非三件套不可用且已记录明确 fallback reason。',
-      planningCrawlerAlreadyExecuted && !allowFurtherCrawlerCollection
-        ? '10a. context.json.crawlerPlan.executePhase="planning" 且 alreadyExecuted=true 时，Research Phase 不得调用 source-collection-agent、controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items；必须直接使用 context.json.crawlerSourceContext.items 中规划页面已选择的采集信源。'
-        : crawlerEnabled
-        ? '10a. 资料采集由 NestJS 后端在调用 Hermes 前执行。context.json.crawlerPlan.enabled=true 时，Hermes 只读取 context.json.crawlerSourceContext 中后端已完成并通过实体校验的 tasks/items；不得再次调用 source-collection-agent、controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items，不得重复创建或执行采集任务。'
-        : '10a. context.json.crawlerPlan.enabled 不是 true 时，不得调用 controlled-web-collector、crawler.create_task、crawler.run_task 或 crawler.get_items；继续使用 PG 向量召回和公开检索流水线。',
-      planningCrawlerAlreadyExecuted && !allowFurtherCrawlerCollection
-        ? '10b. 规划页面已选采集信源的 sourcePhase 必须保持为 "planning"，用户可见日志写“资料采集工具：使用规划页面已选择的 N 条采集信源。”；不得伪造或扩大 selectedCrawlerItemIds 之外的采集结果。'
-        : crawlerEnabled
-        ? '10b. context.json.crawlerSourceContext={tasks:[],items:[]} 是资料采集的唯一输入；每个 item 可包含 title、url、publisher、publishedAt、fetchedAt、contentSummary、contentText、sourceType="crawler"、relevanceScore、credibilityScore。Hermes 只能把这些信源用于 Research/Synthesis，不能覆盖 database_sources、report_plan、userPreferenceContext 或 draftAssistantContext，也不得伪造额外采集结果。'
-        : '10b. context.json.crawlerSourceContext 保持 {tasks:[],items:[]}，不得伪造资料采集结果。',
-      '10c. 用户可见进度日志中，把 PG/vector 召回称为“数据库检索工具”，把 Tavily/Exa/Firecrawl 称为“互联网搜索工具”，把 controlled-web-collector 称为“资料采集工具”，如确有本地脚本则称为“本地脚本工具”；不要出现 OpenClaw 字样。',
-      '10d. Synthesis Phase 必须综合 context.json.vectorDatabaseSources、webSources 和 crawlerSourceContext.items；仅使用后端 accepted 来源。优先官方和高质量来源，其次按核心实体相关性、主题相关性、时效性和多源互证排序。数据库/Web/crawler 只是渠道，不代表固定质量顺序；冲突信息标注“待核实”，不得编造来源。',
-      '10e. 引用资料采集信源时，必须在内部证据和文末参考资料中尽量保留 URL / publisher / fetchedAt；各方态度必须尽量标注主体、时间、媒体和来源。',
+      '10a. Research 和 Synthesis 只能使用后端已通过 EntityPolicy、来源质量和去重校验的 accepted 数据库信源与互联网信源；uncertain、rejected 和实体错配来源不得进入正文证据。',
+      '10b. 用户可见进度日志中，把 PG/vector 召回称为“数据库检索工具”，把 Tavily/Exa/Firecrawl 和受控正文抓取称为“互联网搜索工具”，如确有本地脚本则称为“本地脚本工具”；不要出现 OpenClaw 字样。',
+      '10c. Synthesis Phase 必须综合 context.json.vectorDatabaseSources 和 webSources。优先官方和高质量来源，其次按核心实体相关性、主题相关性、时效性和多源互证排序；渠道不代表固定质量顺序，冲突信息标注“待核实”，不得编造来源。',
+      '10d. 引用互联网信源时，必须在内部证据和文末参考资料中尽量保留 URL、publisher 和 fetchedAt；各方态度必须尽量标注主体、时间、媒体和来源。',
+      ...deepSourceRequirements,
       '11. Write-HB Phase：只在 Research Phase 完成后，基于前置研究结果和用户 selectedModules，按 sectionTitle 对应的 K报/HB报一级章节逐章撰写；每章重点展开 selectedDirections，未选方向不得强行作为正文重点。',
       '11a. K报篇幅是硬约束：最终 Markdown 目标约 9000-11000 个中文字符，按 A4 常规排版约 10 页；最低不得低于 8000 个中文字符。不得通过新增一级章节、堆砌参考资料或重复空话凑篇幅，只能通过增加事实密度、分析层次、风险链条、对策可操作性和信息缺口说明扩写。低于 8000 中文字符必须视为不合格并重新扩写，禁止交付短稿。',
       `12. 必须把完整成稿 Markdown 写入 ${HERMES_CONTAINER_REPORT_DIR} 下的 .md 文件；不要只在对话中输出正文。`,

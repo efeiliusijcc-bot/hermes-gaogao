@@ -58,7 +58,6 @@ async function runWithSources(sources: Record<string, unknown>[]) {
     topic,
     databaseSourceOptions: { enabled: true },
     webSearchOptions: { enabled: true },
-    crawlerPlan: { enabled: false, executePhase: 'research' },
     entityPolicy: buildRuleBasedEntityPolicy({ topic }),
     vectorDatabaseSources: [],
     sourceDiagnostics: { database: { acceptedCount: 0 } },

@@ -4,7 +4,6 @@ import { buildSupplementQueries, decideWebSupplementTrigger } from '../server/we
 
 const baseContext = {
   databaseSourceOptions: { enabled: true },
-  crawlerPlan: { enabled: false, executePhase: 'research' },
 };
 
 function testEnoughDatabaseSourcesDoesNotTrigger() {
@@ -18,20 +17,19 @@ function testInsufficientDatabaseSourcesTriggers() {
   assert.match(result.reason, /低于最低阈值/);
 }
 
-function testUserDisablesInternetAndCrawler() {
+function testUserDisablesInternetSearch() {
   const result = decideWebSupplementTrigger({
     acceptedDatabaseCount: 0,
     context: {
       ...baseContext,
       webSearchOptions: { enabled: false },
-      crawlerPlan: { enabled: false, executePhase: 'research' },
     },
   });
   assert.equal(result.triggered, false);
-  assert.match(result.reason, /关闭互联网搜索和资料采集/);
+  assert.match(result.reason, /关闭互联网搜索/);
 }
 
-function testPlanningCollectionLockDoesNotTrigger() {
+function testLegacyPlanningLockIsIgnored() {
   const result = decideWebSupplementTrigger({
     acceptedDatabaseCount: 0,
     context: {
@@ -39,7 +37,7 @@ function testPlanningCollectionLockDoesNotTrigger() {
       crawlerPlan: { enabled: true, executePhase: 'planning', alreadyExecuted: true, allowFurtherCollectionInResearch: false },
     },
   });
-  assert.equal(result.triggered, false);
+  assert.equal(result.triggered, true);
 }
 
 function testQueriesRequireSpecificEntity() {
@@ -53,7 +51,7 @@ function testQueriesRequireSpecificEntity() {
 
 testEnoughDatabaseSourcesDoesNotTrigger();
 testInsufficientDatabaseSourcesTriggers();
-testUserDisablesInternetAndCrawler();
-testPlanningCollectionLockDoesNotTrigger();
+testUserDisablesInternetSearch();
+testLegacyPlanningLockIsIgnored();
 testQueriesRequireSpecificEntity();
 console.log('web supplement trigger tests passed');

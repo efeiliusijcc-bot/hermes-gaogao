@@ -1,82 +1,48 @@
-export type CrawlerTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type CrawlerMode = 'auto' | 'manual' | 'hybrid';
-
-export interface CrawlerDirection {
-  name: string;
-  enabled: boolean;
-  description: string;
-  queries: string[];
-  targetDomains: string[];
+export interface PublicUrlFetchOptions {
+  maxUrls?: number;
+  timeoutMs?: number;
+  maxRedirects?: number;
+  maxContentChars?: number;
+  maxSummaryChars?: number;
 }
 
-export interface CrawlerPlan {
-  enabled: boolean;
-  mode: CrawlerMode;
-  goal: string;
-  autoGapFilling: boolean;
-  directions: CrawlerDirection[];
-  manualUrls: string[];
-  manualDomains: string[];
-  manualKeywords: string[];
-  maxPages: number;
-  maxDepth: number;
-  lookbackHours: number | null;
-  language: string;
-  executePhase: 'planning' | 'research';
-  alreadyExecuted?: boolean;
-  allowFurtherCollectionInResearch?: boolean;
-  planningSessionId?: string;
-  sourcePhase?: 'planning' | 'research';
-  reportTitle?: string;
+export type PublicUrlFetchFailureCode =
+  | 'invalid_url'
+  | 'invalid_protocol'
+  | 'blocked_url'
+  | 'redirect_error'
+  | 'http_error'
+  | 'unsupported_content_type'
+  | 'timeout'
+  | 'network_error';
+
+export interface PublicUrlFetchFailure {
+  url: string;
+  code: PublicUrlFetchFailureCode;
+  message: string;
+  statusCode?: number;
 }
 
-export interface CreateCrawlerTaskInput {
-  jobId?: unknown;
-  ownerId?: unknown;
-  ownerUsername?: unknown;
-  planningSessionId?: unknown;
-  sourcePhase?: unknown;
-  reportTitle?: unknown;
-  title?: unknown;
-  goal?: unknown;
-  crawlerPlan?: unknown;
-  maxPages?: unknown;
-  maxDepth?: unknown;
-}
-
-export interface CrawlerTaskResponse {
-  taskId: string;
-  ownerId: string | null;
-  ownerUsername: string;
-  jobId: string;
-  title: string;
-  goal: string;
-  status: string;
-  crawlerPlan: CrawlerPlan;
-  maxPages: number;
-  maxDepth: number;
-  errorMessage: string | null;
-  createdAt: string;
-  updatedAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
-}
-
-export interface CrawlerItemResponse {
-  itemId: string;
-  taskId: string;
-  ownerId: string | null;
-  jobId: string;
+export interface PublicUrlFetchItem {
+  requestedUrl: string;
   url: string;
   title: string;
   publisher: string;
-  publishedAt: string | null;
+  publishedAt: null;
   fetchedAt: string;
   contentText: string;
   contentSummary: string;
-  metadata: Record<string, unknown>;
-  relevanceScore: number | null;
-  credibilityScore: number | null;
-  sourceType: 'crawler';
-  createdAt: string;
+  retrievalMethod: 'controlled_fetch';
+  metadata: {
+    contentType: string;
+    requestedUrl: string;
+    finalUrl: string;
+    redirectCount: number;
+    fetchedBy: 'crawler-core';
+  };
+}
+
+export interface PublicUrlFetchResult {
+  items: PublicUrlFetchItem[];
+  failures: PublicUrlFetchFailure[];
 }

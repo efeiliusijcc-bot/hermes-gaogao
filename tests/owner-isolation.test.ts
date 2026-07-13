@@ -7,8 +7,6 @@ import { AuthService } from '../server/auth.service.js';
 import type { AuthUser } from '../server/auth-user.interface.js';
 import { ChatController } from '../server/chat.controller.js';
 import { ChatService } from '../server/chat.service.js';
-import { CrawlerController } from '../server/crawler.controller.js';
-import { CrawlerService } from '../server/crawler.service.js';
 import { DailyAwarenessController } from '../server/daily-awareness.controller.js';
 import { DailyAwarenessService } from '../server/daily-awareness.service.js';
 import { DraftAssistantController } from '../server/draft-assistant.controller.js';
@@ -331,61 +329,6 @@ async function testDailyOwnerIsolation() {
   assert.equal((await service.getBrief('brief-legacy', admin)).brief.briefId, 'brief-legacy');
 }
 
-function makeCrawlerTask(ownerId: string | null, taskId = `task-${ownerId || 'legacy'}`) {
-  return {
-    task_id: taskId,
-    owner_id: ownerId,
-    owner_username: ownerId ? `operator-${ownerId}` : '',
-    job_id: `job-${ownerId || 'legacy'}`,
-    title: `Task ${ownerId || 'legacy'}`,
-    goal: 'collect',
-    status: 'pending',
-    crawler_plan: { enabled: true, mode: 'manual', manualUrls: ['https://example.com'], maxPages: 10, maxDepth: 1 },
-    max_pages: 10,
-    max_depth: 1,
-    error_message: null,
-    created_at: '2026-07-06T00:00:00.000Z',
-    updated_at: '2026-07-06T00:00:00.000Z',
-    started_at: null,
-    finished_at: null,
-  };
-}
-
-function createCrawlerPool(): Pool {
-  const tasks = [makeCrawlerTask('user-a', 'task-a'), makeCrawlerTask('user-b', 'task-b'), makeCrawlerTask(null, 'task-legacy')];
-  return {
-    query: async (text: string, params?: unknown[]) => {
-      if (text.includes('SELECT * FROM crawler_tasks WHERE task_id')) return { rows: tasks.filter((task) => task.task_id === params?.[0]) };
-      if (text.includes('SELECT * FROM crawler_tasks')) {
-        const owner = params?.[0] ? String(params[0]) : '';
-        return { rows: owner ? tasks.filter((task) => task.owner_id === owner) : tasks };
-      }
-      if (text.includes('SELECT * FROM crawler_items')) return { rows: [] };
-      return { rows: [] };
-    },
-    end: async () => undefined,
-  };
-}
-
-async function testCrawlerOwnerIsolation() {
-  const service = new CrawlerService() as CrawlerService & { getPool: () => Promise<Pool> };
-  service.getPool = async () => createCrawlerPool();
-  const userA = authUser('user-a', 'operator', ['crawler:read'], ['report']);
-  const admin = authUser('admin-1', 'admin', ['crawler:read'], ['report']);
-
-  assert.deepEqual((await service.listTasks(userA)).items.map((item) => item.taskId), ['task-a']);
-  assert.equal((await service.listTasks(admin)).items.length, 3);
-  await assert.rejects(
-    () => service.getTask('task-b', userA),
-    (error) => /Insufficient crawler task permissions/.test(errorText(error)),
-  );
-  await assert.rejects(
-    () => service.getTask('task-legacy', userA),
-    (error) => /Insufficient crawler task permissions/.test(errorText(error)),
-  );
-  assert.equal((await service.getTask('task-legacy', admin)).taskId, 'task-legacy');
-}
-
 async function assertStatus(response: Response, expected: number) {
   const text = await response.text();
   assert.equal(response.status, expected, text);
@@ -399,11 +342,10 @@ async function testMissingModulePermissionReturns403() {
     qa: authUser('user-a', 'operator', ['chat:execute', 'chat:read'], ['qa']),
     draft: authUser('user-a', 'operator', ['draft_assistant:create', 'draft_assistant:read'], ['draft']),
     daily: authUser('user-a', 'operator', ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import'], ['daily']),
-    crawler: authUser('user-a', 'operator', ['crawler:create'], ['report']),
   };
 
   @Module({
-    controllers: [ReportsController, ChatController, DraftAssistantController, DailyAwarenessController, CrawlerController],
+    controllers: [ReportsController, ChatController, DraftAssistantController, DailyAwarenessController],
     providers: [
       Reflector,
       {
@@ -452,12 +394,6 @@ async function testMissingModulePermissionReturns403() {
           generate: async () => ({ brief: { briefId: 'brief-a' }, events: [] }),
         },
       },
-      {
-        provide: CrawlerService,
-        useValue: {
-          createTaskForUser: async () => ({ taskId: 'task-a', status: 'pending' }),
-        },
-      },
     ],
   })
   class TestModule {}
@@ -483,9 +419,6 @@ async function testMissingModulePermissionReturns403() {
     await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: dailyBody }), 403);
     await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer daily' }, body: dailyBody }), 201);
 
-    const crawlerBody = JSON.stringify({ jobId: 'job-a', crawlerPlan: { enabled: false } });
-    await assertStatus(await fetch(`${baseUrl}/api/crawler/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: crawlerBody }), 403);
-    await assertStatus(await fetch(`${baseUrl}/api/crawler/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer crawler' }, body: crawlerBody }), 201);
   } finally {
     await app.close();
   }
@@ -495,7 +428,6 @@ await testReportOwnerIsolation();
 await testQaSessionOwnerIsolation();
 await testDraftOwnerIsolation();
 await testDailyOwnerIsolation();
-await testCrawlerOwnerIsolation();
 await testMissingModulePermissionReturns403();
 
 console.log('owner isolation tests passed');

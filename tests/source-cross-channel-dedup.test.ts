@@ -37,14 +37,14 @@ function testExactRepostContentKeepsHigherQuality() {
   const content = 'Neo Performance Materials official Magnequench production process, pilot validation and mass production readiness. '.repeat(3);
   const deduped = dedupeSupplementSources([
     source({ sourceChannel: 'web', url: 'https://blog.example/a', content, sourceQuality: { status: 'uncertain', score: 0.45, tier: 'ordinary', reason: 'blog' } }),
-    source({ sourceChannel: 'crawler', url: 'https://official.example/notice', content, sourceQuality: { status: 'accepted', score: 0.95, tier: 'official', reason: 'official' } }),
+    source({ sourceChannel: 'web', url: 'https://official.example/notice', content, sourceQuality: { status: 'accepted', score: 0.95, tier: 'official', reason: 'official' } }),
   ]);
   assert.equal(deduped.length, 1);
-  assert.equal(deduped[0].sourceChannel, 'crawler');
+  assert.equal(deduped[0].sourceChannel, 'web');
 }
 
 function testFrontendDefaultsToCompositeAllSources() {
-  const component = fs.readFileSync('/Users/a15070743048/Desktop/hermes/b_k3ewYvsOEc1/src/components/DataCanvas.vue', 'utf8');
+  const component = fs.readFileSync(new URL('../b_k3ewYvsOEc1/src/components/DataCanvas.vue', import.meta.url), 'utf8');
   assert.match(component, /const activeSourceType = ref\('all'\)/);
   assert.match(component, /source\?\.sourcePriority \?\? source\?\.source_priority/);
 }

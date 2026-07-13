@@ -64,10 +64,7 @@ function makeJob(ownerUserId = 'user-1') {
         report_plan: { sections: ['基本情况', '涉我风险', '对策建议'] },
         draftAssistantContext: { outline: '拟稿助手提纲' },
         userPreferenceContext: { style: '简洁正式' },
-        crawlerSourceContext: {
-          tasks: [{ taskId: 'crawler-task-1', status: 'completed', goal: '补充公开资料', itemCount: 1 }],
-          items: [{ title: '采集材料', sourceType: 'crawler', url: 'https://example.com' }],
-        },
+        webSources: [{ title: '互联网材料', sourceType: 'web', url: 'https://example.com' }],
       }),
     },
     ownerUserId,
@@ -107,7 +104,7 @@ function makeReviewRow(overrides: Record<string, unknown> = {}) {
       targetText: '多方认为该政策将引发争议。',
     }],
     recommendedEdits: [{ section: '各方态度', editMode: 'add_sources', instruction: '请补充表态主体、时间、媒体和来源。' }],
-    sourceUsage: { databaseSourcesUsed: 1, crawlerSourcesUsed: 1, internetSourcesUsed: 0, unverifiedClaims: 0 },
+    sourceUsage: { databaseSourcesUsed: 1, internetSourcesUsed: 1, unverifiedClaims: 0 },
   };
   return {
     review_id: 'review-1',
@@ -172,7 +169,6 @@ function createService(pool = createPool(), files: Record<string, string> = {}) 
     '/tmp/hermes-reports/quality-job-1/final/report.md': makeJob().markdown || '',
     '/tmp/hermes-reports/quality-job-1/context.json': String(makeJob().payload.known_context),
     '/tmp/hermes-reports/quality-job-1/database/database_sources.json': JSON.stringify([{ title: '数据库材料' }]),
-    '/tmp/hermes-reports/quality-job-1/crawler/crawler_sources.json': JSON.stringify({ items: [{ title: '采集材料', sourceType: 'crawler' }] }),
     ...files,
   });
   const service = new ReportsService({} as never, remoteFs as never, {} as never) as ReportsService & {

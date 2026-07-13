@@ -33,7 +33,7 @@ const scenarios: Scenario[] = [
 ];
 
 async function runScenario(service: WebSupplementService, scenario: Scenario) {
-  const decision = decideWebSupplementTrigger({ acceptedDatabaseCount: scenario.databaseAccepted, context: { databaseSourceOptions: { enabled: true }, webSearchOptions: { enabled: true }, crawlerPlan: { enabled: false } } });
+  const decision = decideWebSupplementTrigger({ acceptedDatabaseCount: scenario.databaseAccepted, context: { databaseSourceOptions: { enabled: true }, webSearchOptions: { enabled: true } } });
   const queries = buildSupplementQueries(scenario.policy);
   if (!decision.triggered) return { id: scenario.id, topic: scenario.topic, triggered: false, queries: 0, searchResults: 0, searchAccepted: 0, contentAccepted: 0, uncertain: 0, rejected: 0, deduplicated: 0, durationMs: 0, queryDiagnostics: [] };
   const result = await service.searchWithDiagnostics(queries);

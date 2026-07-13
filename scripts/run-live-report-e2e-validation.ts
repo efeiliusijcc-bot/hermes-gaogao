@@ -81,7 +81,7 @@ async function request(session: Session, pathname: string, init: RequestInit = {
 }
 
 function context(scenario: Scenario) {
-  return JSON.stringify({ topic: scenario.topic, entityPolicy: scenario.entityPolicy, databaseSourceOptions: { enabled: true }, webSearchOptions: { enabled: true }, sourceSupplementOptions: { enabled: true, minimumAcceptedDatabaseSources: 3 }, crawlerPlan: { enabled: false, executePhase: 'research' } });
+  return JSON.stringify({ topic: scenario.topic, entityPolicy: scenario.entityPolicy, databaseSourceOptions: { enabled: true }, webSearchOptions: { enabled: true }, sourceSupplementOptions: { enabled: true, minimumAcceptedDatabaseSources: 3 } });
 }
 
 async function waitForTerminal(session: Session, jobId: string): Promise<Json> {
@@ -107,15 +107,15 @@ async function validateScenario(session: Session, scenario: Scenario) {
   const jobId = String(created.body.jobId || '');
   const startedAt = Date.now();
   const job = await waitForTerminal(session, jobId);
-  const [result, artifacts, database, all, web, crawler, refs, candidates, eventLog, download] = await Promise.all([
-    request(session, `/api/report-jobs/${jobId}/result`), request(session, `/api/report-jobs/${jobId}/artifacts`), request(session, `/api/report-jobs/${jobId}/database-sources`), request(session, `/api/report-jobs/${jobId}/sources?type=all&pageSize=100`), request(session, `/api/report-jobs/${jobId}/sources?type=tool_search&pageSize=100`), request(session, `/api/report-jobs/${jobId}/sources?type=crawler&pageSize=100`), request(session, `/api/report-jobs/${jobId}/sources?type=report_refs&pageSize=100`), request(session, `/api/report-jobs/${jobId}/sources?type=candidate_hits&pageSize=100`), request(session, `/api/report-jobs/${jobId}/event-log`), request(session, `/api/report-jobs/${jobId}/download?format=md`),
+  const [result, artifacts, database, all, web, refs, candidates, eventLog, download] = await Promise.all([
+    request(session, `/api/report-jobs/${jobId}/result`), request(session, `/api/report-jobs/${jobId}/artifacts`), request(session, `/api/report-jobs/${jobId}/database-sources`), request(session, `/api/report-jobs/${jobId}/sources?type=all&pageSize=100`), request(session, `/api/report-jobs/${jobId}/sources?type=tool_search&pageSize=100`), request(session, `/api/report-jobs/${jobId}/sources?type=report_refs&pageSize=100`), request(session, `/api/report-jobs/${jobId}/sources?type=candidate_hits&pageSize=100`), request(session, `/api/report-jobs/${jobId}/event-log`), request(session, `/api/report-jobs/${jobId}/download?format=md`),
   ]);
   const databaseBody = typeof database.body === 'string' ? {} : database.body;
   const allBody = typeof all.body === 'string' ? {} : all.body;
   const webBody = typeof web.body === 'string' ? {} : web.body;
   const refsBody = typeof refs.body === 'string' ? {} : refs.body;
   const candidatesBody = typeof candidates.body === 'string' ? {} : candidates.body;
-  const acceptedUrls = new Set([...urls(databaseBody.sources), ...urls(webBody.items), ...urls(typeof crawler.body === 'string' ? [] : crawler.body.items)]);
+  const acceptedUrls = new Set([...urls(databaseBody.sources), ...urls(webBody.items)]);
   const refItems = Array.isArray(refsBody.items) ? refsBody.items as Json[] : [];
   const invalidReferences = refItems.filter((item) => String(item.url || '') && !acceptedUrls.has(String(item.url)));
   const markdown = typeof download.body === 'string' ? download.body : '';
@@ -128,11 +128,11 @@ async function validateScenario(session: Session, scenario: Scenario) {
   const resultSummary = {
     id: scenario.id, jobId, topic: scenario.topic, ownerUserId: session.user.id, status: String(job.status || ''), error: String(job.errorMessage || ''), totalDurationMs: Date.now() - startedAt,
     webTriggered: supplement.triggered === true, expectedWeb: scenario.expectWeb,
-    databaseAccepted: Number((diagnostics.database as Json | undefined)?.acceptedCount || 0), webAccepted: Number((diagnostics.web as Json | undefined)?.acceptedCount || 0), crawlerAccepted: Number((diagnostics.crawler as Json | undefined)?.acceptedCount || 0),
+    databaseAccepted: Number((diagnostics.database as Json | undefined)?.acceptedCount || 0), webAccepted: Number((diagnostics.web as Json | undefined)?.acceptedCount || 0),
     finalAccepted: Number(finalMetrics.acceptedSourceCount || 0), referenceCount: refItems.length, referenceCoverageRate: Number(finalMetrics.acceptedSourceCount || 0) ? refItems.length / Number(finalMetrics.acceptedSourceCount || 0) : 0,
     rejectedCount, rejectedInMainList: (Array.isArray(allBody.items) ? allBody.items : []).some((item) => String((item as Json).status || '').match(/rejected|uncertain/i)), rejectedInReferences: invalidReferences.length > 0,
     acceptedWebUsed: refItems.some((item) => urls(webBody.items).has(String(item.url || ''))), markdownLength: markdown.length,
-    confusionMentioned, apiStatuses: { result: result.status, artifacts: artifacts.status, database: database.status, all: all.status, web: web.status, crawler: crawler.status, refs: refs.status, candidates: candidates.status, eventLog: eventLog.status, download: download.status },
+    confusionMentioned, apiStatuses: { result: result.status, artifacts: artifacts.status, database: database.status, all: all.status, web: web.status, refs: refs.status, candidates: candidates.status, eventLog: eventLog.status, download: download.status },
     sourceOrdering: (Array.isArray(allBody.items) ? allBody.items : []).map((item) => Number((item as Json).relevanceScore || (item as Json).sourcePriority || 0)).every((value, index, values) => index === 0 || value <= values[index - 1]),
   };
   return resultSummary;

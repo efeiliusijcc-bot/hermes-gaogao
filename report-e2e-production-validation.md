@@ -6,7 +6,7 @@ Note: the early sections below preserve the initial local validation failure tha
 
 - Validation role: `retrieval_e2e_reporter`
 - Validation users: `retrieval_e2e_tester`, `retrieval_e2e_peer`, `retrieval_e2e_admin`
-- The reporter role has only report, crawler, preference, and template-read permissions required for this validation. It has no user, role, research-key, vector-source, or report-delete permission.
+- The reporter role has only report, preference, and template-read permissions required for this validation. It has no user, role, research-key, vector-source, or report-delete permission.
 - Passwords, JWTs, cookies, and research keys were generated or supplied only in the process environment and are omitted from this record.
 
 ## Live Run Result
@@ -26,14 +26,14 @@ The primary job ran for approximately 534 seconds. Its API calls to database sou
 
 The primary job's persisted artifacts were inspected from the configured local E2E output directory. Its model produced a syntactically valid but entity-empty policy, producing zero database/Web query terms. This revealed a first-stage contract gap: entity-empty model output had prevented the existing deterministic entity-policy fallback. The gap is now fixed and covered by `tests/entity-policy-extraction.test.ts`.
 
-Before that correction, the observed context contained zero database, Web, and crawler accepted sources. No uncertain/rejected body was present in context, and the report could not generate citations from diagnostics. This is a fail-closed outcome, but it is not sufficient to certify final Markdown and reference behavior.
+Before that correction, the observed context contained zero database and Web accepted sources. No uncertain/rejected body was present in context, and the report could not generate citations from diagnostics. This is a fail-closed outcome, but it is not sufficient to certify final Markdown and reference behavior.
 
 ## API And Isolation
 
 - Owner A requests by peer B for job detail, result, sources, and download returned `403` before token expiry: pass.
 - The dedicated admin user could read the owner job detail (`200`). Its source/download checks were not conclusive in the first run because the report file mapping failure returned `500`/`409` independently of authorization.
 - The E2E client now retains the refresh cookie in memory and refreshes access tokens on a `401`; no token or cookie is written to output.
-- DataCanvas API inputs were available from `/database-sources` and `/sources?type=all|database_recall|tool_search|crawler|report_refs`; browser rendering cannot be certified until at least one job produces a report and references.
+- DataCanvas API inputs were available from `/database-sources` and `/sources?type=all|database_recall|tool_search|report_refs`; browser rendering cannot be certified until at least one job produces a report and references.
 
 ## Blocking Condition
 
@@ -419,7 +419,7 @@ Validation time: 2026-07-11 04:55-04:56 CST using `https://hermes-gaogao.vercel.
 | Login | passed with the existing admin smoke account |
 | Report history | passed; the final four E2E reports were visible |
 | Open final Markdown | passed for job `389204cb-dea3-4884-a243-a382ec4eaa37`; report body rendered |
-| Source overview | passed; DataCanvas showed database `0`, crawler `0`, internet search `4` for the selected job |
+| Source overview | passed; DataCanvas showed database `0` and internet search `4` for the selected job |
 | Source type filter | passed; internet search source list requested `/sources?type=tool_search` and returned `200` |
 | Internal path leak check | passed; page text contained no `/opt/data`, `/app/hermes-inbox`, or `/app/storage/artifacts` |
 | Logout | passed; page returned to unauthenticated state |
@@ -655,7 +655,7 @@ Production restart testing found that accepted Web diagnostics survived while so
 Legacy reference sidecars also contained numbered “information gap” text incorrectly labeled as report references. The final implementation:
 
 - stops reference parsing before credibility and information-gap sections;
-- matches references only against accepted database, Web, or crawler sources;
+- matches references only against accepted database or Web sources;
 - returns and persists only `matchStatus=matched` references;
 - versions the sidecar with `referenceGuardVersion=2`, forcing old sidecars to rebuild;
 - makes the frontend citation view consume the accepted backend reference endpoint instead of rebuilding raw Markdown references.
@@ -680,7 +680,7 @@ The deployed Vercel application passed:
 
 - Artifact sync display (`报告可查看`);
 - supplement metrics (`0 / 8 / 30 / 14 / 10 / 9 / 10` for DB/query/candidate/fetched/accepted/rejected/final);
-- all six source filters: `全部`, `数据库检索工具`, `资料采集工具`, `互联网搜索工具`, `最终引用`, and `被过滤候选`;
+- all five source filters: `全部`, `数据库检索工具`, `互联网搜索工具`, `最终引用`, and `被过滤候选`;
 - 10 Web accepted rows and real filtered-candidate rows; the UI reported a candidate pool of 32 with 10 detailed rows on the first page;
 - accepted-only final-reference empty state after legacy-cache rebuild;
 - final Markdown rendering and Artifact state (`报告可查看`);

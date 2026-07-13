@@ -10,10 +10,10 @@ import { LocalArtifactStorageService } from './artifact-storage/local-artifact-s
 import { S3ArtifactStorageService } from './artifact-storage/s3-artifact-storage.service.js';
 import { ChatController } from './chat.controller.js';
 import { ChatService } from './chat.service.js';
-import { CrawlerController, InternalCrawlerController } from './crawler.controller.js';
 import { CrawlerService } from './crawler.service.js';
 import { DailyAwarenessController } from './daily-awareness.controller.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
+import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { DraftAssistantController } from './draft-assistant.controller.js';
 import { DraftAssistantService } from './draft-assistant.service.js';
 import { HealthController } from './health.controller.js';
@@ -49,8 +49,6 @@ import { WebSupplementService } from './web-supplement.service.js';
     ReportPlansController,
     ResearchKeysController,
     VectorSourcesController,
-    CrawlerController,
-    InternalCrawlerController,
     ChatController,
     DailyAwarenessController,
     DraftAssistantController,
@@ -80,6 +78,7 @@ import { WebSupplementService } from './web-supplement.service.js';
     CrawlerService,
     ChatService,
     DailyAwarenessService,
+    DeepReportSourceCollectionService,
     DraftAssistantService,
   ],
 })
