@@ -11,7 +11,7 @@ import {
   updateRole,
   updateUser,
 } from '../lib/api.js'
-import { userPasswordValidationMessage } from '../lib/userValidation.js'
+import { userPasswordValidationMessage, userPasswordValidationState } from '../lib/userValidation.js'
 import { deriveRoleModules, deriveUserModules } from '../lib/permissionModules.js'
 
 const props = defineProps({
@@ -86,6 +86,8 @@ const canAccessManagement = computed(() => canManageUsers.value || canManageRole
 const availableRoles = computed(() => roles.value.length ? roles.value : fallbackRoles)
 const selectedRole = computed(() => availableRoles.value.find((role) => role.id === selectedRoleId.value) || availableRoles.value[0] || null)
 const selectedRoleModules = computed(() => roleModules(selectedRole.value))
+const createPasswordState = computed(() => userPasswordValidationState(createForm.password))
+const resetPasswordState = computed(() => userPasswordValidationState(passwordValue.value))
 
 onMounted(() => {
   if (canAccessManagement.value) {
@@ -495,8 +497,25 @@ async function confirmDeleteRole(role) {
             </label>
             <label>
               <span>密码</span>
-              <input v-model="createForm.password" class="sci-input" required type="password" minlength="8" pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}" title="至少 8 位，并同时包含字母和数字" autocomplete="new-password" />
-              <small>至少 8 位，并同时包含字母和数字</small>
+              <input
+                v-model="createForm.password"
+                class="sci-input"
+                :class="{ 'is-invalid': createPasswordState.touched && !createPasswordState.valid, 'is-valid': createPasswordState.valid }"
+                required
+                type="password"
+                minlength="8"
+                pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}"
+                title="至少 8 位，并同时包含字母和数字"
+                autocomplete="new-password"
+                :aria-invalid="createPasswordState.touched && !createPasswordState.valid"
+                aria-describedby="create-password-hint"
+              />
+              <small
+                id="create-password-hint"
+                class="password-validation-hint"
+                :class="{ error: createPasswordState.touched && !createPasswordState.valid, success: createPasswordState.valid }"
+                aria-live="polite"
+              >{{ createPasswordState.message }}</small>
             </label>
             <label>
               <span>显示名称</span>
@@ -592,8 +611,25 @@ async function confirmDeleteRole(role) {
               <form v-if="passwordUserId === user.id" class="user-management__inline-form is-password" @submit.prevent="submitResetPassword(user)">
                 <label>
                   <span>新密码</span>
-                  <input v-model="passwordValue" class="sci-input" required type="password" minlength="8" pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}" title="至少 8 位，并同时包含字母和数字" autocomplete="new-password" />
-                  <small>至少 8 位，并同时包含字母和数字</small>
+                  <input
+                    v-model="passwordValue"
+                    class="sci-input"
+                    :class="{ 'is-invalid': resetPasswordState.touched && !resetPasswordState.valid, 'is-valid': resetPasswordState.valid }"
+                    required
+                    type="password"
+                    minlength="8"
+                    pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}"
+                    title="至少 8 位，并同时包含字母和数字"
+                    autocomplete="new-password"
+                    :aria-invalid="resetPasswordState.touched && !resetPasswordState.valid"
+                    :aria-describedby="`reset-password-hint-${user.id}`"
+                  />
+                  <small
+                    :id="`reset-password-hint-${user.id}`"
+                    class="password-validation-hint"
+                    :class="{ error: resetPasswordState.touched && !resetPasswordState.valid, success: resetPasswordState.valid }"
+                    aria-live="polite"
+                  >{{ resetPasswordState.message }}</small>
                 </label>
                 <div class="user-management__inline-actions">
                   <button class="sci-btn" type="button" :disabled="saving" @click="cancelResetPassword">取消</button>
@@ -931,6 +967,30 @@ async function confirmDeleteRole(role) {
 
 .user-management__form-grid label {
   grid-column: span 2;
+}
+
+.sci-input.is-invalid {
+  border-color: #f87171;
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.12);
+}
+
+.sci-input.is-valid {
+  border-color: #34d399;
+}
+
+.password-validation-hint {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.password-validation-hint.error {
+  color: #be123c;
+}
+
+.password-validation-hint.success {
+  color: #047857;
 }
 
 .user-management__form-actions {
