@@ -521,7 +521,7 @@ async function confirmDeleteRole(role) {
               >{{ createPasswordState.message }}</small>
             </label>
             <label>
-              <span>显示名称</span>
+              <span>备注</span>
               <input v-model="createForm.displayName" class="sci-input" maxlength="128" autocomplete="off" />
             </label>
             <label>
@@ -588,7 +588,7 @@ async function confirmDeleteRole(role) {
 
               <form v-if="editingUserId === user.id" class="user-management__inline-form" @submit.prevent="submitEditUser(user)">
                 <label>
-                  <span>显示名称</span>
+                  <span>备注</span>
                   <input v-model="editForm.displayName" class="sci-input" maxlength="128" />
                 </label>
                 <label>
