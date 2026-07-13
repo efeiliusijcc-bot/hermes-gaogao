@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "planning-source-collection-input.schema.json",
+  "title": "DeepReportSourceCollectionInput",
+  "type": "object",
+  "required": [
+    "workflow",
+    "deepReportEnabled",
+    "stage",
+    "planningSessionId",
+    "topic"
+  ],
+  "properties": {
+    "workflow": { "const": "deep_report" },
+    "deepReportEnabled": { "const": true },
+    "stage": { "const": "source_collection" },
+    "planningSessionId": { "type": "string", "minLength": 1 },
+    "topic": { "type": "string", "minLength": 1 },
+    "plan": { "type": "object" }
+  },
+  "additionalProperties": false
+}

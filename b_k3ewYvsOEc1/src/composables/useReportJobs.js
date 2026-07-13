@@ -143,6 +143,7 @@ export function useReportJobs() {
   const planSupplement = ref('')
   const databaseSourceEnabled = ref(true)
   const useMyPreferences = ref(false)
+  const deepReportEnabled = ref(false)
   const planError = ref('')
   const generatedHtml = ref('')
   const phase = ref('idle')
@@ -253,6 +254,7 @@ export function useReportJobs() {
       activeParameters: [...activeParameters.value],
       outputDepth: outputDepth.value,
       databaseSourceEnabled: databaseSourceEnabled.value,
+      deepReportEnabled: deepReportEnabled.value,
       isGenerating: isGenerating.value,
       generatedHtml: generatedHtml.value,
       phase: phase.value,
@@ -302,6 +304,7 @@ export function useReportJobs() {
     activeParameters.value = [...(snapshot.activeParameters || [])]
     outputDepth.value = snapshot.outputDepth || 'detailed'
     databaseSourceEnabled.value = snapshot.databaseSourceEnabled !== false
+    deepReportEnabled.value = snapshot.deepReportEnabled === true
     isGenerating.value = Boolean(snapshot.isGenerating)
     generatedHtml.value = snapshot.generatedHtml || ''
     phase.value = snapshot.phase || 'idle'
@@ -906,6 +909,7 @@ export function useReportJobs() {
     contextText.value = draft.contextText || item.payload?.known_context || item.payload?.visit_context || ''
     parameterValues.value = {}
     activeParameters.value = []
+    deepReportEnabled.value = item.payload?.deepReportEnabled === true
 
     if (item.skill === 'write-hb') {
       reportType.value = item.payload?.report_type === 'HB报' ? 'write-hb-hb' : 'write-hb-k'
@@ -919,6 +923,7 @@ export function useReportJobs() {
     contextText.value = item.payload?.known_context || item.payload?.visit_context || ''
     parameterValues.value = {}
     activeParameters.value = []
+    deepReportEnabled.value = item.payload?.deepReportEnabled === true
 
     if (item.skill === 'write-hb') {
       reportType.value = item.payload?.report_type === 'HB报' ? 'write-hb-hb' : 'write-hb-k'
@@ -952,6 +957,7 @@ export function useReportJobs() {
     targetCity.value = ''
     visitTime.value = ''
     outputDepth.value = 'detailed'
+    deepReportEnabled.value = false
     resetReportPlan()
     currentView.value = 'generator'
   }
@@ -1283,6 +1289,7 @@ export function useReportJobs() {
           useMyPreferences: useMyPreferences.value === true,
           focus_areas: ['基本情况', '政治立场', '风险点', '接待建议'],
           output_depth: outputDepth.value,
+          deepReportEnabled: deepReportEnabled.value === true,
           language: 'zh-CN',
         },
       }
@@ -1296,6 +1303,7 @@ export function useReportJobs() {
           report_type: reportType.value === 'write-hb-hb' ? 'HB报' : 'K报',
           known_context: context,
           useMyPreferences: useMyPreferences.value === true,
+          deepReportEnabled: deepReportEnabled.value === true,
           focus_areas: isStructuredContext ? buildPlanningFocusAreas(extraContext) : ['国家', '地方', '政策', '社会', '传播'],
           language: 'zh-CN',
         },
@@ -1311,6 +1319,7 @@ export function useReportJobs() {
         visit_time: visitTime.value.trim(),
         known_context: context,
         useMyPreferences: useMyPreferences.value === true,
+        deepReportEnabled: deepReportEnabled.value === true,
         focus_areas: ['公开信息检索', '风险识别', '舆情走势', '处置建议'],
         language: 'zh-CN',
       },
@@ -1923,6 +1932,7 @@ export function useReportJobs() {
     planSupplement,
     databaseSourceEnabled,
     useMyPreferences,
+    deepReportEnabled,
     planError,
     generatedHtml,
     phase,

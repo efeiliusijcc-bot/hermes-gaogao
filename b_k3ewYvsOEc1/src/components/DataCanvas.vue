@@ -68,6 +68,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  deepReportEnabled: {
+    type: Boolean,
+    default: false,
+  },
   planError: String,
   executionLogs: {
     type: Array,
@@ -130,6 +134,7 @@ const emit = defineEmits([
   'update:planSupplement',
   'update:databaseSourceEnabled',
   'update:useMyPreferences',
+  'update:deepReportEnabled',
   'update:homeMode',
   'qa-session-upsert',
   'qa-session-clear-selection',
@@ -2442,6 +2447,11 @@ const taskProgressView = computed(() => {
         subtitle: '系统正在采集公开资料并提取关键事实。',
         tone: 'extracting',
       },
+      deep_collection: {
+        title: '正在进行资料深度采集',
+        subtitle: '深度编报资料采集 Skill 正在补充并核验公开资料。',
+        tone: 'extracting',
+      },
       consolidate: {
         title: '正在整合分析素材',
         subtitle: '系统正在汇总信源、证据和分析要点。',
@@ -2899,6 +2909,14 @@ const userProgressStages = [
   { key: 'quality', number: '6', icon: '06', title: '成稿自检', desc: '检查主题一致性、信源依据、风险推理和写作质量' },
 ]
 
+const deepCollectionProgressStage = {
+  key: 'deep_collection',
+  number: '4',
+  icon: '04',
+  title: '资料深度采集',
+  desc: '调用深度编报资料采集 Skill 补充并核验公开资料',
+}
+
 function displayProgressStatus(status) {
   if (status === 'done') return 'done'
   if (status === 'running') return 'current'
@@ -2910,7 +2928,10 @@ const backendProgressStageFlow = computed(() => {
   const stages = Array.isArray(props.progressState?.stages) ? props.progressState.stages : []
   if (!stages.length) return []
   const byKey = new Map(stages.map((stage) => [stage.key, stage]))
-  return userProgressStages.map((stage, index) => {
+  const displayStages = byKey.has('deep_collection')
+    ? [...userProgressStages.slice(0, 3), deepCollectionProgressStage, ...userProgressStages.slice(3)]
+    : userProgressStages
+  return displayStages.map((stage, index) => {
     const backendStage = byKey.get(stage.key)
     return {
       ...stage,
@@ -4385,6 +4406,14 @@ function exportPdf() {
                     @change="emit('update:useMyPreferences', $event.target.checked)"
                   />
                   使用个人偏好和默认模板
+                </label>
+                <label class="inline-flex items-center gap-2 font-mono text-[11px] text-slate-600">
+                  <input
+                    type="checkbox"
+                    :checked="deepReportEnabled"
+                    @change="emit('update:deepReportEnabled', $event.target.checked)"
+                  />
+                  深度编报
                 </label>
               </div>
               <button

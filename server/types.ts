@@ -1,7 +1,7 @@
 import type { ReportPayload, SkillName } from '../src/types/report.js';
 
 export type ReportJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting_approval';
-export type ReportProgressStageKey = 'prepare' | 'source' | 'plan' | 'database' | 'research' | 'consolidate' | 'report' | 'quality';
+export type ReportProgressStageKey = 'prepare' | 'source' | 'plan' | 'database' | 'research' | 'deep_collection' | 'consolidate' | 'report' | 'quality';
 export type ReportProgressStageStatus = 'not_started' | 'running' | 'done' | 'failed';
 
 export interface ReportProgressEvidence {

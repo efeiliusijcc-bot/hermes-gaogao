@@ -566,6 +566,7 @@ async function createDeepReportJob() {
         outlineId: importedPlan.value.outlineId,
         planId: importedPlan.value.planId,
         draftAssistantMode: true,
+        deepReportEnabled: true,
         known_context: JSON.stringify(knownContext, null, 2),
         focus_areas: ['主要内容', '各方态度', '涉我风险', '趋势研判'],
         language: 'zh-CN',

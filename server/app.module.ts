@@ -13,6 +13,7 @@ import { ChatService } from './chat.service.js';
 import { CrawlerService } from './crawler.service.js';
 import { DailyAwarenessController } from './daily-awareness.controller.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
+import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { DraftAssistantController } from './draft-assistant.controller.js';
 import { DraftAssistantService } from './draft-assistant.service.js';
 import { HealthController } from './health.controller.js';
@@ -77,6 +78,7 @@ import { WebSupplementService } from './web-supplement.service.js';
     CrawlerService,
     ChatService,
     DailyAwarenessService,
+    DeepReportSourceCollectionService,
     DraftAssistantService,
   ],
 })

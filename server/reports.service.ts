@@ -5,6 +5,7 @@ import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { HERMES_RUN_MODE, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL, REPORT_AGENT_PROVIDER } from './config.js';
 import { CrawlerService } from './crawler.service.js';
+import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { ArtifactPathResolver } from './artifact-path-resolver.service.js';
 import { ArtifactSyncService, type ArtifactSyncResult } from './artifact-storage/artifact-sync.service.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
@@ -180,7 +181,7 @@ type ReportSourceOrigin = 'database_recall' | 'tool_search';
 type ReportEvidenceKind = 'report_reference' | 'structured_source' | 'research_source' | 'evidence_card';
 type ReportSourceEngine = 'exa' | 'firecrawl' | 'tavily' | 'tavily_extract' | 'controlled_fetch' | 'pg_vector' | 'database';
 
-const PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'>> = [
+const BASE_PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'>> = [
   { key: 'plan', title: '任务规划', desc: '整理编报要求、确定信源范围并拆解调研任务' },
   { key: 'database', title: '数据库检索', desc: '优先召回 PG 向量库和数据库信源' },
   { key: 'research', title: '资料采集', desc: '按规划补充公开信源并提取关键事实' },
@@ -188,6 +189,12 @@ const PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'
   { key: 'report', title: '报告撰写', desc: '撰写报告正文并完成校验' },
   { key: 'quality', title: '成稿自检', desc: '检查主题一致性、信源依据、风险推理和写作质量' },
 ];
+
+const DEEP_COLLECTION_PROGRESS_STAGE: Omit<ReportProgressStage, 'status' | 'evidence'> = {
+  key: 'deep_collection',
+  title: '资料深度采集',
+  desc: '调用深度编报资料采集 Skill 补充并核验公开资料',
+};
 
 interface ReportSourcesOptions {
   type?: string;
@@ -265,6 +272,7 @@ export class ReportsService implements OnModuleDestroy {
     @Optional() @Inject(WebSupplementService) private readonly webSupplement?: WebSupplementService,
     @Optional() @Inject(ArtifactPathResolver) private readonly artifactResolver?: ArtifactPathResolver,
     @Optional() @Inject(ArtifactSyncService) private readonly artifactSync?: ArtifactSyncService,
+    @Optional() @Inject(DeepReportSourceCollectionService) private readonly deepReportSourceCollection?: DeepReportSourceCollectionService,
   ) {
     this.jobsReady = this.loadPersistedJobs();
   }
@@ -882,11 +890,12 @@ export class ReportsService implements OnModuleDestroy {
 
   private buildInitialProgressState(job: JobRecord): ReportProgressState {
     const now = new Date().toISOString();
+    const stageDefs = this.progressStageDefs(job);
     return {
       jobId: job.jobId,
       currentStage: job.status === 'queued' || job.status === 'running' ? 'plan' : null,
       updatedAt: now,
-      stages: PROGRESS_STAGE_DEFS.map((stage, index) => ({
+      stages: stageDefs.map((stage, index) => ({
         ...stage,
         status: index === 0 && (job.status === 'queued' || job.status === 'running') ? 'running' : 'not_started',
         evidence: index === 0
@@ -948,7 +957,7 @@ export class ReportsService implements OnModuleDestroy {
     for (const item of artifactEvidence) addEvidence(item.key, item.status, item.evidence);
 
     if (job.status === 'succeeded') {
-      for (const stage of PROGRESS_STAGE_DEFS) {
+      for (const stage of this.progressStageDefs(job)) {
         if (stage.key === 'quality' && !job.artifacts?.qualityReview && !job.artifacts?.qualityReviewPath) continue;
         addEvidence(stage.key, 'done', {
           source: stage.key === 'report' ? 'report_file' : 'job_status',
@@ -959,7 +968,7 @@ export class ReportsService implements OnModuleDestroy {
     }
 
     if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'waiting_approval') {
-      const failedKey = this.lastStartedProgressStage(statusByStage) || 'plan';
+      const failedKey = this.lastStartedProgressStage(job, statusByStage) || 'plan';
       addEvidence(failedKey, 'failed', {
         source: 'job_status',
         message: job.errorMessage || `任务状态：${job.status}`,
@@ -967,7 +976,7 @@ export class ReportsService implements OnModuleDestroy {
       });
     }
 
-    const stages = this.ensureActiveProgressStage(this.normalizeProgressStageOrder(PROGRESS_STAGE_DEFS.map((stage) => ({
+    const stages = this.ensureActiveProgressStage(this.normalizeProgressStageOrder(this.progressStageDefs(job).map((stage) => ({
       ...stage,
       status: statusByStage.get(stage.key) || 'not_started',
       evidence: evidenceByStage.get(stage.key) || [],
@@ -991,6 +1000,7 @@ export class ReportsService implements OnModuleDestroy {
           : 'running';
 
     if (/waiting_final_report|gateway_fallback|hermes:|^start$|^running$|received/.test(entry.phase || '')) return null;
+    if (/deep_source_collection|资料深度采集|深度资料采集/.test(haystack)) return { key: 'deep_collection', status };
     if (/context_preparing|context\.json|preparing hermes/.test(haystack)) return { key: 'plan', status };
     if (/pg向量|pg-sources|pg_sources|vector_sources|database_sources|database_query_plan|数据库信源|数据库检索|信源检索/.test(haystack)) return { key: 'database', status };
     if (/research_planning|harness_cli\.py\s+plan|plan\.json|调研计划/.test(haystack)) return { key: 'plan', status };
@@ -1114,12 +1124,25 @@ export class ReportsService implements OnModuleDestroy {
     return result;
   }
 
-  private lastStartedProgressStage(statusByStage: Map<ReportProgressStageKey, ReportProgressStageStatus>): ReportProgressStageKey | null {
+  private lastStartedProgressStage(
+    job: JobRecord,
+    statusByStage: Map<ReportProgressStageKey, ReportProgressStageStatus>,
+  ): ReportProgressStageKey | null {
     let result: ReportProgressStageKey | null = null;
-    for (const stage of PROGRESS_STAGE_DEFS) {
+    for (const stage of this.progressStageDefs(job)) {
       if (statusByStage.has(stage.key)) result = stage.key;
     }
     return result;
+  }
+
+  private progressStageDefs(job: JobRecord): Array<Omit<ReportProgressStage, 'status' | 'evidence'>> {
+    if ((job.payload as unknown as Record<string, unknown>)?.deepReportEnabled !== true) return BASE_PROGRESS_STAGE_DEFS;
+    const researchIndex = BASE_PROGRESS_STAGE_DEFS.findIndex((stage) => stage.key === 'research');
+    return [
+      ...BASE_PROGRESS_STAGE_DEFS.slice(0, researchIndex + 1),
+      DEEP_COLLECTION_PROGRESS_STAGE,
+      ...BASE_PROGRESS_STAGE_DEFS.slice(researchIndex + 1),
+    ];
   }
 
   private normalizeProgressStageOrder(stages: ReportProgressStage[]): ReportProgressStage[] {
@@ -2837,6 +2860,79 @@ export class ReportsService implements OnModuleDestroy {
     return Math.max(min, Math.min(max, Math.floor(parsed)));
   }
 
+  private async enrichPayloadWithDeepReportSources(
+    job: JobRecord,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (payload.deepReportEnabled !== true) return payload;
+
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'deep_source_collection_preparing',
+      message: '深度资料采集准备中。',
+    });
+    if (!this.deepReportSourceCollection) {
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'deep_source_collection_failed',
+        message: '深度资料采集失败：Skill 服务未配置。',
+      });
+      throw new Error('深度资料采集失败：Skill 服务未配置。');
+    }
+
+    try {
+      const response = await this.deepReportSourceCollection.execute({
+        workflow: 'deep_report',
+        deepReportEnabled: true,
+        stage: 'source_collection',
+        planningSessionId: job.jobId,
+        topic: this.reportTopic(payload),
+        plan: this.contextObjectFromPayload(payload),
+        requestUser: this.buildRequestUser(job),
+        onEvent: (event) => this.pushEvent(job, event),
+      });
+      if (response.status === 'not_available') throw new Error(response.reason);
+
+      const deepReportSources = {
+        status: response.status,
+        acceptedSources: response.acceptedSources,
+        uncertainSources: response.uncertainSources,
+        coveredGaps: response.coveredGaps,
+        uncoveredGaps: response.uncoveredGaps,
+        summary: response.summary,
+      };
+      job.artifacts = {
+        ...job.artifacts,
+        deepReportSourceCollection: deepReportSources,
+      };
+      await this.writeJobState(job);
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: response.status === 'partial' ? 'deep_source_collection_partial' : 'deep_source_collection_completed',
+        message: response.status === 'partial'
+          ? '深度资料采集部分完成，未覆盖项将作为信息缺口传入编报。'
+          : '深度资料采集已完成。',
+      });
+      return { ...payload, deepReportSources };
+    } catch (error) {
+      const message = this.sanitizeUserVisibleText(error instanceof Error ? error.message : String(error), 240);
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'deep_source_collection_failed',
+        message: `深度资料采集失败：${message}`,
+      });
+      throw new Error(`深度资料采集失败：${message}`);
+    }
+  }
+
+  private reportTopic(payload: Record<string, unknown>): string {
+    for (const key of ['topic', 'title', 'target_name', 'target_country']) {
+      const value = payload[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    throw new Error('当前编报任务缺少明确主题。');
+  }
+
   private async runJob(job: JobRecord) {
     job.status = 'running';
     job.updatedAt = new Date().toISOString();
@@ -2848,9 +2944,10 @@ export class ReportsService implements OnModuleDestroy {
       const enrichedPayload = await this.enrichPayloadWithVectorSources(job);
       const supplementPayload = await this.enrichPayloadWithWebSupplement(job, enrichedPayload);
       const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, supplementPayload, this.buildJobOwnerUser(job));
+      const preparedPayload = await this.enrichPayloadWithDeepReportSources(job, draftPayload);
       const runInput: RunInput = {
         skill: job.skill,
-        payload: draftPayload,
+        payload: preparedPayload,
         requestUser,
         onEvent: (event) => this.pushEvent(job, event),
         jobId: job.jobId,

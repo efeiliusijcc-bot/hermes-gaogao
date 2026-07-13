@@ -34,6 +34,7 @@ const {
   planSupplement,
   databaseSourceEnabled,
   useMyPreferences,
+  deepReportEnabled,
   databaseSources,
   databaseSourcesLoading,
   planError,
@@ -618,6 +619,7 @@ function jobActionLabel(status) {
         v-model:planSupplement="planSupplement"
         v-model:databaseSourceEnabled="databaseSourceEnabled"
         v-model:useMyPreferences="useMyPreferences"
+        v-model:deepReportEnabled="deepReportEnabled"
         :planError="planError"
         :executionLogs="executionLogs"
         :progress-state="progressState"
