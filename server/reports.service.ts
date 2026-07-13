@@ -8,6 +8,7 @@ import { CrawlerService } from './crawler.service.js';
 import { ArtifactPathResolver } from './artifact-path-resolver.service.js';
 import { ArtifactSyncService, type ArtifactSyncResult } from './artifact-storage/artifact-sync.service.js';
 import { HermesApprovalRequiredError, HermesService } from './hermes.service.js';
+import { sanitizeLegacyPlanningContext, sanitizeReportPayload } from './legacy-planning-context.js';
 import { RemoteFileService } from './remote-file.service.js';
 import { VectorSourceService, type VectorSearchResult, type VectorSourceItem } from './vector-source.service.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
@@ -174,10 +175,10 @@ interface SupplementChannelResult {
   };
 }
 
-type ReportSourceListType = 'all' | 'database_recall' | 'crawler' | 'tool_search' | 'report_refs' | 'structured_sources' | 'candidate_hits' | 'extract_failed';
-type ReportSourceOrigin = 'database_recall' | 'crawler' | 'tool_search';
-type ReportEvidenceKind = 'report_reference' | 'structured_source' | 'research_source' | 'evidence_card' | 'crawler_source';
-type ReportSourceEngine = 'exa' | 'firecrawl' | 'tavily' | 'tavily_extract' | 'pg_vector' | 'database' | 'crawler';
+type ReportSourceListType = 'all' | 'database_recall' | 'tool_search' | 'report_refs' | 'structured_sources' | 'candidate_hits' | 'extract_failed';
+type ReportSourceOrigin = 'database_recall' | 'tool_search';
+type ReportEvidenceKind = 'report_reference' | 'structured_source' | 'research_source' | 'evidence_card';
+type ReportSourceEngine = 'exa' | 'firecrawl' | 'tavily' | 'tavily_extract' | 'controlled_fetch' | 'pg_vector' | 'database';
 
 const PROGRESS_STAGE_DEFS: Array<Omit<ReportProgressStage, 'status' | 'evidence'>> = [
   { key: 'plan', title: '任务规划', desc: '整理编报要求、确定信源范围并拆解调研任务' },
@@ -231,7 +232,6 @@ interface ReportSourcesResponse {
 
 interface ReportSourceSummary {
   databaseRecallCount: number;
-  crawlerCount: number;
   toolSearchCount: number;
   reportReferenceCount: number;
   structuredSourceCount: number;
@@ -277,7 +277,8 @@ export class ReportsService implements OnModuleDestroy {
     if (!this.canCreateReport(user)) {
       throw new ForbiddenException({ error: 'Viewer cannot create report jobs' });
     }
-    const payload = await this.enhancePayloadWithUserPreferences(req.payload as unknown as Record<string, unknown>, user);
+    const inputPayload = sanitizeReportPayload(req.payload as unknown as Record<string, unknown>);
+    const payload = sanitizeReportPayload(await this.enhancePayloadWithUserPreferences(inputPayload, user));
     const planId = this.optionalId(payload.planId);
     const planBundle = planId ? await this.loadDraftAssistantPlanBundle(planId, user) : null;
     const eventId = this.optionalId(payload.eventId) || planBundle?.eventId;
@@ -597,7 +598,7 @@ export class ReportsService implements OnModuleDestroy {
     return {
       jobId: job.jobId,
       skill: job.skill,
-      payload: job.payload,
+      payload: sanitizeReportPayload(job.payload as unknown as Record<string, unknown>),
       eventId: job.eventId,
       outlineId: job.outlineId,
       planId: job.planId,
@@ -991,7 +992,6 @@ export class ReportsService implements OnModuleDestroy {
 
     if (/waiting_final_report|gateway_fallback|hermes:|^start$|^running$|received/.test(entry.phase || '')) return null;
     if (/context_preparing|context\.json|preparing hermes/.test(haystack)) return { key: 'plan', status };
-    if (/资料采集工具|controlled-web-collector|crawler\.|crawler_source|crawlersourcecontext/.test(haystack)) return { key: 'research', status };
     if (/pg向量|pg-sources|pg_sources|vector_sources|database_sources|database_query_plan|数据库信源|数据库检索|信源检索/.test(haystack)) return { key: 'database', status };
     if (/research_planning|harness_cli\.py\s+plan|plan\.json|调研计划/.test(haystack)) return { key: 'plan', status };
     if (/synthesis_dispatch|synthesis_waiting/.test(entry.phase || '')) {
@@ -1030,7 +1030,6 @@ export class ReportsService implements OnModuleDestroy {
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'crawler', 'crawler_sources.json'), '资料采集信源文件已生成。');
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'plan.json'), '调研计划文件已生成。');
     try {
       const groupEntries = await this.remoteFs.readdir(this.remoteFs.joinPath(jobDir, 'groups'));
@@ -1084,7 +1083,6 @@ export class ReportsService implements OnModuleDestroy {
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_sources.json'), '数据库信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'vector_sources.json'), '向量信源文件已生成。');
     await addIfExists('database', this.remoteFs.joinPath(jobDir, 'database', 'database_query_plan.json'), '信源查询计划已生成。');
-    await addIfExists('research', this.remoteFs.joinPath(jobDir, 'crawler', 'crawler_sources.json'), '资料采集信源文件已生成。');
     await addIfExists('plan', this.remoteFs.joinPath(jobDir, 'plan.json'), '调研计划文件已生成。');
     try {
       const groupEntries = await this.remoteFs.readdir(this.remoteFs.joinPath(jobDir, 'groups'));
@@ -1445,10 +1443,9 @@ export class ReportsService implements OnModuleDestroy {
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 10), 100);
 
-    const [reportRefs, structuredSources, crawlerSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
+    const [reportRefs, structuredSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
       this.reportReferenceSources(job),
       this.structuredReportSources(job),
-      this.crawlerReportSources(job),
       this.toolSearchSources(job),
       type === 'candidate_hits' ? this.candidateHitSources(job) : Promise.resolve({ items: [], total: 0, detailSaved: false }),
       type === 'extract_failed' ? this.extractFailedSources(job) : Promise.resolve([]),
@@ -1459,7 +1456,6 @@ export class ReportsService implements OnModuleDestroy {
     const sourceDiagnostics = await this.reportSourceDiagnostics(job);
     const summary: ReportSourceSummary = {
       databaseRecallCount: databaseRecall.length,
-      crawlerCount: crawlerSources.length,
       toolSearchCount: toolSearch.length,
       reportReferenceCount: reportRefs.length,
       structuredSourceCount: structuredSources.length,
@@ -1467,7 +1463,6 @@ export class ReportsService implements OnModuleDestroy {
 
     const groups: Record<Exclude<ReportSourceListType, 'all'>, ReportSourceListItem[]> = {
       database_recall: databaseRecall,
-      crawler: crawlerSources,
       tool_search: toolSearch,
       report_refs: reportRefs,
       structured_sources: structuredSources,
@@ -1475,7 +1470,7 @@ export class ReportsService implements OnModuleDestroy {
       extract_failed: extractFailed,
     };
     const allItems = type === 'all'
-      ? [...databaseRecall, ...crawlerSources, ...toolSearch].sort((a, b) => this.reportSourcePriority(b) - this.reportSourcePriority(a))
+      ? [...databaseRecall, ...toolSearch].sort((a, b) => this.reportSourcePriority(b) - this.reportSourcePriority(a))
       : groups[type] || [];
     const total = type === 'candidate_hits'
       ? (candidateResult.total || allItems.length)
@@ -2151,7 +2146,7 @@ export class ReportsService implements OnModuleDestroy {
   private contextObjectFromPayload(payload: Record<string, unknown>): Record<string, unknown> {
     const knownContext = typeof payload.known_context === 'string' ? payload.known_context : '';
     const parsed = this.parseJsonObject(knownContext);
-    if (parsed) return parsed;
+    if (parsed) return sanitizeLegacyPlanningContext(parsed);
     return {
       topic: String(payload.topic || payload.title || ''),
       reportType: String(payload.report_type || ''),
@@ -2359,15 +2354,11 @@ export class ReportsService implements OnModuleDestroy {
     const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
     const databaseSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'database_sources.json'));
     const vectorSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'vector_sources.json'));
-    const crawlerSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources.json'));
     return {
       ...payloadContext,
       ...(contextJson && !Array.isArray(contextJson) ? contextJson : {}),
       database_sources: Array.isArray(databaseSources) ? databaseSources : payloadContext.database_sources,
       vector_sources: Array.isArray(vectorSources) ? vectorSources : payloadContext.vector_sources,
-      crawlerSourceContext: crawlerSources && !Array.isArray(crawlerSources)
-        ? crawlerSources
-        : payloadContext.crawlerSourceContext,
     };
   }
 
@@ -2419,7 +2410,7 @@ export class ReportsService implements OnModuleDestroy {
       checks: [],
       issues: [],
       recommendedEdits: [],
-      sourceUsage: { databaseSourcesUsed: 0, crawlerSourcesUsed: 0, internetSourcesUsed: 0, unverifiedClaims: 0 },
+      sourceUsage: { databaseSourcesUsed: 0, internetSourcesUsed: 0, unverifiedClaims: 0 },
       error: this.sanitizeUserVisibleText(message, 300),
     };
   }
@@ -2438,7 +2429,7 @@ export class ReportsService implements OnModuleDestroy {
     const hasMainContent = /基本情况|主要内容|事件概述|背景/.test(markdown) && /发生|推动|宣布|涉及|影响|进展/.test(markdown);
     const hasAttitudeTrace = /各方态度|立场|表态|回应|认为|表示/.test(markdown) && /年|月|日|媒体|公告|声明|报道|发布/.test(markdown);
     const hasRiskBasis = /涉我风险|风险/.test(markdown) && /基于|依据|显示|来源|监管|数据|报道|文件|逻辑/.test(markdown);
-    const hasSourceClarity = (sourceUsage.databaseSourcesUsed + sourceUsage.crawlerSourcesUsed + sourceUsage.internetSourcesUsed) > 0 || /\[\d+\]|参考资料|来源/.test(markdown);
+    const hasSourceClarity = (sourceUsage.databaseSourcesUsed + sourceUsage.internetSourcesUsed) > 0 || /\[\d+\]|参考资料|来源/.test(markdown);
     const plan = this.plainObject(context.report_plan);
     const planText = JSON.stringify(plan || {});
     const hasPlan = !planText || planText === '{}' || ['基本情况', '涉我风险', '对策建议', '事件概述'].some((section) => markdown.includes(section));
@@ -2503,7 +2494,7 @@ export class ReportsService implements OnModuleDestroy {
     return {
       factualClarity: this.clampScore((passed('main_content_clarity') ? 82 : 62) + (wordCount > 4000 ? 8 : 0)),
       planAlignment: this.clampScore(passed('topic_alignment') && passed('plan_coverage') ? 84 : 65),
-      sourceQuality: this.clampScore((passed('source_reference_clarity') ? 78 : 58) + Math.min(12, (sourceUsage.databaseSourcesUsed + sourceUsage.crawlerSourcesUsed + sourceUsage.internetSourcesUsed) * 2)),
+      sourceQuality: this.clampScore((passed('source_reference_clarity') ? 78 : 58) + Math.min(12, (sourceUsage.databaseSourcesUsed + sourceUsage.internetSourcesUsed) * 2)),
       attitudeTraceability: this.clampScore(passed('attitude_traceability') ? 78 : 60),
       riskReasoning: this.clampScore(passed('risk_reasoning_basis') ? 80 : 62),
       writingQuality: this.clampScore((passed('ai_boilerplate') ? 84 : 62) + (wordCount >= 2500 ? 4 : -8)),
@@ -2530,7 +2521,7 @@ export class ReportsService implements OnModuleDestroy {
       main_content_clarity: '请补充事件是什么、主体、时间、地点、进展和影响。',
       attitude_traceability: '请补充表态主体、表态时间、媒体或发布渠道和来源链接。',
       risk_reasoning_basis: '请用已有信源补充风险判断的事实依据、传导路径和不确定性。',
-      source_reference_clarity: '请区分数据库信源、资料采集信源和互联网搜索信源，并补充参考资料编号。',
+      source_reference_clarity: '请区分数据库信源和互联网信源，并补充参考资料编号。',
       plan_coverage: '请对照 report_plan 补齐未体现的章节重点。',
       ai_boilerplate: '请删除“以下是”“作为AI”等无用描述，改为正式编报表述。',
       word_count: '请扩充事实密度、分析层次、风险链条和对策建议。',
@@ -2553,19 +2544,17 @@ export class ReportsService implements OnModuleDestroy {
       ...(Array.isArray(context.vector_sources) ? context.vector_sources : []),
       ...(Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : []),
     ];
-    const crawlerContext = this.plainObject(context.crawlerSourceContext);
-    const crawlerSources = Array.isArray(crawlerContext.items) ? crawlerContext.items : [];
+    const webSources = Array.isArray(context.webSources) ? context.webSources : [];
     const draftContext = this.plainObject(context.draftAssistantContext);
     const draftSources = Array.isArray(draftContext.sources) ? draftContext.sources : [];
     const referenceCount = (markdown.match(/\[\d+\]/g) || []).length;
     const judgementCount = (markdown.match(/可能|预计|或将|风险|影响|认为/g) || []).length;
     return {
       databaseSourcesUsed: Math.min(databaseSources.length, referenceCount || databaseSources.length),
-      crawlerSourcesUsed: Math.min(crawlerSources.length, referenceCount || crawlerSources.length),
-      internetSourcesUsed: Math.max(0, referenceCount - databaseSources.length - crawlerSources.length),
+      internetSourcesUsed: Math.min(webSources.length, referenceCount || webSources.length),
       draftAssistantSourcesUsed: draftSources.length,
       userProvidedSourcesUsed: Array.isArray(context.userProvidedSources) ? context.userProvidedSources.length : 0,
-      unverifiedClaims: Math.max(0, judgementCount - referenceCount - databaseSources.length - crawlerSources.length),
+      unverifiedClaims: Math.max(0, judgementCount - referenceCount - databaseSources.length - webSources.length),
     };
   }
 
@@ -4112,7 +4101,6 @@ export class ReportsService implements OnModuleDestroy {
     const normalized = String(type || '').trim();
     if (
       normalized === 'database_recall' ||
-      normalized === 'crawler' ||
       normalized === 'tool_search' ||
       normalized === 'report_refs' ||
       normalized === 'structured_sources' ||
@@ -4266,12 +4254,11 @@ export class ReportsService implements OnModuleDestroy {
   private async buildReportReferenceItems(job: JobRecord, markdown: string): Promise<ReportSourceListItem[]> {
     const references = this.parseReferenceEntriesRobust(markdown);
     const citationNumbers = this.parseCitationNumbers(markdown);
-    const [structured, toolSearch, crawler] = await Promise.all([
+    const [structured, toolSearch] = await Promise.all([
       this.structuredReportSources(job),
       this.toolSearchSources(job),
-      this.crawlerReportSources(job),
     ]);
-    const acceptedSources = [...structured, ...toolSearch, ...crawler];
+    const acceptedSources = [...structured, ...toolSearch];
     const acceptedByUrl = new Map(
       acceptedSources
         .map((source) => [this.normalizeSourceUrl(source.url), source] as const)
@@ -4491,60 +4478,6 @@ export class ReportsService implements OnModuleDestroy {
     }));
   }
 
-  private async crawlerReportSources(job: JobRecord): Promise<ReportSourceListItem[]> {
-    const contexts: unknown[] = [];
-    const payloadContext = this.contextObjectFromPayload(this.plainObject(job.payload));
-    contexts.push(payloadContext.crawlerSourceContext);
-    contexts.push(job.artifacts?.crawlerSourceContext);
-    const dir = await this.resolveHermesJobDir(job);
-    if (dir) {
-      const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
-      if (contextJson && !Array.isArray(contextJson)) contexts.push(contextJson.crawlerSourceContext);
-      const crawlerJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources.json'));
-      contexts.push(crawlerJson);
-    }
-
-    const items: unknown[] = [];
-    for (const context of contexts) {
-      const object = this.plainObject(context);
-      if (Array.isArray(object.items)) items.push(...object.items);
-      if (Array.isArray(context)) items.push(...context);
-    }
-
-    return items
-      .map((item, index) => this.normalizeCrawlerSourceItem(item, index))
-      .filter((item): item is ReportSourceListItem => Boolean(item));
-  }
-
-  private normalizeCrawlerSourceItem(item: unknown, index: number): ReportSourceListItem | null {
-    if (!item || typeof item !== 'object') return null;
-    const source = item as Record<string, unknown>;
-    const normalized = this.normalizeSourceRecord(source, index, 'crawler');
-    const sourcePhase = this.firstString(source, ['sourcePhase', 'source_phase']);
-    const method = sourcePhase === 'planning'
-      ? '规划页面已选'
-      : sourcePhase === 'research'
-        ? 'Research Phase 补采'
-        : normalized.method || '资料采集工具';
-    return {
-      ...normalized,
-      id: normalized.id || `crawler-${index + 1}`,
-      sourceGroup: 'crawler',
-      sourceOrigin: 'crawler',
-      evidenceKind: 'crawler_source',
-      engine: 'crawler',
-      title: normalized.title || this.firstString(source, ['title']) || `资料采集来源 ${index + 1}`,
-      sourceName: normalized.sourceName || this.firstString(source, ['publisher', 'sourceName']) || '',
-      publishTime: normalized.publishTime || this.firstString(source, ['publishedAt', 'published_at', 'fetchedAt']),
-      summary: normalized.summary || this.firstString(source, ['contentSummary', 'content_summary', 'summary']),
-      excerpt: normalized.excerpt || this.firstString(source, ['contentText', 'content_text']).slice(0, 1200),
-      sourceType: '资料采集',
-      relevanceScore: normalized.relevanceScore ?? this.firstNumber(source, ['relevanceScore', 'relevance_score']) ?? undefined,
-      status: normalized.status || 'collected',
-      method,
-    };
-  }
-
   private async candidateHitSources(job: JobRecord): Promise<{ items: ReportSourceListItem[]; total: number; detailSaved: boolean }> {
     const data = await this.getDatabaseSources(job.jobId);
     const total = this.candidateHitTotal(data);
@@ -4748,13 +4681,11 @@ export class ReportsService implements OnModuleDestroy {
       ]));
       const databaseDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(databaseDir, 'database_sources_diagnostics.json'));
       const webDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(dir, 'research', 'web_supplement_diagnostics.json'));
-      const crawlerDiagnostics = await this.readJsonFile(this.remoteFs.joinPath(dir, 'crawler', 'crawler_sources_diagnostics.json'));
-      for (const diagnostics of [databaseDiagnostics, webDiagnostics, crawlerDiagnostics]) {
+      for (const diagnostics of [databaseDiagnostics, webDiagnostics]) {
         if (!diagnostics || Array.isArray(diagnostics)) continue;
         for (const key of [
           'uncertainSources', 'rejectedSources',
           'uncertainWebSources', 'rejectedWebSources',
-          'uncertainCrawlerSources', 'rejectedCrawlerSources',
         ]) {
           if (Array.isArray(diagnostics[key])) fileItems.push(...diagnostics[key]);
         }
