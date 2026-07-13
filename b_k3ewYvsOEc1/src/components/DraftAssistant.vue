@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   analyzeDraftEvent,
   generateDraftOutline,
@@ -27,6 +27,7 @@ import DraftStepNavigation from './DraftStepNavigation.vue'
 import EventPreviewPanel from './EventPreviewPanel.vue'
 import EventSourcePanel from './EventSourcePanel.vue'
 import StrategyTabs from './StrategyTabs.vue'
+import AutoResizeTextarea from './common/AutoResizeTextarea.vue'
 import { useCollapsibleHistorySidebar } from '../composables/useCollapsibleHistorySidebar.js'
 
 const props = defineProps({
@@ -82,7 +83,6 @@ const historySearchFocused = ref(false)
 const draftLifecycleStatus = ref('idle')
 const historySidebarComponent = ref(null)
 const draftPrimaryHeading = ref(null)
-const draftEditFields = ref(null)
 const openOutlineMenu = ref(-1)
 
 const outlineEdit = reactive({
@@ -902,16 +902,6 @@ function shortId(value) {
   return text.length > 12 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text
 }
 
-function resizeDraftTextareas(target) {
-  const textareas = target
-    ? [target]
-    : Array.from(draftEditFields.value?.querySelectorAll('[data-autogrow]') || [])
-  textareas.forEach((textarea) => {
-    textarea.style.height = 'auto'
-    textarea.style.height = `${textarea.scrollHeight}px`
-  })
-}
-
 onMounted(async () => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   await loadEvents()
@@ -924,14 +914,6 @@ watch(() => props.initialEventId, (eventId) => {
   if (eventId && eventId !== currentEventId.value) void openEvent(eventId)
 })
 
-watch(
-  () => [outlineEdit.reportTitle, outlineEdit.reportTheme, outlineEdit.coreArgument, editMode.value, previewMode.value],
-  async () => {
-    await nextTick()
-    resizeDraftTextareas()
-  },
-  { flush: 'post' },
-)
 </script>
 
 <template>
@@ -1177,60 +1159,57 @@ watch(
             </template>
 
             <template v-else>
-              <div ref="draftEditFields" class="draft-edit-fields">
+              <div class="draft-edit-fields">
                 <section class="draft-edit-info-card title">
                   <div class="draft-edit-info-head">
-                    <span class="draft-edit-info-icon">T</span>
-                    <div>
+                    <div class="draft-edit-info-label">
+                      <span class="draft-edit-info-icon">T</span>
                       <h3>建议标题 <b>*</b></h3>
-                      <small>{{ outlineEdit.reportTitle.length }}/80</small>
                     </div>
+                    <small>{{ outlineEdit.reportTitle.length }}/80</small>
                   </div>
-                  <textarea
+                  <AutoResizeTextarea
                     v-model="outlineEdit.reportTitle"
-                    data-autogrow
                     class="sci-input draft-autogrow-textarea"
-                    rows="2"
-                    maxlength="80"
+                    :min-height="80"
+                    :maxlength="80"
                     placeholder="报告建议标题"
-                    @input="resizeDraftTextareas($event.target)"
-                  ></textarea>
+                    aria-label="建议标题"
+                  />
                 </section>
                 <section class="draft-edit-info-card theme">
                   <div class="draft-edit-info-head">
-                    <span class="draft-edit-info-icon">A</span>
-                    <div>
+                    <div class="draft-edit-info-label">
+                      <span class="draft-edit-info-icon">A</span>
                       <h3>主题立意 <b>*</b></h3>
-                      <small>{{ outlineEdit.reportTheme.length }}/120</small>
                     </div>
+                    <small>{{ outlineEdit.reportTheme.length }}/120</small>
                   </div>
-                  <textarea
+                  <AutoResizeTextarea
                     v-model="outlineEdit.reportTheme"
-                    data-autogrow
                     class="sci-input draft-autogrow-textarea"
-                    rows="3"
-                    maxlength="120"
+                    :min-height="112"
+                    :maxlength="120"
                     placeholder="报告主题立意"
-                    @input="resizeDraftTextareas($event.target)"
-                  ></textarea>
+                    aria-label="主题立意"
+                  />
                 </section>
                 <section class="draft-edit-info-card argument">
                   <div class="draft-edit-info-head">
-                    <span class="draft-edit-info-icon">J</span>
-                    <div>
+                    <div class="draft-edit-info-label">
+                      <span class="draft-edit-info-icon">J</span>
                       <h3>核心判断 <b>*</b></h3>
-                      <small>{{ outlineEdit.coreArgument.length }}/180</small>
                     </div>
+                    <small>{{ outlineEdit.coreArgument.length }}/180</small>
                   </div>
-                  <textarea
+                  <AutoResizeTextarea
                     v-model="outlineEdit.coreArgument"
-                    data-autogrow
                     class="sci-input draft-autogrow-textarea"
-                    rows="4"
-                    maxlength="180"
+                    :min-height="148"
+                    :maxlength="180"
                     placeholder="一句话说明核心判断"
-                    @input="resizeDraftTextareas($event.target)"
-                  ></textarea>
+                    aria-label="核心判断"
+                  />
                 </section>
               </div>
 
@@ -2385,8 +2364,8 @@ watch(
 
 .draft-edit-fields {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.1fr) minmax(0, 1.35fr);
-  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
   align-items: start;
   margin-bottom: 18px;
 }
@@ -2409,13 +2388,22 @@ watch(
 
 .draft-edit-info-card.argument {
   border-color: #ddd6fe;
+  grid-column: 1 / -1;
 }
 
 .draft-edit-info-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
   margin-bottom: 10px;
+}
+
+.draft-edit-info-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .draft-edit-info-icon {
@@ -2454,8 +2442,7 @@ watch(
 }
 
 .draft-edit-info-head small {
-  display: block;
-  margin-top: 4px;
+  flex: 0 0 auto;
   color: #94a3b8;
   font-size: 11px;
   font-weight: 800;
@@ -2463,17 +2450,8 @@ watch(
 
 .draft-autogrow-textarea {
   display: block;
-  min-height: 76px;
-  max-height: none;
-  overflow-y: hidden;
-  resize: none;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.65;
+  line-height: 1.75;
 }
-
-.draft-edit-info-card.theme .draft-autogrow-textarea { min-height: 96px; }
-.draft-edit-info-card.argument .draft-autogrow-textarea { min-height: 116px; }
 
 .draft-edit-outline {
   display: grid;
@@ -3019,6 +2997,16 @@ watch(
   .draft-mobile-history-trigger:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.24); outline-offset: 2px; }
 }
 
+@media (max-width: 900px) {
+  .draft-edit-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .draft-edit-info-card.argument {
+    grid-column: auto;
+  }
+}
+
 @media (max-width: 860px) {
   .draft-assistant-main {
     padding: 12px;
@@ -3039,7 +3027,6 @@ watch(
   .draft-workspace-grid:not(.editor-active),
   .draft-two,
   .draft-edit-tail,
-  .draft-edit-fields,
   .draft-outline-edit-head,
   .draft-strategy-edit-row,
   .draft-analysis-row {
