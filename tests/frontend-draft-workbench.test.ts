@@ -96,6 +96,8 @@ assert.match(assistantSource, /<EventPreviewPanel/);
 assert.match(assistantSource, /grid-template-columns:\s*64px minmax\(720px, 1fr\)/);
 assert.doesNotMatch(assistantSource, /draft-strategy-grid/);
 assert.doesNotMatch(assistantSource, /expandedStrategyCards|sourceTypeTags|strategyVisibleItems|toggleStrategyCard/);
+assert.doesNotMatch(assistantSource, /class="draft-toolbar"/);
+assert.doesNotMatch(assistantSource, /按事件输入、事件分析、拟稿提纲、版本确认、导入编报推进拟稿流程/);
 
 const navigationSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftStepNavigation.vue', import.meta.url),

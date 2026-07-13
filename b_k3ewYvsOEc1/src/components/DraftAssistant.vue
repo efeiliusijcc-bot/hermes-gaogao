@@ -12,7 +12,6 @@ import {
   manualUpdateDraftOutline,
   refineDraftOutline,
 } from '../lib/api.js'
-import { displayUserRoleNames } from '../lib/permissionModules.js'
 import { normalizeRiskSummary, riskSummaryTitle } from '../lib/riskSummary.js'
 import {
   deriveDraftStepStates,
@@ -116,7 +115,6 @@ const hasOutline = computed(() => Boolean(selectedOutline.value?.outline && disp
 const isVersionConfirmed = computed(() => confirmationMode.value && hasOutline.value && !editMode.value)
 const userModules = computed(() => Array.isArray(props.currentUser?.modules) ? props.currentUser.modules : [])
 const canImportDraftOutline = computed(() => userModules.value.includes('draft'))
-const displayRoleName = computed(() => displayUserRoleNames(props.currentUser))
 const isImportReady = computed(() => isVersionConfirmed.value && canImportDraftOutline.value && !importedPlan.value)
 const isReportJobReady = computed(() => Boolean(importedPlan.value?.planId) && canImportDraftOutline.value && !editMode.value)
 const importedPlanIdShort = computed(() => importedPlan.value?.planId ? shortId(importedPlan.value.planId) : '')
@@ -918,17 +916,6 @@ watch(() => props.initialEventId, (eventId) => {
 
 <template>
   <main class="draft-assistant-main">
-    <section class="draft-toolbar">
-      <div>
-        <h1>拟稿助手</h1>
-        <p>按事件输入、事件分析、拟稿提纲、版本确认、导入编报推进拟稿流程</p>
-      </div>
-      <div class="draft-toolbar-actions">
-        <span v-if="currentUser" class="draft-user-chip">{{ currentUser.username }} · {{ displayRoleName }}</span>
-        <button class="sci-btn" type="button" @click="emit('back')">返回</button>
-      </div>
-    </section>
-
     <div v-if="!currentUser" class="draft-login-gate">
       <div>
         <h2>请先登录</h2>
@@ -1409,7 +1396,6 @@ watch(() => props.initialEventId, (eventId) => {
   color: #0f172a;
 }
 
-.draft-toolbar,
 .draft-login-gate,
 .draft-panel,
 .draft-state-card,
@@ -1419,17 +1405,6 @@ watch(() => props.initialEventId, (eventId) => {
   box-shadow: 0 18px 46px rgba(15, 23, 42, 0.08);
 }
 
-.draft-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-  padding: 18px 20px;
-  border-radius: 8px;
-}
-
-.draft-toolbar h1,
 .draft-state-card h2,
 .draft-panel h2,
 .draft-side-section h2 {
@@ -1439,11 +1414,6 @@ watch(() => props.initialEventId, (eventId) => {
   letter-spacing: 0;
 }
 
-.draft-toolbar h1 {
-  font-size: 22px;
-}
-
-.draft-toolbar p,
 .draft-state-card > p,
 .draft-main-head p,
 .draft-import-box p {
@@ -1453,7 +1423,6 @@ watch(() => props.initialEventId, (eventId) => {
   line-height: 1.6;
 }
 
-.draft-toolbar-actions,
 .draft-main-head,
 .draft-panel-head,
 .draft-side-head,
@@ -1466,16 +1435,6 @@ watch(() => props.initialEventId, (eventId) => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.draft-user-chip {
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  background: #eff6ff;
-  color: #1d4ed8;
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .draft-login-gate {
@@ -3012,7 +2971,6 @@ watch(() => props.initialEventId, (eventId) => {
     padding: 12px;
   }
 
-  .draft-toolbar,
   .draft-login-gate,
   .draft-main-head,
   .draft-editor-commandbar,
