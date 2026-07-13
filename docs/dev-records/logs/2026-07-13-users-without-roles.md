@@ -29,12 +29,16 @@
 * `npx tsx tests/account-permissions.test.ts`：通过。
 * `npx pnpm@9.15.9 build`：通过。
 * `npx pnpm@9.15.9 --dir b_k3ewYvsOEc1 build`：通过；仅有已有的 Browserslist 数据更新提示。
+* 云节点接口验证：创建无角色临时用户返回 `roles/modules/permissions: []`，该用户登录后仍保持三个数组为空。
+* 临时用户清理：验证完成后已停用唯一测试账号 `codex_no_role_1783913455`。
+* 前端部署验证：Vercel 已切换至资源 `index-BYsoPkB1.js`。
 
 ## 额外操作
 
 * 本次未修改数据库结构、环境变量和依赖。
-* 后端代码变更部署后需要重启后端服务。
-* 前端代码推送后需要等待 Vercel 自动部署。
+* Git 提交 `ee7d414` 已推送至 `origin/main`。
+* 云节点 `hermes-api` 已通过最小部署重建并完成健康检查，旧容器保留为时间戳回滚容器。
+* Vercel 前端部署已生效。
 
 ## 已知风险
 
