@@ -14,8 +14,18 @@ import {
 } from '../lib/api.js'
 import { displayUserRoleNames } from '../lib/permissionModules.js'
 import { normalizeRiskSummary, riskSummaryTitle } from '../lib/riskSummary.js'
+import {
+  deriveDraftStepStates,
+  deriveMaterialCoverage,
+  eventInputSummary,
+} from '../lib/draftWorkbench.js'
 import DraftEditorToolbar from './DraftEditorToolbar.vue'
+import DraftContextPanel from './DraftContextPanel.vue'
 import DraftHistorySidebar from './DraftHistorySidebar.vue'
+import DraftOutlineView from './DraftOutlineView.vue'
+import DraftStepNavigation from './DraftStepNavigation.vue'
+import EventPreviewPanel from './EventPreviewPanel.vue'
+import EventSourcePanel from './EventSourcePanel.vue'
 import StrategyTabs from './StrategyTabs.vue'
 import { useCollapsibleHistorySidebar } from '../composables/useCollapsibleHistorySidebar.js'
 
@@ -72,6 +82,7 @@ const historySearchFocused = ref(false)
 const draftLifecycleStatus = ref('idle')
 const historySidebarComponent = ref(null)
 const draftPrimaryHeading = ref(null)
+const openOutlineMenu = ref(-1)
 
 const outlineEdit = reactive({
   reportTitle: '',
@@ -145,6 +156,25 @@ const currentStepKey = computed(() => {
 
 const currentStepIndex = computed(() => stepDefinitions.findIndex((step) => step.key === currentStepKey.value))
 const currentStepNumber = computed(() => currentStepIndex.value + 1)
+const eventInput = computed(() => eventInputSummary(form))
+const draftStepStates = computed(() => deriveDraftStepStates({
+  currentStep: currentStepKey.value,
+  isAnalyzing: isAnalyzing.value,
+  isGeneratingOutline: isGeneratingOutline.value,
+  isRefining: isRefining.value,
+  draftStatus: draftLifecycleStatus.value,
+  hasEditChanges: hasEditChanges.value,
+  isImportingOutline: isImportingOutline.value,
+  isCreatingReportJob: isCreatingReportJob.value,
+  createdReportJob: createdReportJob.value,
+}))
+const materialCoverage = computed(() => deriveMaterialCoverage({
+  materials: form.materials,
+  validLinks: eventInput.value.links.valid,
+  importedPlan: importedPlan.value,
+  collectedSources: eventResult.value?.sources,
+  collectedSourceCount: eventResult.value?.sourceCount,
+}))
 const historyEditorMode = computed(() => editMode.value ? 'edit' : confirmationMode.value ? 'confirm' : '')
 const {
   collapsed: historySidebarCollapsed,
@@ -166,19 +196,6 @@ const historyNavigationMode = computed(() => (
   || hasOutline.value
   || currentStepNumber.value >= 4
 ))
-const expandedStrategyCards = reactive({
-  writingFocus: false,
-  sourceRequirements: false,
-  uncertaintiesToVerify: false,
-})
-
-const sourceTypeTags = [
-  { label: '官方文件', tone: 'official' },
-  { label: '主流媒体', tone: 'media' },
-  { label: '行业组织', tone: 'industry' },
-  { label: '研究报告', tone: 'report' },
-  { label: '企业声明', tone: 'company' },
-]
 
 const analysisCards = computed(() => {
   const item = analysis.value || {}
@@ -204,13 +221,6 @@ const visibleRiskVerifications = computed(() => (
     : riskSummary.value.pendingVerifications.slice(0, 5)
 ))
 const riskVerificationHasMore = computed(() => riskSummary.value.pendingVerifications.length > 5)
-
-function parseLinks(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
 
 function showError(error) {
   errorMessage.value = error instanceof Error ? error.message : String(error)
@@ -256,7 +266,7 @@ async function runAnalyze() {
     eventResult.value = await analyzeDraftEvent({
       title: form.title,
       materials: form.materials,
-      links: parseLinks(form.linksText),
+      links: eventInput.value.links.valid,
       category: form.category,
       region: form.region,
     })
@@ -765,6 +775,13 @@ function moveOutlineItem(index, direction) {
   outlineEdit.outlineItems.splice(nextIndex, 0, item)
 }
 
+function duplicateOutlineItem(index) {
+  const item = outlineEdit.outlineItems[index]
+  if (!item) return
+  outlineEdit.outlineItems.splice(index + 1, 0, cloneOutlineItems([item])[0])
+  openOutlineMenu.value = -1
+}
+
 function moveChildItem(item, childIndex, direction) {
   if (!Array.isArray(item.children)) return
   const nextIndex = childIndex + direction
@@ -836,29 +853,6 @@ function itemToText(item) {
   return String(item ?? '')
 }
 
-function strategyText(item) {
-  const text = itemToText(item).trim()
-  return text.length > 72 ? `${text.slice(0, 72)}...` : text
-}
-
-function strategyVisibleItems(items, key, max = 5) {
-  const list = arrayOrEmpty(items).map(strategyText).filter(Boolean)
-  return expandedStrategyCards[key] ? list : list.slice(0, max)
-}
-
-function strategyHasMore(items, key, max = 5) {
-  return !expandedStrategyCards[key] && arrayOrEmpty(items).length > max
-}
-
-function toggleStrategyCard(key) {
-  expandedStrategyCards[key] = !expandedStrategyCards[key]
-}
-
-function isMandatorySourceRequirement(item) {
-  const text = itemToText(item)
-  return /必须|时间|媒体|来源|标注/.test(text)
-}
-
 function compactList(value) {
   const items = arrayOrEmpty(value).map(itemToText).filter(Boolean)
   return items.slice(0, 4).join('；')
@@ -890,32 +884,6 @@ function linesToArray(value) {
 function versionLabel(item) {
   const type = item?.editType === 'ai_refine' ? 'AI修改版' : item?.editType === 'manual' ? '手动修改版' : 'AI生成版'
   return `V${item?.versionNo || '-'} ${type}`
-}
-
-function versionTypeLabel(item) {
-  if (item?.editType === 'ai_refine') return 'AI修改版'
-  if (item?.editType === 'manual') return '手动修改版'
-  return 'AI生成版'
-}
-
-function versionSummary(item) {
-  return String(item?.userFeedback || (item?.editType === 'manual' ? '手动调整提纲结构' : '基于事件分析生成')).slice(0, 60)
-}
-
-function versionClass(item) {
-  return {
-    active: item.outlineId === currentOutlineId.value,
-    refine: item?.editType === 'ai_refine',
-    manual: item?.editType === 'manual',
-  }
-}
-
-function stepClass(step, index) {
-  return {
-    active: step.key === currentStepKey.value,
-    done: index < currentStepIndex.value,
-    disabled: step.key === 'import' && !isImportReady.value,
-  }
 }
 
 function formatTime(value) {
@@ -968,17 +936,7 @@ watch(() => props.initialEventId, (eventId) => {
     </div>
 
     <template v-else>
-      <nav class="draft-stepper" aria-label="拟稿步骤">
-        <div
-          v-for="(step, index) in stepDefinitions"
-          :key="step.key"
-          class="draft-step"
-          :class="stepClass(step, index)"
-        >
-          <span class="draft-step-index">{{ index + 1 }}</span>
-          <span>{{ step.title }}</span>
-        </div>
-      </nav>
+      <DraftStepNavigation :steps="draftStepStates" />
 
       <div v-if="errorMessage" class="draft-error">{{ errorMessage }}</div>
       <div v-if="notice" class="draft-notice">{{ notice }}</div>
@@ -1013,55 +971,20 @@ watch(() => props.initialEventId, (eventId) => {
           title="打开历史事件"
           @click="leftPanelOpen = true"
         >历</button>
-        <aside v-if="!historyNavigationMode" class="draft-panel draft-left" :class="{ open: leftPanelOpen }">
-          <button class="draft-panel-close" type="button" aria-label="关闭事件栏" @click="leftPanelOpen = false">×</button>
-          <div class="draft-panel-head">
-            <h2>事件源输入</h2>
-            <button class="sci-btn draft-small-btn" type="button" :disabled="isLoadingEvents" @click="loadEvents">刷新</button>
-          </div>
-
-          <label class="draft-field">
-            <span>事件标题</span>
-            <input v-model="form.title" class="sci-input" placeholder="输入需要分析的事件标题" />
-          </label>
-          <label class="draft-field">
-            <span>补充材料</span>
-            <textarea v-model="form.materials" class="sci-input draft-textarea" placeholder="粘贴已知事实、背景、口径或材料片段"></textarea>
-          </label>
-          <label class="draft-field">
-            <span>相关链接</span>
-            <textarea v-model="form.linksText" class="sci-input draft-links" placeholder="一行一个链接"></textarea>
-          </label>
-          <div class="draft-two">
-            <label class="draft-field">
-              <span>类别</span>
-              <input v-model="form.category" class="sci-input" placeholder="例如 欧洲政治" />
-            </label>
-            <label class="draft-field">
-              <span>地区</span>
-              <input v-model="form.region" class="sci-input" placeholder="例如 欧洲" />
-            </label>
-          </div>
-          <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="isAnalyzing" @click="runAnalyze">
-            {{ isAnalyzing ? '分析中...' : '开始分析' }}
-          </button>
-
-          <div class="draft-history">
-            <h3>最近事件</h3>
-            <button
-              v-for="item in eventList"
-              :key="item.eventId"
-              class="draft-history-item"
-              type="button"
-              @click="openEvent(item.eventId)"
-            >
-              <strong>{{ item.title }}</strong>
-              <span>{{ formatTime(item.createdAt) }}</span>
-              <small v-if="item.ownerUsername">{{ item.ownerUsername }}</small>
-            </button>
-            <div v-if="!eventList.length" class="draft-empty">暂无事件分析</div>
-          </div>
-        </aside>
+        <EventSourcePanel
+          v-if="!historyNavigationMode"
+          class="draft-left"
+          :class="{ open: leftPanelOpen }"
+          :model-value="form"
+          :summary="eventInput"
+          :events="eventList"
+          :current-event-id="currentEventId"
+          :loading="isLoadingEvents"
+          @update:model-value="Object.assign(form, $event)"
+          @refresh="loadEvents"
+          @select-event="openEvent"
+          @create-event="startNewEvent"
+        />
 
         <div v-if="autoCollapseNoticeVisible" class="draft-history-auto-notice" role="status">
           <span>提纲已生成，历史事件已收起，以扩大编辑区域。</span>
@@ -1069,11 +992,13 @@ watch(() => props.initialEventId, (eventId) => {
         </div>
 
         <section class="draft-main-workarea">
-          <div v-if="currentStepKey === 'input'" class="draft-state-card draft-empty-state">
-            <span class="draft-state-kicker">Step 1</span>
-            <h2>先输入事件源</h2>
-            <p>左侧填写事件标题、补充材料、相关链接、类别和地区后，点击“开始分析”进入事件分析步骤。</p>
-          </div>
+          <EventPreviewPanel
+            v-if="currentStepKey === 'input'"
+            :form="form"
+            :summary="eventInput"
+            :analyzing="isAnalyzing"
+            @analyze="runAnalyze"
+          />
 
           <div v-else-if="currentStepKey === 'analysis'" class="draft-state-card">
             <div class="draft-main-head">
@@ -1284,11 +1209,20 @@ watch(() => props.initialEventId, (eventId) => {
                     <button class="draft-collapse-btn" type="button" @click="toggleOutlineItem(item)">
                       {{ item.expanded === false ? '展开' : '收起' }}
                     </button>
-                    <div class="draft-outline-actions">
-                      <button class="sci-btn draft-small-btn" type="button" :disabled="index === 0" @click="moveOutlineItem(index, -1)">上移</button>
-                      <button class="sci-btn draft-small-btn" type="button" :disabled="index === outlineEdit.outlineItems.length - 1" @click="moveOutlineItem(index, 1)">下移</button>
-                      <button class="sci-btn draft-small-btn" type="button" @click="addChildItem(item)">添加二级标题</button>
-                      <button class="sci-btn draft-small-btn draft-danger-btn" type="button" @click="removeOutlineItem(index)">删除</button>
+                    <div class="draft-outline-actions-menu">
+                      <button
+                        type="button"
+                        aria-label="更多目录操作"
+                        :aria-expanded="openOutlineMenu === index"
+                        @click.stop="openOutlineMenu = openOutlineMenu === index ? -1 : index"
+                      >•••</button>
+                      <div v-if="openOutlineMenu === index" class="draft-outline-actions-popover">
+                        <button type="button" @click="addChildItem(item); openOutlineMenu = -1">添加二级标题</button>
+                        <button type="button" :disabled="index === 0" @click="moveOutlineItem(index, -1); openOutlineMenu = -1">上移</button>
+                        <button type="button" :disabled="index === outlineEdit.outlineItems.length - 1" @click="moveOutlineItem(index, 1); openOutlineMenu = -1">下移</button>
+                        <button type="button" @click="duplicateOutlineItem(index)">复制</button>
+                        <button class="danger" type="button" @click="removeOutlineItem(index); openOutlineMenu = -1">删除</button>
+                      </div>
                     </div>
                   </div>
                   <div v-if="item.expanded !== false" class="draft-outline-edit-body">
@@ -1378,115 +1312,14 @@ watch(() => props.initialEventId, (eventId) => {
               </div>
             </div>
 
-            <div class="draft-directory">
-              <article v-for="(item, index) in displayOutline.outlineItems" :key="`${index}-${item.title}`" class="draft-directory-item">
-                <h3>{{ outlineNumber(index) }}、{{ item.title }}</h3>
-                <p>{{ item.summary }}</p>
-                <div v-if="item.children?.length" class="draft-directory-children">
-                  <section v-for="(child, childIndex) in item.children" :key="`${childIndex}-${child.title}`" class="draft-directory-child">
-                    <h4>（{{ outlineNumber(childIndex) }}）{{ child.title }}</h4>
-                    <p>{{ child.summary }}</p>
-                  </section>
-                </div>
-              </article>
-            </div>
+            <DraftOutlineView :outline="displayOutline" @edit="enterEditMode" />
 
-            <div class="draft-strategy-section">
-              <div class="draft-strategy-head">
-                <div>
-                  <h3>写作策略与核查</h3>
-                  <p>用于明确本篇编报的写作重点、来源使用要求和后续核实事项。</p>
-                </div>
-              </div>
-              <div class="draft-strategy-grid">
-                <section class="draft-strategy-card focus">
-                  <div class="draft-strategy-card-head">
-                    <span class="draft-strategy-icon">P</span>
-                    <div>
-                      <h4>写作重点</h4>
-                      <p>突出本篇编报应该展开的核心方向。</p>
-                    </div>
-                  </div>
-                  <ul v-if="displayOutline.writingFocus.length" class="draft-strategy-list focus-list">
-                    <li v-for="(item, index) in strategyVisibleItems(displayOutline.writingFocus, 'writingFocus')" :key="`focus-${index}`">
-                      <span></span>
-                      <b>{{ strategyText(item) }}</b>
-                    </li>
-                  </ul>
-                  <p v-else class="draft-strategy-empty">暂无写作重点，可在编辑提纲时补充。</p>
-                  <button
-                    v-if="strategyHasMore(displayOutline.writingFocus, 'writingFocus') || expandedStrategyCards.writingFocus"
-                    class="draft-strategy-more"
-                    type="button"
-                    @click="toggleStrategyCard('writingFocus')"
-                  >
-                    {{ expandedStrategyCards.writingFocus ? '收起' : '展开更多' }}
-                  </button>
-                </section>
-
-                <section class="draft-strategy-card source">
-                  <div class="draft-strategy-card-head">
-                    <span class="draft-strategy-icon">L</span>
-                    <div>
-                      <h4>来源要求</h4>
-                      <p>形成后续正文的来源核查清单。</p>
-                    </div>
-                  </div>
-                  <div class="draft-source-tags">
-                    <span v-for="tag in sourceTypeTags" :key="tag.label" :class="tag.tone">{{ tag.label }}</span>
-                  </div>
-                  <ol v-if="displayOutline.sourceRequirements.length" class="draft-source-list">
-                    <li
-                      v-for="(item, index) in strategyVisibleItems(displayOutline.sourceRequirements, 'sourceRequirements')"
-                      :key="`source-${index}`"
-                      :class="{ mandatory: isMandatorySourceRequirement(item) }"
-                    >
-                      <span>{{ index + 1 }}</span>
-                      <b>{{ strategyText(item) }}</b>
-                    </li>
-                  </ol>
-                  <p v-else class="draft-strategy-empty">暂无来源要求，后续正文仍建议优先使用官方文件、权威媒体和可追溯来源。</p>
-                  <button
-                    v-if="strategyHasMore(displayOutline.sourceRequirements, 'sourceRequirements') || expandedStrategyCards.sourceRequirements"
-                    class="draft-strategy-more"
-                    type="button"
-                    @click="toggleStrategyCard('sourceRequirements')"
-                  >
-                    {{ expandedStrategyCards.sourceRequirements ? '收起' : '展开更多' }}
-                  </button>
-                </section>
-
-                <section class="draft-strategy-card verify">
-                  <div class="draft-strategy-card-head">
-                    <span class="draft-strategy-icon">!</span>
-                    <div>
-                      <h4>待核实事项</h4>
-                      <p>避免将未确认事实直接写入正文。</p>
-                    </div>
-                  </div>
-                  <ol v-if="displayOutline.uncertaintiesToVerify.length" class="draft-verify-list">
-                    <li
-                      v-for="(item, index) in strategyVisibleItems(displayOutline.uncertaintiesToVerify, 'uncertaintiesToVerify')"
-                      :key="`verify-${index}`"
-                    >
-                      <span>{{ index + 1 }}</span>
-                      <b>{{ strategyText(item) }}</b>
-                    </li>
-                  </ol>
-                  <p v-else class="draft-strategy-empty">
-                    暂无明显待核实事项，但正式编报前仍建议复核关键时间、主体表态和来源链接。
-                  </p>
-                  <button
-                    v-if="strategyHasMore(displayOutline.uncertaintiesToVerify, 'uncertaintiesToVerify') || expandedStrategyCards.uncertaintiesToVerify"
-                    class="draft-strategy-more"
-                    type="button"
-                    @click="toggleStrategyCard('uncertaintiesToVerify')"
-                  >
-                    {{ expandedStrategyCards.uncertaintiesToVerify ? '收起' : '展开更多' }}
-                  </button>
-                </section>
-              </div>
-            </div>
+            <StrategyTabs
+              :writing-focus="displayOutline.writingFocus"
+              :source-requirements="displayOutline.sourceRequirements"
+              :uncertainties-to-verify="displayOutline.uncertaintiesToVerify"
+              :editable="false"
+            />
           </div>
 
           <div v-else class="draft-state-card draft-empty-state">
@@ -1496,150 +1329,46 @@ watch(() => props.initialEventId, (eventId) => {
           </div>
         </section>
 
-        <aside class="draft-panel draft-right" :class="{ open: rightPanelOpen }">
-          <button class="draft-panel-close" type="button" aria-label="关闭操作面板" @click="rightPanelOpen = false">×</button>
-          <template v-if="editMode">
-            <section class="draft-side-section draft-ai-revision-panel">
-              <div class="draft-side-head">
-                <div>
-                  <h2>AI 修改建议</h2>
-                  <small>让 AI 按你的要求生成新版本</small>
-                </div>
-                <span v-if="isRefining" class="draft-side-status running">调整中</span>
-              </div>
-              <label class="draft-field">
-                <span>修改要求</span>
-                <textarea
-                  v-model="refineFeedback"
-                  class="sci-input draft-revision-textarea"
-                  placeholder="例如：补充某个角度、调整章节顺序、强化来源要求或减少重复内容。"
-                ></textarea>
-              </label>
-              <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="isRefining || !currentOutlineId || hasEditChanges" @click="refineOutline">
-                {{ isRefining ? 'AI 正在调整...' : '提交修改建议' }}
-              </button>
-              <p v-if="hasEditChanges" class="draft-side-hint">请先保存或取消当前手动修改，再提交 AI 建议。</p>
-            </section>
-
-            <section class="draft-side-section draft-version-timeline">
-              <div class="draft-side-head">
-                <h2>版本记录</h2>
-                <span>{{ outlineVersions.length }} 个版本</span>
-              </div>
-              <button
-                v-for="item in outlineVersions"
-                :key="item.outlineId"
-                class="draft-version-timeline-item"
-                :class="versionClass(item)"
-                type="button"
-                @click="loadOutline(item.outlineId)"
-              >
-                <span class="draft-version-dot"></span>
-                <div>
-                  <strong>V{{ item.versionNo }} · {{ versionTypeLabel(item) }}</strong>
-                  <span>{{ formatTime(item.createdAt) }}</span>
-                  <small>{{ item.outlineId === currentOutlineId ? '当前编辑版本' : versionSummary(item) }}</small>
-                </div>
-              </button>
-              <div v-if="!outlineVersions.length" class="draft-empty">暂无提纲版本</div>
-            </section>
-
-            <section class="draft-side-section draft-next-step-panel">
-              <h2>下一步操作</h2>
-              <p>保存修改后确认当前版本，即可继续进入深度编报。</p>
-              <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="hasEditChanges || isSavingManual" @click="confirmCurrentVersion">
-                确认当前版本并继续
-              </button>
-              <span v-if="hasEditChanges" class="draft-side-hint">当前有未保存修改</span>
-            </section>
-          </template>
-
-          <template v-else>
-          <section class="draft-side-section">
-            <div class="draft-side-head">
-              <h2>版本列表</h2>
-              <span>{{ outlineVersions.length }} 个版本</span>
-            </div>
-            <button
-              v-for="item in outlineVersions"
-              :key="item.outlineId"
-              class="draft-version"
-              :class="versionClass(item)"
-              type="button"
-              @click="loadOutline(item.outlineId)"
-            >
-              <strong>V{{ item.versionNo }} {{ versionTypeLabel(item) }}</strong>
-              <span>{{ formatTime(item.createdAt) }}</span>
-              <small>{{ versionSummary(item) }}</small>
-            </button>
-            <div v-if="!outlineVersions.length" class="draft-empty">暂无提纲版本</div>
-          </section>
-
-          <section class="draft-side-section">
-            <h2>提纲操作</h2>
-            <label class="draft-field">
-              <span>生成偏好</span>
-              <textarea v-model="outlinePreference" class="sci-input draft-links" placeholder="例如突出涉我风险、强化各方态度来源"></textarea>
-            </label>
-            <button class="sci-btn sci-btn-primary draft-primary" type="button" :disabled="isGeneratingOutline || !currentEventId" @click="createOutline">
-              {{ isGeneratingOutline ? '生成中...' : '生成提纲' }}
-            </button>
-
-            <label class="draft-field draft-refine-field">
-              <span>AI 修改要求</span>
-              <textarea v-model="refineFeedback" class="sci-input draft-links" placeholder="说明希望调整的目录顺序、一级标题、二级标题或写作重点"></textarea>
-            </label>
-            <button class="sci-btn draft-primary" type="button" :disabled="isRefining || !currentOutlineId" @click="refineOutline">
-              {{ isRefining ? '修改中...' : 'AI 修改提纲' }}
-            </button>
-            <div v-if="editMode" class="draft-editing-side-note">
-              当前正在编辑 {{ editingVersionLabel }}，保存后将生成新的手动修改版本，不会覆盖原版本。
-            </div>
-            <button class="sci-btn draft-primary" type="button" :disabled="!selectedOutline || editMode" @click="enterEditMode">编辑提纲</button>
-            <button class="sci-btn draft-primary" type="button" :disabled="!hasOutline || editMode" @click="confirmCurrentVersion">确认当前版本</button>
-          </section>
-
-          <section class="draft-side-section draft-import-box">
-            <h2>导入深度编报</h2>
-            <div class="draft-import-status" :class="{ ready: isVersionConfirmed || importedPlan }">
-              <strong>{{ importedPlan ? importedVersionLabel : selectedVersionLabel }}</strong>
-              <span v-if="editMode">请先保存或取消编辑后再导入</span>
-              <span v-else-if="!canImportDraftOutline">当前账号无权导入深度编报</span>
-              <span v-else-if="!isVersionConfirmed && !importedPlan">请先确认当前提纲版本</span>
-              <span v-else>{{ importStatus }}</span>
-            </div>
-            <div v-if="importedPlan" class="draft-import-plan-card">
-              <span>Plan ID</span>
-              <strong>{{ importedPlanIdShort }}</strong>
-              <small>{{ formatTime(importedPlan.createdAt) }}</small>
-              <b>{{ importedPlan.plan?.reportTitle || displayOutline.reportTitle || '深度编报规划' }}</b>
-              <p>{{ importedPlan.plan?.reportTheme || displayOutline.reportTheme || '已生成可供 report-jobs 使用的规划。' }}</p>
-            </div>
-            <button
-              v-if="!importedPlan"
-              class="sci-btn sci-btn-primary draft-primary"
-              type="button"
-              :disabled="!isImportReady || isImportingOutline || editMode"
-              @click="importCurrentOutline"
-            >
-              {{ isImportingOutline ? '导入中...' : '导入深度编报' }}
-            </button>
-            <button
-              v-else
-              class="sci-btn sci-btn-primary draft-primary"
-              type="button"
-              :disabled="!isReportJobReady || isCreatingReportJob"
-              @click="createDeepReportJob"
-            >
-              {{ isCreatingReportJob ? '创建中...' : '创建深度编报任务' }}
-            </button>
-            <p v-if="editMode">请先保存或取消编辑后再导入，未保存内容不会进入深度编报。</p>
-            <p v-else-if="!canImportDraftOutline">当前账号无权导入深度编报。</p>
-            <p v-else-if="importedPlan">创建任务后将进入现有编报任务进度页，任务会携带 eventId、outlineId、planId。</p>
-            <p v-else>确认当前版本后可生成深度编报规划，不会覆盖原提纲版本。</p>
-          </section>
-          </template>
-        </aside>
+        <DraftContextPanel
+          :class="{ open: rightPanelOpen }"
+          :current-step="currentStepKey"
+          :input-summary="eventInput"
+          :coverage="materialCoverage"
+          :events="eventList"
+          :versions="outlineVersions"
+          :current-outline-id="currentOutlineId"
+          :selected-version-label="selectedVersionLabel"
+          :imported-version-label="importedVersionLabel"
+          :imported-plan-id-short="importedPlanIdShort"
+          :import-status="importStatus"
+          :display-outline="displayOutline"
+          :imported-plan="importedPlan"
+          :can-import="canImportDraftOutline"
+          :is-version-confirmed="isVersionConfirmed"
+          :is-import-ready="isImportReady"
+          :is-report-job-ready="isReportJobReady"
+          :editing="editMode"
+          :has-edit-changes="hasEditChanges"
+          :is-generating-outline="isGeneratingOutline"
+          :is-refining="isRefining"
+          :is-saving="isSavingManual"
+          :is-importing-outline="isImportingOutline"
+          :is-creating-report-job="isCreatingReportJob"
+          :outline-preference="outlinePreference"
+          :refine-feedback="refineFeedback"
+          @close="rightPanelOpen = false"
+          @open-left="leftPanelOpen = true"
+          @reanalyze="runAnalyze"
+          @generate-outline="createOutline"
+          @refine="refineOutline"
+          @edit="enterEditMode"
+          @confirm="confirmCurrentVersion"
+          @select-version="loadOutline"
+          @import-outline="importCurrentOutline"
+          @create-report="createDeepReportJob"
+          @update:outline-preference="outlinePreference = $event"
+          @update:refine-feedback="refineFeedback = $event"
+        />
       </section>
     </template>
   </main>
@@ -2606,287 +2335,6 @@ watch(() => props.initialEventId, (eventId) => {
   line-height: 1.5;
 }
 
-.draft-strategy-section {
-  margin-top: 24px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: #fff;
-  border-radius: 8px;
-  padding: 18px;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.04);
-}
-
-.draft-strategy-editor {
-  margin: 18px 0;
-}
-
-.draft-strategy-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-}
-
-.draft-strategy-head h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 900;
-  letter-spacing: 0;
-}
-
-.draft-strategy-head p {
-  margin: 5px 0 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.draft-strategy-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  align-items: stretch;
-}
-
-.draft-strategy-card {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 236px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 8px;
-  padding: 14px;
-}
-
-.draft-strategy-card.focus {
-  border-color: #bfdbfe;
-  background: #f8fbff;
-}
-
-.draft-strategy-card.source {
-  border-color: #bbf7d0;
-  background: #fbfefc;
-}
-
-.draft-strategy-card.verify {
-  border-color: #fed7aa;
-  background: #fffaf3;
-}
-
-.draft-strategy-card-head {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  margin-bottom: 12px;
-}
-
-.draft-strategy-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 900;
-  line-height: 1;
-}
-
-.draft-strategy-card.focus .draft-strategy-icon {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.draft-strategy-card.source .draft-strategy-icon {
-  background: #dcfce7;
-  color: #15803d;
-}
-
-.draft-strategy-card.verify .draft-strategy-icon {
-  background: #ffedd5;
-  color: #c2410c;
-}
-
-.draft-strategy-card h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 900;
-  line-height: 1.4;
-}
-
-.draft-strategy-card-head p {
-  margin: 3px 0 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.draft-strategy-list,
-.draft-source-list,
-.draft-verify-list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.draft-strategy-list li,
-.draft-source-list li,
-.draft-verify-list li {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-  border-radius: 8px;
-  padding: 8px 9px;
-  color: #334155;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.draft-strategy-list li {
-  background: #eff6ff;
-}
-
-.draft-strategy-list li span {
-  flex: 0 0 8px;
-  width: 8px;
-  height: 8px;
-  margin-top: 5px;
-  border-radius: 999px;
-  background: #2563eb;
-}
-
-.draft-strategy-list li b,
-.draft-source-list li b,
-.draft-verify-list li b {
-  min-width: 0;
-  color: inherit;
-  font-weight: 800;
-  word-break: break-word;
-}
-
-.draft-source-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.draft-source-tags span {
-  border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 4px 7px;
-  font-size: 11px;
-  font-weight: 900;
-  line-height: 1.2;
-}
-
-.draft-source-tags .official {
-  border-color: #bbf7d0;
-  background: #dcfce7;
-  color: #166534;
-}
-
-.draft-source-tags .media {
-  border-color: #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.draft-source-tags .industry {
-  border-color: #fed7aa;
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.draft-source-tags .report {
-  border-color: #e9d5ff;
-  background: #faf5ff;
-  color: #7e22ce;
-}
-
-.draft-source-tags .company {
-  border-color: #cbd5e1;
-  background: #f8fafc;
-  color: #475569;
-}
-
-.draft-source-list li {
-  background: #f0fdf4;
-}
-
-.draft-source-list li.mandatory {
-  border: 1px solid #86efac;
-  background: #ecfdf5;
-}
-
-.draft-source-list li span,
-.draft-verify-list li span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.draft-source-list li span {
-  background: #16a34a;
-}
-
-.draft-verify-list li {
-  background: #fff7ed;
-}
-
-.draft-verify-list li span {
-  background: #f59e0b;
-}
-
-.draft-strategy-empty {
-  margin: 0;
-  border: 1px dashed rgba(148, 163, 184, 0.32);
-  border-radius: 8px;
-  padding: 10px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.65;
-}
-
-.draft-strategy-more {
-  width: fit-content;
-  margin-top: auto;
-  padding: 8px 0 0;
-  border: 0;
-  background: transparent;
-  color: #2563eb;
-  font-size: 12px;
-  font-weight: 900;
-  cursor: pointer;
-}
-
-.draft-strategy-textarea {
-  min-height: 132px;
-  resize: vertical;
-}
-
-.draft-strategy-card small {
-  margin-top: 8px;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .draft-editor-card {
   padding-bottom: 34px;
 }
@@ -3040,6 +2488,64 @@ watch(() => props.initialEventId, (eventId) => {
 .draft-outline-actions {
   justify-content: flex-end;
 }
+
+.draft-outline-actions-menu {
+  position: relative;
+  justify-self: end;
+}
+
+.draft-outline-actions-menu > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.draft-outline-actions-menu > button:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.draft-outline-actions-menu > button:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.2);
+  outline-offset: 2px;
+}
+
+.draft-outline-actions-popover {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 9;
+  width: 150px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.14);
+}
+
+.draft-outline-actions-popover button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #334155;
+  border-radius: 6px;
+  padding: 8px 9px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.draft-outline-actions-popover button:hover:not(:disabled) { background: #f1f5f9; }
+.draft-outline-actions-popover button:disabled { color: #cbd5e1; cursor: not-allowed; }
+.draft-outline-actions-popover button.danger { color: #b91c1c; }
 
 .draft-outline-edit-body {
   margin-top: 14px;
@@ -3475,7 +2981,6 @@ watch(() => props.initialEventId, (eventId) => {
   .draft-two,
   .draft-edit-tail,
   .draft-edit-fields,
-  .draft-strategy-grid,
   .draft-outline-edit-head,
   .draft-strategy-edit-row,
   .draft-analysis-row {

@@ -90,7 +90,7 @@ assert.match(assistantSource, /ref="draftPrimaryHeading" tabindex="-1"/);
 assert.match(assistantSource, /selectedOutline\.value\?\.outlineId \? 'completed' : 'idle'/);
 assert.match(assistantSource, /aria-label="打开历史事件"/);
 assert.match(assistantSource, /@media \(max-width: 1099px\)[\s\S]*\.draft-mobile-history-trigger/);
-assert.match(assistantSource, /<aside v-if="!historyNavigationMode" class="draft-panel draft-left"/);
+assert.match(assistantSource, /<EventSourcePanel[\s\S]*v-if="!historyNavigationMode"/);
 
 // 14. Generation failure does not auto-collapse.
 assert.equal(shouldAutoCollapseHistory({ currentStep: 3, draftStatus: 'failed' }), false);

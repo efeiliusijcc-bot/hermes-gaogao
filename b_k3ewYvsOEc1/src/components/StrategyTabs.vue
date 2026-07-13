@@ -5,6 +5,7 @@ const props = defineProps({
   writingFocus: { type: Array, default: () => [] },
   sourceRequirements: { type: Array, default: () => [] },
   uncertaintiesToVerify: { type: Array, default: () => [] },
+  editable: { type: Boolean, default: true },
 })
 
 const emit = defineEmits(['add', 'move', 'remove', 'duplicate', 'update', 'restore'])
@@ -131,12 +132,13 @@ onBeforeUnmount(() => {
           v-for="(item, index) in activeItems"
           :key="`${activeTab}-${index}`"
           class="strategy-item"
-          draggable="true"
+          :class="{ readonly: !editable }"
+          :draggable="editable"
           @dragstart="draggingIndex = index"
           @dragover.prevent
           @drop="onDrop(index)"
         >
-          <button class="strategy-drag" type="button" aria-label="拖动排序" title="拖动排序">⋮⋮</button>
+          <button v-if="editable" class="strategy-drag" type="button" aria-label="拖动排序" title="拖动排序">⋮⋮</button>
           <div class="strategy-item-content">
             <template v-if="editingIndex === index">
               <label class="strategy-edit-label">
@@ -154,7 +156,7 @@ onBeforeUnmount(() => {
               <p>{{ itemText(item) }}</p>
             </template>
           </div>
-          <div v-if="editingIndex !== index" class="strategy-item-menu">
+          <div v-if="editable && editingIndex !== index" class="strategy-item-menu">
             <button type="button" aria-label="更多条目操作" :aria-expanded="openMenu === `${activeTab}-${index}`" @click.stop="openMenu = openMenu === `${activeTab}-${index}` ? '' : `${activeTab}-${index}`">•••</button>
             <div v-if="openMenu === `${activeTab}-${index}`" class="strategy-item-popover">
               <button type="button" :disabled="index === 0" @click="menuAction('up', index)">上移</button>
@@ -168,10 +170,10 @@ onBeforeUnmount(() => {
         <div v-if="!activeItems.length" class="strategy-empty">当前还没有{{ activeDefinition.label }}。</div>
       </div>
 
-      <button class="strategy-add" type="button" @click="emit('add', activeTab)">+ {{ activeDefinition.addLabel }}</button>
+      <button v-if="editable" class="strategy-add" type="button" @click="emit('add', activeTab)">+ {{ activeDefinition.addLabel }}</button>
     </div>
 
-    <div v-if="deletedItem" class="strategy-undo" role="status">
+    <div v-if="editable && deletedItem" class="strategy-undo" role="status">
       <span>已删除一条{{ tabDefinitions.find((item) => item.key === deletedItem.key)?.label }}</span>
       <button type="button" @click="undoDelete">撤销</button>
     </div>
@@ -194,6 +196,7 @@ onBeforeUnmount(() => {
 .strategy-panel-head p { margin: 5px 0 0; color: #64748b; font-size: 13px; line-height: 1.7; }
 .strategy-item-list { display: grid; gap: 10px; margin-top: 18px; }
 .strategy-item { position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr) 38px; align-items: start; gap: 10px; min-width: 0; border: 1px solid #e2e8f0; background: #fbfdff; border-radius: 10px; padding: 14px 12px; }
+.strategy-item.readonly { grid-template-columns: minmax(0, 1fr); padding: 15px 16px; }
 .strategy-item:hover { border-color: #bfdbfe; background: #fff; }
 .strategy-drag { width: 32px; height: 34px; border: 0; background: transparent; color: #94a3b8; cursor: grab; font-size: 16px; letter-spacing: -4px; }
 .strategy-drag:active { cursor: grabbing; }
