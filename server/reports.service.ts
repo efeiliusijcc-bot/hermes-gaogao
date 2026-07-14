@@ -5252,7 +5252,7 @@ export class ReportsService implements OnModuleDestroy {
 
   private async toolSearchSources(job: JobRecord): Promise<ReportSourceListItem[]> {
     const maxResearchFilesPerDirectory = 50;
-    const maxRawItems = 300;
+    const maxEligibleItems = 300;
     const dir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
     const contextSources: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [];
     const payloadContext = this.contextObjectFromPayload(job.payload as unknown as Record<string, unknown>);
@@ -5285,8 +5285,8 @@ export class ReportsService implements OnModuleDestroy {
     }
 
     const candidates = rawItems
-      .slice(0, maxRawItems)
       .filter(({ item, evidenceKind }) => this.isHighValueToolSearchItem(item, evidenceKind))
+      .slice(0, maxEligibleItems)
       .map(({ item, evidenceKind }, index) => ({
         item: item as Record<string, unknown>,
         evidenceKind,
@@ -5389,7 +5389,6 @@ export class ReportsService implements OnModuleDestroy {
       } else if (candidate && typeof candidate === 'object') {
         result.push(...this.extractToolSearchRawItems(candidate, depth + 1));
       }
-      if (result.length >= 300) break;
     }
     return result;
   }

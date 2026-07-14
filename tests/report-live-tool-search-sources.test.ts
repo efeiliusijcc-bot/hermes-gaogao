@@ -74,6 +74,26 @@ assert.deepEqual(sourcesWhenResolverFails.map((item) => item.url).sort(), [
 ].sort());
 
 service.resolveHermesJobDir = async () => null;
+sharedResearchEntries.push('research_eligible.json');
+files['/app/hermes-inbox/job-1/research/research_eligible.json'] = JSON.stringify({
+  sources: Array.from({ length: 301 }, (_, index) => ({
+    title: `Low-value candidate ${index}`,
+    url: `https://example.com/low-candidate-${index}`,
+    engine: 'tavily',
+    credibility_score: 0.1,
+  })),
+  evidence_cards: [
+    { title: 'Late evidence source', url: 'https://example.com/late-evidence', engine: 'web_fetch' },
+  ],
+});
+
+const eligibleSources = await service.toolSearchSources({ jobId, payload: {} });
+
+assert.ok(
+  eligibleSources.some((item) => item.url === 'https://example.com/late-evidence'),
+  'expected evidence after low-value candidates to survive eligible bounds',
+);
+
 for (let index = 0; index < 75; index += 1) {
   const name = `research_extra_${index}.json`;
   sharedResearchEntries.push(name);
