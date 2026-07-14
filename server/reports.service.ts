@@ -4953,13 +4953,18 @@ export class ReportsService implements OnModuleDestroy {
     const citationNumbers = this.parseCitationNumbers(markdown);
     const [structured, toolSearch, crawler] = await Promise.all([
       this.structuredReportSources(job),
-      this.toolSearchSources(job),
+      this.reportCitationToolSearchSources(job),
       this.crawlerReportSources(job),
     ]);
     const acceptedSources = [...structured, ...toolSearch, ...crawler];
     const acceptedByUrl = new Map(
       acceptedSources
         .map((source) => [this.normalizeSourceUrl(source.url), source] as const)
+        .filter(([url]) => Boolean(url)),
+    );
+    const toolSearchByCanonicalUrl = new Map(
+      toolSearch
+        .map((source) => [source.url ? this.canonicalToolSearchUrl(source.url) : '', source] as const)
         .filter(([url]) => Boolean(url)),
     );
     const titleKey = (value: unknown) => String(value || '')
@@ -4977,9 +4982,11 @@ export class ReportsService implements OnModuleDestroy {
     return allNumbers.map((number, index) => {
       const reference = references.get(number);
       const referenceUrl = this.normalizeSourceUrl(reference?.url);
+      const canonicalReferenceUrl = reference?.url ? this.canonicalToolSearchUrl(reference.url) : '';
       const referenceTitle = titleKey(reference?.title);
       const matchedSource = reference
         ? (referenceUrl ? acceptedByUrl.get(referenceUrl) : undefined) ||
+          (canonicalReferenceUrl ? toolSearchByCanonicalUrl.get(canonicalReferenceUrl) : undefined) ||
           (referenceTitle ? acceptedByTitle.get(referenceTitle) : undefined)
         : structured[number - 1];
       const rawReferenceText = reference?.rawReferenceText || reference?.summary || reference?.title || '';
@@ -5267,8 +5274,22 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private async toolSearchSources(job: JobRecord): Promise<ReportSourceListItem[]> {
+    const rawItems = await this.collectToolSearchRawItems(job);
+    const highValueItems = rawItems
+      .filter(({ item, evidenceKind }) => this.isHighValueToolSearchItem(item, evidenceKind))
+      .slice(0, 300);
+    return this.normalizeAndDedupeToolSearchSources(highValueItems).slice(0, 50);
+  }
+
+  private async reportCitationToolSearchSources(job: JobRecord): Promise<ReportSourceListItem[]> {
+    const rawItems = await this.collectToolSearchRawItems(job);
+    return this.normalizeAndDedupeToolSearchSources(rawItems);
+  }
+
+  private async collectToolSearchRawItems(
+    job: JobRecord,
+  ): Promise<Array<{ item: unknown; evidenceKind: ReportEvidenceKind }>> {
     const maxResearchFilesPerDirectory = 50;
-    const maxEligibleItems = 300;
     const dir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
     const contextSources: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [];
     const payloadContext = this.contextObjectFromPayload(job.payload as unknown as Record<string, unknown>);
@@ -5300,9 +5321,13 @@ export class ReportsService implements OnModuleDestroy {
       }
     }
 
+    return rawItems;
+  }
+
+  private normalizeAndDedupeToolSearchSources(
+    rawItems: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }>,
+  ): ReportSourceListItem[] {
     const candidates = rawItems
-      .filter(({ item, evidenceKind }) => this.isHighValueToolSearchItem(item, evidenceKind))
-      .slice(0, maxEligibleItems)
       .map(({ item, evidenceKind }, index) => ({
         item: item as Record<string, unknown>,
         evidenceKind,
@@ -5322,7 +5347,7 @@ export class ReportsService implements OnModuleDestroy {
       }
     }
 
-    return this.mergeReportSourceItems([...deduped.values()].map((candidate) => candidate.source), 'tool_search').slice(0, 50);
+    return this.mergeReportSourceItems([...deduped.values()].map((candidate) => candidate.source), 'tool_search');
   }
 
   private async toolSearchResearchDirs(job: JobRecord): Promise<string[]> {
@@ -5358,10 +5383,12 @@ export class ReportsService implements OnModuleDestroy {
   private canonicalToolSearchUrl(value: string): string {
     try {
       const url = new URL(value);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
       url.hash = '';
       for (const key of [...url.searchParams.keys()]) {
         if (/^(utm_.+|iref|ref|source)$/i.test(key)) url.searchParams.delete(key);
       }
+      url.searchParams.sort();
       url.hostname = url.hostname.toLowerCase();
       return url.toString();
     } catch {
@@ -5414,7 +5441,7 @@ export class ReportsService implements OnModuleDestroy {
     if (normalized === 'sources' || normalized === 'source_list') return 'research_source';
     if (normalized === 'documents') return 'research_source';
     if (normalized === 'evidence_cards' || normalized === 'evidencecards') return 'evidence_card';
-    if (normalized === 'key_findings' || normalized === 'keyfindings' || normalized === 'verification_needed') return 'evidence_card';
+    if (normalized === 'key_findings' || normalized === 'keyfindings' || normalized === 'verification_needed') return 'research_source';
     return null;
   }
 
@@ -5427,8 +5454,7 @@ export class ReportsService implements OnModuleDestroy {
       this.firstString(source, ['source_type', 'type', 'sourceType']),
       this.firstString(source, ['url', 'source_url', 'data_source_url', 'sourceUrl']),
     ].join(' ').toLowerCase();
-    return /\b(exa|firecrawl|tavily|tavily_extract)\b/.test(haystack)
-      || (evidenceKind === 'evidence_card' && /\bweb_fetch\b/.test(haystack));
+    return /\b(exa|firecrawl|tavily|tavily_extract|web_fetch)\b/.test(haystack);
   }
 
   private normalizeToolSearchSourceItem(
@@ -5439,15 +5465,14 @@ export class ReportsService implements OnModuleDestroy {
     if (!item || typeof item !== 'object') return null;
     const source = item as Record<string, unknown>;
     const normalized = this.normalizeSourceRecord(source, index, 'tool_search');
+    const safeUrl = this.safeToolSearchUrl(normalized.url);
+    if (!safeUrl) return null;
     const inferredEngine = this.inferToolSearchEngine(normalized, source);
-    const engine = inferredEngine || (
-      evidenceKind === 'evidence_card' && /\bweb_fetch\b/i.test(JSON.stringify(source))
-        ? 'tavily_extract'
-        : undefined
-    );
+    const engine = inferredEngine || (/\bweb_fetch\b/i.test(JSON.stringify(source)) ? 'tavily_extract' : undefined);
     if (!engine) return null;
     return {
       ...normalized,
+      url: safeUrl,
       sourceGroup: 'tool_search',
       sourceOrigin: 'tool_search',
       evidenceKind,
@@ -5456,6 +5481,17 @@ export class ReportsService implements OnModuleDestroy {
       status: normalized.status || this.firstString(source, ['success']) || 'collected',
       method: normalized.method || this.toolSearchMethodLabel(engine),
     };
+  }
+
+  private safeToolSearchUrl(value: unknown): string {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      const url = new URL(raw);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? raw : '';
+    } catch {
+      return '';
+    }
   }
 
   private inferDatabaseEngine(item: Partial<ReportSourceListItem>, raw?: Record<string, unknown>): ReportSourceEngine {
