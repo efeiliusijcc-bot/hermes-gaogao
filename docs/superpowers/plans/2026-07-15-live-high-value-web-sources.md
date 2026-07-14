@@ -283,6 +283,13 @@ git add b_k3ewYvsOEc1/src/components/DataCanvas.vue tests/frontend-live-source-r
 git commit -m "feat: refresh categorized report sources live"
 ```
 
+#### Task 2 Review Follow-up (2026-07-15)
+
+* Replaced the static source-text contract with executable controller tests using fake timers and deferred promises.
+* The source refresh controller starts only for `sources` with a `jobId` in `queued` or `running`, avoids duplicate timers, and invalidates in-flight requests on tab, status, job, and unmount changes.
+* Automatic refresh failures preserve existing rows; manual failures keep the existing fallback behavior and show `信源加载失败，请稍后重试。` when no fallback is available.
+* Verified RED before implementation, then `npx tsx tests/frontend-live-source-refresh.test.ts`, `npx tsx tests/source-display.test.ts`, `npx pnpm@9.15.9 --dir b_k3ewYvsOEc1 build`, and `git diff --check` all passed. No deployment or cloud access was performed.
+
 ---
 
 ### Task 3: 集成验证、部署和线上验收

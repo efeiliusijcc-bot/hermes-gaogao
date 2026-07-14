@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
+import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 
 const purifyConfig = {
@@ -279,10 +280,16 @@ const manualDirectionDraft = ref('')
 let qaEventSource = null
 let qaStreamRecoveryTimer = null
 let sourceListRequestId = 0
-let sourceAutoRefreshTimer = null
-let sourceTabRequestEpoch = 0
 let resultTabWheelLockedUntil = 0
 const qaStreamStates = new Map()
+const sourceRefreshController = createLiveSourceRefreshController({
+  intervalMs: SOURCE_AUTO_REFRESH_MS,
+  setIntervalFn: window.setInterval,
+  clearIntervalFn: window.clearInterval,
+  onRefresh: () => {
+    if (!sourceListLoading.value) void loadSourceListPage(1, { preserveOnError: true })
+  },
+})
 
 const canExport = computed(() => props.phase === 'done' && Boolean(props.generatedHtml))
 const isLiveLogVisible = computed(() => props.phase === 'loading')
@@ -3607,34 +3614,66 @@ async function loadSourceListPage(page = 1, { preserveOnError = false } = {}) {
   const requestId = sourceListRequestId + 1
   sourceListRequestId = requestId
   const requestType = activeSourceType.value
-  const requestTab = activeResultTab.value
-  const requestTabEpoch = sourceTabRequestEpoch
   sourceListLoading.value = true
   sourceListError.value = ''
   sourceListNotice.value = ''
+  const requestResult = await sourceRefreshController.runRequest({
+    request: async () => {
+      try {
+        const response = await fetchReportSources(jobId, sourceRequestType(requestType), {
+          page,
+          pageSize: sourceListPageSize.value,
+        })
+        return { response, usedUntypedFallback: false }
+      } catch {
+        const response = await fetchReportSources(jobId, '', {
+          page,
+          pageSize: sourceListPageSize.value,
+        })
+        return { response, usedUntypedFallback: true }
+      }
+    },
+    preserveOnError,
+    hasExistingRows: sourceListItems.value.length > 0,
+  })
   try {
-    let response
-    let usedUntypedFallback = false
-    try {
-      response = await fetchReportSources(jobId, sourceRequestType(requestType), {
-        page,
-        pageSize: sourceListPageSize.value,
-      })
-    } catch {
-      usedUntypedFallback = true
-      response = await fetchReportSources(jobId, '', {
-        page,
-        pageSize: sourceListPageSize.value,
-      })
-    }
     if (
+      requestResult.kind === 'stale' ||
       requestId !== sourceListRequestId ||
       requestType !== activeSourceType.value ||
-      jobId !== props.job?.jobId ||
-      requestTab !== 'sources' ||
-      requestTab !== activeResultTab.value ||
-      requestTabEpoch !== sourceTabRequestEpoch
+      jobId !== props.job?.jobId
     ) return
+    if (requestResult.kind === 'failure') {
+      if (requestResult.preserveExistingRows) {
+        sourceListError.value = ''
+        return
+      }
+      const fallback = localSourcePool(requestType)
+      if (fallback.length) {
+        sourceListItems.value = page === 1 ? fallback : [...sourceListItems.value, ...fallback]
+        sourceListPage.value = page
+        sourceCurrentPage.value = 1
+        if (requestType === 'candidate_hits' && page === 1) {
+          sourceListNotice.value = candidateDetailNotice(fallback)
+        }
+        sourceListTotal.value = requestType === 'candidate_hits'
+          ? (sourceCandidateHitTotal() || sourceListItems.value.length)
+          : sourceListItems.value.length
+        sourceListHasMore.value = false
+      } else if (requestType === 'candidate_hits' && sourceCandidateHitTotal() > 0) {
+        sourceListItems.value = page === 1 ? [] : sourceListItems.value
+        sourceListPage.value = page
+        sourceCurrentPage.value = 1
+        sourceListTotal.value = sourceCandidateHitTotal()
+        sourceListNotice.value = `候选池共 ${sourceCandidateHitTotal()} 条，当前历史任务未保存候选明细。`
+        sourceListHasMore.value = false
+      } else {
+        sourceListError.value = requestResult.errorMessage
+        sourceListHasMore.value = false
+      }
+      return
+    }
+    const { response, usedUntypedFallback } = requestResult.value
     const fallbackGroup = usedUntypedFallback
       ? 'all'
       : requestType
@@ -3658,64 +3697,28 @@ async function loadSourceListPage(page = 1, { preserveOnError = false } = {}) {
       : (normalized.total ?? sourceListItems.value.length)
     sourceListHasMore.value = normalized.hasMore ||
       (typeof normalized.total === 'number' && sourceListItems.value.length < normalized.total)
-  } catch {
-    if (
-      requestId !== sourceListRequestId ||
-      requestType !== activeSourceType.value ||
-      jobId !== props.job?.jobId ||
-      requestTab !== 'sources' ||
-      requestTab !== activeResultTab.value ||
-      requestTabEpoch !== sourceTabRequestEpoch
-    ) return
-    if (preserveOnError && sourceListItems.value.length) {
-      sourceListError.value = ''
-      return
-    }
-    const fallback = localSourcePool(requestType)
-    if (fallback.length) {
-      sourceListItems.value = page === 1 ? fallback : [...sourceListItems.value, ...fallback]
-      sourceListPage.value = page
-      sourceCurrentPage.value = 1
-      if (requestType === 'candidate_hits' && page === 1) {
-        sourceListNotice.value = candidateDetailNotice(fallback)
-      }
-      sourceListTotal.value = requestType === 'candidate_hits'
-        ? (sourceCandidateHitTotal() || sourceListItems.value.length)
-        : sourceListItems.value.length
-      sourceListHasMore.value = false
-    } else if (requestType === 'candidate_hits' && sourceCandidateHitTotal() > 0) {
-      sourceListItems.value = page === 1 ? [] : sourceListItems.value
-      sourceListPage.value = page
-      sourceCurrentPage.value = 1
-      sourceListTotal.value = sourceCandidateHitTotal()
-      sourceListNotice.value = `候选池共 ${sourceCandidateHitTotal()} 条，当前历史任务未保存候选明细。`
-      sourceListHasMore.value = false
-    } else {
-      sourceListError.value = '信源加载失败，请稍后重试。'
-      sourceListHasMore.value = false
-    }
   } finally {
     if (requestId === sourceListRequestId) sourceListLoading.value = false
   }
 }
 
-function shouldAutoRefreshSources() {
-  return activeResultTab.value === 'sources' &&
-    Boolean(props.job?.jobId) &&
-    ['queued', 'running'].includes(String(props.job?.status || '').toLowerCase())
-}
-
 function stopSourceAutoRefresh() {
-  if (sourceAutoRefreshTimer) window.clearInterval(sourceAutoRefreshTimer)
-  sourceAutoRefreshTimer = null
+  sourceRefreshController.stop()
+  sourceListRequestId += 1
+  sourceListLoading.value = false
 }
 
 function startSourceAutoRefresh() {
-  stopSourceAutoRefresh()
-  if (!shouldAutoRefreshSources()) return
-  sourceAutoRefreshTimer = window.setInterval(() => {
-    if (!sourceListLoading.value) void loadSourceListPage(1, { preserveOnError: true })
-  }, SOURCE_AUTO_REFRESH_MS)
+  sourceRefreshController.sync({
+    activeTab: activeResultTab.value,
+    jobId: props.job?.jobId || '',
+    status: props.job?.status || '',
+  })
+}
+
+function invalidateSourceListRequests() {
+  sourceListRequestId += 1
+  sourceListLoading.value = false
 }
 
 async function loadMoreSourceRows() {
@@ -3918,7 +3921,7 @@ watch(() => [props.phase, props.job?.jobId], () => {
   resetSourceListState()
 })
 watch(() => activeResultTab.value, (tab) => {
-  sourceTabRequestEpoch += 1
+  invalidateSourceListRequests()
   startSourceAutoRefresh()
   if (tab === 'sources' && props.job?.jobId && !sourceListItems.value.length && !sourceListLoading.value) {
     selectSourceType(activeSourceType.value || 'database_recall')
@@ -3931,7 +3934,7 @@ watch(() => activeResultTab.value, (tab) => {
   }
 })
 watch(() => [props.job?.jobId, props.job?.status], () => {
-  sourceTabRequestEpoch += 1
+  invalidateSourceListRequests()
   startSourceAutoRefresh()
 })
 watch([sourceSearchQuery, sourceKindFilter, sourceTimeFilter, sourceSortMode], handleSourceFiltersChanged)
