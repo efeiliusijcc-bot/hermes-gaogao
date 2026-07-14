@@ -235,6 +235,7 @@ const sourceListNotice = ref('')
 const acceptedCitationSources = ref([])
 const acceptedCitationSourcesLoading = ref(false)
 const activeResultTab = ref('report')
+const SOURCE_AUTO_REFRESH_MS = 5000
 const homeMode = computed({
   get: () => props.homeMode || 'report',
   set: (value) => emit('update:homeMode', value === 'qa' ? 'qa' : 'report'),
@@ -278,6 +279,8 @@ const manualDirectionDraft = ref('')
 let qaEventSource = null
 let qaStreamRecoveryTimer = null
 let sourceListRequestId = 0
+let sourceAutoRefreshTimer = null
+let sourceTabRequestEpoch = 0
 let resultTabWheelLockedUntil = 0
 const qaStreamStates = new Map()
 
@@ -3383,6 +3386,13 @@ function normalizeSourceKind(value, source = null) {
   return text.length > 8 ? '其他' : text
 }
 
+function sourceChannelLabel(source) {
+  if (source?.sourceGroup === 'database_recall') return '数据库召回'
+  if (source?.sourceGroup === 'tool_search') return '联网搜索采集'
+  if (source?.sourceGroup === 'crawler') return '资料采集'
+  return source?.sourceType || '--'
+}
+
 function normalizeNumericScore(value) {
   if (value === undefined || value === null || value === '') return 0
   const number = Number(value)
@@ -3591,12 +3601,14 @@ function scrollSourceListToTop() {
   })
 }
 
-async function loadSourceListPage(page = 1) {
+async function loadSourceListPage(page = 1, { preserveOnError = false } = {}) {
   const jobId = props.job?.jobId
   if (!jobId || !activeSourceType.value || (sourceListLoading.value && page > 1)) return
   const requestId = sourceListRequestId + 1
   sourceListRequestId = requestId
   const requestType = activeSourceType.value
+  const requestTab = activeResultTab.value
+  const requestTabEpoch = sourceTabRequestEpoch
   sourceListLoading.value = true
   sourceListError.value = ''
   sourceListNotice.value = ''
@@ -3615,7 +3627,14 @@ async function loadSourceListPage(page = 1) {
         pageSize: sourceListPageSize.value,
       })
     }
-    if (requestId !== sourceListRequestId || requestType !== activeSourceType.value || jobId !== props.job?.jobId) return
+    if (
+      requestId !== sourceListRequestId ||
+      requestType !== activeSourceType.value ||
+      jobId !== props.job?.jobId ||
+      requestTab !== 'sources' ||
+      requestTab !== activeResultTab.value ||
+      requestTabEpoch !== sourceTabRequestEpoch
+    ) return
     const fallbackGroup = usedUntypedFallback
       ? 'all'
       : requestType
@@ -3640,7 +3659,18 @@ async function loadSourceListPage(page = 1) {
     sourceListHasMore.value = normalized.hasMore ||
       (typeof normalized.total === 'number' && sourceListItems.value.length < normalized.total)
   } catch {
-    if (requestId !== sourceListRequestId || requestType !== activeSourceType.value || jobId !== props.job?.jobId) return
+    if (
+      requestId !== sourceListRequestId ||
+      requestType !== activeSourceType.value ||
+      jobId !== props.job?.jobId ||
+      requestTab !== 'sources' ||
+      requestTab !== activeResultTab.value ||
+      requestTabEpoch !== sourceTabRequestEpoch
+    ) return
+    if (preserveOnError && sourceListItems.value.length) {
+      sourceListError.value = ''
+      return
+    }
     const fallback = localSourcePool(requestType)
     if (fallback.length) {
       sourceListItems.value = page === 1 ? fallback : [...sourceListItems.value, ...fallback]
@@ -3667,6 +3697,25 @@ async function loadSourceListPage(page = 1) {
   } finally {
     if (requestId === sourceListRequestId) sourceListLoading.value = false
   }
+}
+
+function shouldAutoRefreshSources() {
+  return activeResultTab.value === 'sources' &&
+    Boolean(props.job?.jobId) &&
+    ['queued', 'running'].includes(String(props.job?.status || '').toLowerCase())
+}
+
+function stopSourceAutoRefresh() {
+  if (sourceAutoRefreshTimer) window.clearInterval(sourceAutoRefreshTimer)
+  sourceAutoRefreshTimer = null
+}
+
+function startSourceAutoRefresh() {
+  stopSourceAutoRefresh()
+  if (!shouldAutoRefreshSources()) return
+  sourceAutoRefreshTimer = window.setInterval(() => {
+    if (!sourceListLoading.value) void loadSourceListPage(1, { preserveOnError: true })
+  }, SOURCE_AUTO_REFRESH_MS)
 }
 
 async function loadMoreSourceRows() {
@@ -3869,6 +3918,8 @@ watch(() => [props.phase, props.job?.jobId], () => {
   resetSourceListState()
 })
 watch(() => activeResultTab.value, (tab) => {
+  sourceTabRequestEpoch += 1
+  startSourceAutoRefresh()
   if (tab === 'sources' && props.job?.jobId && !sourceListItems.value.length && !sourceListLoading.value) {
     selectSourceType(activeSourceType.value || 'database_recall')
   }
@@ -3878,6 +3929,10 @@ watch(() => activeResultTab.value, (tab) => {
   if (tab === 'quality' && props.job?.jobId && !qualityReview.value && !qualityReviewLoading.value) {
     loadQualityReview()
   }
+})
+watch(() => [props.job?.jobId, props.job?.status], () => {
+  sourceTabRequestEpoch += 1
+  startSourceAutoRefresh()
 })
 watch([sourceSearchQuery, sourceKindFilter, sourceTimeFilter, sourceSortMode], handleSourceFiltersChanged)
 watch(() => props.processLogs?.length || 0, () => {
@@ -3938,6 +3993,7 @@ watch(() => props.phase, (phase) => {
 })
 
 onBeforeUnmount(() => {
+  stopSourceAutoRefresh()
   window.removeEventListener('scroll', handleQaPageScroll)
   window.removeEventListener('keydown', handleQaGuideKeydown)
   reportRef.value?.removeEventListener('scroll', handleQaPageScroll)
@@ -5911,7 +5967,7 @@ function exportPdf() {
                           <strong>{{ source.title }}</strong>
                           <p>{{ source.summary }}</p>
                         </td>
-                        <td><span class="source-type-pill">{{ source.sourceType || '--' }}</span></td>
+                        <td><span class="source-type-pill">{{ sourceChannelLabel(source) }}</span></td>
                         <td>{{ source.sourceName || '--' }}</td>
                         <td>{{ source.publishTime || '--' }}</td>
                         <td><span class="source-score">{{ source.relevance || '--' }}</span></td>
