@@ -97,6 +97,7 @@ async function testAdapterUsesCleanInputAndPreservesExplainability() {
 
   const adapted = await adapter.retrieveDatabaseSources({
     reportJobId: 'f323bc84-a139-4877-a74a-7dde42e0ed60',
+    lookbackDays: 30,
     payload: {
       topic,
       known_context: JSON.stringify({ sourceScope: '政府与机构', sourceTypes: ['监管机构'], database: 'PG数据库信源' }),
@@ -111,11 +112,28 @@ async function testAdapterUsesCleanInputAndPreservesExplainability() {
   assert.equal((requests[0] as { supplement: string }).supplement, '');
   assert.deepEqual((requests[0] as { explicitEntities: unknown[] }).explicitEntities, []);
   assert.doesNotMatch(JSON.stringify(requests[0]), /政府与机构|监管机构|PG数据库信源/);
+  const defaultRange = (requests[0] as { explicitTimeRange?: { start?: string; end?: string } }).explicitTimeRange;
+  assert.ok(defaultRange?.start);
+  assert.ok(defaultRange.end);
+  assert.equal(Date.parse(defaultRange.end) - Date.parse(defaultRange.start), 30 * 24 * 60 * 60 * 1000);
   assert.equal(adapted.sources.length, 1);
   assert.equal(adapted.sources[0]?.retrievalMode, 'hybrid');
   assert.equal(adapted.sources[0]?.documentId, '101');
   assert.deepEqual(adapted.sources[0]?.retrievalSources, ['vector', 'fulltext', 'title']);
   assert.equal(adapted.sources[0]?.relevanceScore, 0.88);
+
+  await adapter.retrieveDatabaseSources({
+    reportJobId: 'explicit-range-job',
+    lookbackDays: 30,
+    payload: { topic },
+    payloadContext: {
+      explicitTimeRange: { start: '2026-01-01', end: '2026-02-01' },
+    },
+  });
+  assert.deepEqual(
+    (requests[1] as { explicitTimeRange?: unknown }).explicitTimeRange,
+    { start: '2026-01-01', end: '2026-02-01' },
+  );
 }
 
 async function testDeepReportUsesHybridButNormalReportDoesNot() {
@@ -125,9 +143,11 @@ async function testDeepReportUsesHybridButNormalReportDoesNot() {
     const writes: Array<{ path: string; content: string }> = [];
     let hybridCalls = 0;
     let legacyCalls = 0;
+    const hybridInputs: Array<Record<string, unknown>> = [];
     const adapter = {
-      retrieveDatabaseSources: async () => {
+      retrieveDatabaseSources: async (input: Record<string, unknown>) => {
         hybridCalls += 1;
+        hybridInputs.push(input);
         const result = retrievalResult();
         return {
           result,
@@ -192,6 +212,7 @@ async function testDeepReportUsesHybridButNormalReportDoesNot() {
 
     assert.equal(hybridCalls, 1);
     assert.equal(legacyCalls, 0);
+    assert.equal(hybridInputs[0]?.lookbackDays, 30);
     const databaseWrite = writes.find((write) => write.path.endsWith('/deep-hybrid/database/database_sources.json'));
     assert.ok(databaseWrite);
     const databaseSources = JSON.parse(databaseWrite.content) as Array<Record<string, unknown>>;

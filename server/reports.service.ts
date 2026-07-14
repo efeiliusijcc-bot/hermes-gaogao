@@ -1643,6 +1643,7 @@ export class ReportsService implements OnModuleDestroy {
     if (!this.reportsRetrieval) return payload;
     const adapted = await this.reportsRetrieval.retrieveDatabaseSources({
       reportJobId: job.jobId,
+      lookbackDays,
       payload,
       payloadContext: parsed,
     });
