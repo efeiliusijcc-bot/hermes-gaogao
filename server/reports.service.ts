@@ -5251,6 +5251,8 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private async toolSearchSources(job: JobRecord): Promise<ReportSourceListItem[]> {
+    const maxResearchFilesPerDirectory = 50;
+    const maxRawItems = 300;
     const dir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
     const contextSources: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [];
     const payloadContext = this.contextObjectFromPayload(job.payload as unknown as Record<string, unknown>);
@@ -5269,8 +5271,11 @@ export class ReportsService implements OnModuleDestroy {
         rawItems.push(...this.extractToolSearchRawItems(consolidated));
 
         const entries = await this.remoteFs.readdir(researchDir);
+        let researchFilesRead = 0;
         for (const entry of entries) {
           if (!entry.isFile || !/^research_[a-z0-9_-]+\.json$/i.test(entry.name)) continue;
+          if (researchFilesRead >= maxResearchFilesPerDirectory) break;
+          researchFilesRead += 1;
           const parsed = await this.readJsonFile(this.remoteFs.joinPath(researchDir, entry.name));
           rawItems.push(...this.extractToolSearchRawItems(parsed));
         }
@@ -5280,6 +5285,7 @@ export class ReportsService implements OnModuleDestroy {
     }
 
     const candidates = rawItems
+      .slice(0, maxRawItems)
       .filter(({ item, evidenceKind }) => this.isHighValueToolSearchItem(item, evidenceKind))
       .map(({ item, evidenceKind }, index) => ({
         item: item as Record<string, unknown>,
@@ -5308,8 +5314,12 @@ export class ReportsService implements OnModuleDestroy {
     dirs.add(this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId, 'research'));
     const sharedRoot = String(process.env.HERMES_SHARED_REPORT_ROOT || '').trim();
     if (sharedRoot) dirs.add(this.remoteFs.joinPath(sharedRoot, job.jobId, 'research'));
-    const resolved = await this.resolveHermesJobDir(job);
-    if (resolved) dirs.add(this.remoteFs.joinPath(resolved, 'research'));
+    try {
+      const resolved = await this.resolveHermesJobDir(job);
+      if (resolved) dirs.add(this.remoteFs.joinPath(resolved, 'research'));
+    } catch {
+      // Artifact and shared directories remain usable if legacy job discovery fails.
+    }
     return [...dirs];
   }
 
