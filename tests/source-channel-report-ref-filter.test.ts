@@ -85,4 +85,19 @@ const resultWithDatabaseOnlyRef = service.toolSearchChannelSources(
 assert.equal(resultWithDatabaseOnlyRef.length, 1);
 assert.equal(resultWithDatabaseOnlyRef[0].url, 'https://example.com/source?utm_source=live');
 
+const unmatchedPublicRef = {
+  ...matchedRef,
+  id: 'unmatched-public-ref',
+  url: 'https://example.com/unverified',
+  citationNo: 4,
+};
+const resultWithUnmatchedPublicRef = service.toolSearchChannelSources(
+  [eligibleResearchSource],
+  [unmatchedPublicRef],
+  [],
+);
+
+assert.equal(resultWithUnmatchedPublicRef.length, 1);
+assert.equal(resultWithUnmatchedPublicRef[0].url, 'https://example.com/source?utm_source=live');
+
 console.log('source channel report reference filter tests passed');

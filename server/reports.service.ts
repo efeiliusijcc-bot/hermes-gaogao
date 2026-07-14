@@ -4833,7 +4833,7 @@ export class ReportsService implements OnModuleDestroy {
     reportRefs: ReportSourceListItem[],
     databaseRecall: ReportSourceListItem[],
   ): ReportSourceListItem[] {
-    const databaseKeys = new Set(databaseRecall.map((item) => this.toolSearchSourceDedupeKey(item)).filter(Boolean));
+    void databaseRecall;
     const researchItems = researchSources.map((source) => ({
       ...source,
       sourceGroup: 'tool_search' as const,
@@ -4846,7 +4846,7 @@ export class ReportsService implements OnModuleDestroy {
       .filter((ref) => {
         const key = this.toolSearchSourceDedupeKey(ref);
         if (!key || !ref.url || ref.matchStatus !== 'matched') return false;
-        return !databaseKeys.has(key) || researchKeys.has(key);
+        return researchKeys.has(key);
       })
       .map((ref) => ({
         ...ref,
