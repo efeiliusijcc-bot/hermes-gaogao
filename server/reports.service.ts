@@ -4460,9 +4460,12 @@ export class ReportsService implements OnModuleDestroy {
   private async resolveArtifactLocalPath(job: JobRecord, filePath: string | null | undefined, artifactType: string): Promise<string | null> {
     if (!filePath) return null;
     if (this.artifactResolver) {
+      const pathInput = /^(?:[A-Za-z]:[\\/]|[\\/]|[a-z][a-z0-9+.-]*:)/i.test(filePath)
+        ? { remotePath: filePath }
+        : { relativePath: filePath };
       const resolved = await this.artifactResolver.resolveHermesArtifactPath({
         jobId: job.jobId,
-        remotePath: filePath,
+        ...pathInput,
         artifactType,
       });
       if (resolved.exists) return resolved.localPath;
