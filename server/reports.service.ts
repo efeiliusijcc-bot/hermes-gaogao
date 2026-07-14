@@ -4833,6 +4833,7 @@ export class ReportsService implements OnModuleDestroy {
     reportRefs: ReportSourceListItem[],
     databaseRecall: ReportSourceListItem[],
   ): ReportSourceListItem[] {
+    const databaseKeys = new Set(databaseRecall.map((item) => this.toolSearchSourceDedupeKey(item)).filter(Boolean));
     const researchItems = researchSources.map((source) => ({
       ...source,
       sourceGroup: 'tool_search' as const,
@@ -4840,12 +4841,12 @@ export class ReportsService implements OnModuleDestroy {
       evidenceKind: source.evidenceKind || 'research_source' as const,
       engine: source.engine || this.inferToolSearchEngine(source),
     }));
-    const researchKeys = new Set(researchItems.map((item) => this.sourceDedupeKey(item)).filter(Boolean));
+    const researchKeys = new Set(researchItems.map((item) => this.toolSearchSourceDedupeKey(item)).filter(Boolean));
     const publicRefs = reportRefs
       .filter((ref) => {
-        const key = this.sourceDedupeKey(ref);
+        const key = this.toolSearchSourceDedupeKey(ref);
         if (!key || !ref.url || ref.matchStatus !== 'matched') return false;
-        return researchKeys.has(key);
+        return !databaseKeys.has(key) || researchKeys.has(key);
       })
       .map((ref) => ({
         ...ref,
@@ -4863,7 +4864,8 @@ export class ReportsService implements OnModuleDestroy {
   ): ReportSourceListItem[] {
     const merged = new Map<string, ReportSourceListItem>();
     for (const item of items) {
-      const key = this.sourceDedupeKey(item) || `${sourceGroup}:${item.id}`;
+      const key = (sourceGroup === 'tool_search' ? this.toolSearchSourceDedupeKey(item) : this.sourceDedupeKey(item))
+        || `${sourceGroup}:${item.id}`;
       const existing = merged.get(key);
       if (!existing) {
         merged.set(key, { ...item, sourceGroup });
@@ -4897,6 +4899,12 @@ export class ReportsService implements OnModuleDestroy {
     const title = String(item.title || '').trim().toLowerCase();
     const sourceName = String(item.sourceName || '').trim().toLowerCase();
     return title ? `title:${title}|${sourceName}` : '';
+  }
+
+  private toolSearchSourceDedupeKey(item: Partial<ReportSourceListItem>): string {
+    const url = item.url ? this.canonicalToolSearchUrl(item.url) : '';
+    if (url) return `url:${url}`;
+    return this.sourceDedupeKey(item);
   }
 
   private reportSourcePriority(item: ReportSourceListItem): number {

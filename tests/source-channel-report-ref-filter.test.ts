@@ -49,6 +49,7 @@ const eligibleResearchSource = {
   sourceGroup: 'tool_search',
   sourceOrigin: 'tool_search',
   evidenceKind: 'evidence_card',
+  url: 'https://example.com/source?utm_source=live',
   citationNo: undefined,
   matchStatus: undefined,
 };
@@ -56,8 +57,32 @@ const eligibleResearchSource = {
 const result = service.toolSearchChannelSources([eligibleResearchSource], [rawOnlyRef, matchedRef], []);
 
 assert.equal(result.length, 1);
-assert.equal(result[0].url, 'https://example.com/source');
+assert.equal(result[0].url, 'https://example.com/source?utm_source=live');
 assert.equal(result[0].matchStatus, 'matched');
+assert.equal(result[0].citationNo, 2);
 assert.equal(result.some((item: { matchStatus?: string }) => item.matchStatus === 'raw_only'), false);
+
+const databaseSource = {
+  ...matchedRef,
+  id: 'database-source',
+  sourceGroup: 'database_recall',
+  sourceOrigin: 'database_recall',
+  evidenceKind: 'structured_source',
+  url: 'https://example.com/database',
+};
+const databaseOnlyRef = {
+  ...matchedRef,
+  id: 'database-report-ref',
+  url: 'https://example.com/database?utm_source=live',
+  citationNo: 3,
+};
+const resultWithDatabaseOnlyRef = service.toolSearchChannelSources(
+  [eligibleResearchSource],
+  [databaseOnlyRef],
+  [databaseSource],
+);
+
+assert.equal(resultWithDatabaseOnlyRef.length, 1);
+assert.equal(resultWithDatabaseOnlyRef[0].url, 'https://example.com/source?utm_source=live');
 
 console.log('source channel report reference filter tests passed');
