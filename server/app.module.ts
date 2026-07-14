@@ -37,8 +37,10 @@ import { UserPreferencesService } from './user-preferences.service.js';
 import { VectorSourcesController } from './vector-sources.controller.js';
 import { VectorSourceService } from './vector-source.service.js';
 import { WebSupplementService } from './web-supplement.service.js';
+import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
 
 @Module({
+  imports: [RetrievalModule],
   controllers: [
     HealthController,
     AuthController,
@@ -74,8 +76,6 @@ import { WebSupplementService } from './web-supplement.service.js';
     RemoteFileService,
     QaSessionSourcesService,
     ReportsService,
-    ResearchKeysService,
-    VectorSourceService,
     WebSupplementService,
     CrawlerService,
     ChatService,

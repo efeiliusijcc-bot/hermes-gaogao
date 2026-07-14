@@ -10,6 +10,7 @@ RUN pnpm install --frozen-lockfile
 COPY tsconfig.server.json ./
 COPY server/ ./server/
 COPY src/types/report.ts ./src/types/report.ts
+COPY scripts/backfill-hybrid-retrieval.ts ./scripts/backfill-hybrid-retrieval.ts
 
 RUN pnpm tsc -p tsconfig.server.json
 

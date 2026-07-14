@@ -15,6 +15,9 @@ import { createAuthPool, type PgPool } from './auth-database.js';
 import { UserPreferencesService } from './user-preferences.service.js';
 import { buildRuleBasedEntityPolicy, parseEntityPolicy, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
 import { filterSourcesByEntityPolicy, type SourceEntityMatch, type SourceFilterDiagnostics, type SourceFilterResult } from './source-entity-guard.js';
+import { buildCleanRetrievalInput } from './reports/retrieval/query/clean-query-input.js';
+import { ReportsRetrievalAdapter } from './reports/reports-retrieval.adapter.js';
+import type { QueryProfile } from './reports/retrieval/retrieval.types.js';
 import {
   WebSupplementService,
   assessSourceQuality,
@@ -269,6 +272,7 @@ export class ReportsService implements OnModuleDestroy {
     @Optional() @Inject(WebSupplementService) private readonly webSupplement?: WebSupplementService,
     @Optional() @Inject(ArtifactPathResolver) private readonly artifactResolver?: ArtifactPathResolver,
     @Optional() @Inject(ArtifactSyncService) private readonly artifactSync?: ArtifactSyncService,
+    @Optional() @Inject(ReportsRetrievalAdapter) private readonly reportsRetrieval?: ReportsRetrievalAdapter,
   ) {
     this.jobsReady = this.loadPersistedJobs();
   }
@@ -1326,7 +1330,9 @@ export class ReportsService implements OnModuleDestroy {
       const vectorResult = this.vectorResultFromJob(job);
       const vectorSources = this.normalizeVectorSources(vectorResult?.sources || []).slice(0, 50);
       const entityPolicy = await this.entityPolicyForJob(job, null);
-      const filtered = this.filterDatabaseSourcesForResponse(vectorSources, entityPolicy);
+      const filtered = job.artifacts?.hybridRetrievalEnabled === true
+        ? this.acceptHybridDatabaseSources(vectorSources, entityPolicy)
+        : this.filterDatabaseSourcesForResponse(vectorSources, entityPolicy);
       if (vectorSources.length) {
         const status: DatabaseSourcesResponse['status'] = filtered.acceptedSources.length
           ? 'hit'
@@ -1373,7 +1379,11 @@ export class ReportsService implements OnModuleDestroy {
     const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
     const contextObject = contextJson && !Array.isArray(contextJson) ? contextJson : null;
     const entityPolicy = await this.entityPolicyForJob(job, dir, contextObject);
-    const filtered = this.filterDatabaseSourcesForResponse(candidates, entityPolicy);
+    const isHybrid = job.artifacts?.hybridRetrievalEnabled === true ||
+      this.firstString(planObject, ['retrieval_mode', 'retrievalMode']) === 'hybrid';
+    const filtered = isHybrid
+      ? this.acceptHybridDatabaseSources(candidates, entityPolicy)
+      : this.filterDatabaseSourcesForResponse(candidates, entityPolicy);
     const savedDiagnostics = await this.readDatabaseSourceDiagnostics(dir);
     const uncertainSources = filtered.uncertainSources.length
       ? filtered.uncertainSources
@@ -1523,6 +1533,24 @@ export class ReportsService implements OnModuleDestroy {
 
     const maxRows = this.boundInt(databaseOptions.maxMetadataRows, 50, 1, 100);
     const lookbackDays = this.boundInt(databaseOptions.lookbackDays, 30, 0, 365);
+    if (this.hybridRetrievalEnabled() && this.reportsRetrieval) {
+      try {
+        return await this.enrichPayloadWithHybridDatabaseSources(
+          job,
+          payload,
+          parsed,
+          databaseOptions,
+          maxRows,
+          lookbackDays,
+        );
+      } catch (error) {
+        this.pushEvent(job, {
+          type: 'stage',
+          stage: 'database_sources',
+          message: '混合数据库检索当前不可用，已回退现有向量检索。',
+        });
+      }
+    }
     const result = await this.vectorSources.search({
       topic: String(payload.topic || parsed.topic || ''),
       knownContext: parsed,
@@ -1593,6 +1621,140 @@ export class ReportsService implements OnModuleDestroy {
 
     payload.known_context = JSON.stringify(enrichedContext, null, 2);
     return payload;
+  }
+
+  private async enrichPayloadWithHybridDatabaseSources(
+    job: JobRecord,
+    payload: Record<string, unknown>,
+    parsed: Record<string, unknown>,
+    databaseOptions: Record<string, unknown>,
+    maxRows: number,
+    lookbackDays: number,
+  ): Promise<Record<string, unknown>> {
+    if (!this.reportsRetrieval) return payload;
+    const adapted = await this.reportsRetrieval.retrieveDatabaseSources({
+      reportJobId: job.jobId,
+      payload,
+      payloadContext: parsed,
+    });
+    const sources = adapted.sources.slice(0, maxRows);
+    const entityPolicy = this.entityPolicyFromHybridProfile(adapted.result.profile);
+    const basePlan = await this.vectorSources.status();
+    const result: VectorSearchResult = {
+      status: sources.length ? 'hit' : 'empty',
+      sources,
+      totalHits: adapted.result.diagnostics.mergedCandidateCount,
+      updatedAt: new Date().toISOString(),
+      queryPlan: {
+        ...basePlan,
+        vectorHits: adapted.result.diagnostics.vectorCandidateCount,
+        keywordBoostedHits:
+          adapted.result.diagnostics.fulltextCandidateCount +
+          adapted.result.diagnostics.titleCandidateCount +
+          adapted.result.diagnostics.entityCandidateCount,
+        returnedSources: sources.length,
+        broadeningApplied: adapted.result.diagnostics.fallbackLevel > 0,
+        fallbackReason: sources.length ? '' : adapted.result.diagnostics.suspiciousEntityPolicy
+          ? '实体策略可疑：候选存在，但派生实体策略导致统一拒绝。'
+          : '混合数据库检索未返回达到阈值的信源。',
+      },
+    };
+    const hybridDiagnostics = {
+      runId: adapted.result.runId,
+      ...adapted.result.diagnostics,
+    };
+
+    job.artifacts = {
+      ...job.artifacts,
+      vectorDatabaseCandidateSources: sources,
+      vectorDatabaseSources: sources,
+      vectorDatabaseUncertainSources: [],
+      vectorDatabaseRejectedSources: [],
+      vectorDatabaseQueryPlan: result.queryPlan,
+      vectorDatabaseSourceStatus: result.status,
+      entityPolicy,
+      databaseSourceDiagnostics: hybridDiagnostics,
+      hybridRetrievalEnabled: true,
+      hybridRetrievalRunId: adapted.result.runId,
+      hybridRetrievalProfile: adapted.result.profile,
+      hybridRetrievalDiagnostics: adapted.result.diagnostics,
+    };
+    await this.writeJobState(job);
+
+    const enrichedContext = {
+      ...parsed,
+      entityPolicy,
+      hybridRetrieval: {
+        enabled: true,
+        runId: adapted.result.runId,
+        profile: adapted.result.profile,
+        diagnostics: adapted.result.diagnostics,
+      },
+      vectorDatabaseSourceOptions: {
+        enabled: true,
+        provider: 'postgres_pgvector',
+        mode: 'hybrid',
+        lookbackDays,
+        maxMetadataRows: maxRows,
+      },
+      vectorDatabaseSources: sources,
+      vectorDatabaseQueryPlan: result.queryPlan,
+      sourceDiagnostics: {
+        ...this.plainObject(parsed.sourceDiagnostics),
+        database: { entityPolicy, ...hybridDiagnostics },
+      },
+    };
+    await this.writeBackendDatabaseRecallArtifacts(job, enrichedContext, result, {
+      maxRows,
+      lookbackDays,
+      databaseOptions,
+      entityPolicy,
+    });
+
+    const liveSources = this.normalizeVectorSources(sources).slice(0, 50);
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'database_sources',
+      message: liveSources.length
+        ? `PG hybrid sources recalled: ${liveSources.length} items.`
+        : '混合数据库检索未找到达到相关性阈值的信源。',
+    });
+    this.pushEvent(job, { type: 'sources', sources: liveSources.map((source) => ({ ...source })) });
+    payload.known_context = JSON.stringify(enrichedContext, null, 2);
+    return payload;
+  }
+
+  private hybridRetrievalEnabled(): boolean {
+    return !['0', 'false', 'off'].includes(String(process.env.HYBRID_RETRIEVAL_ENABLED || '1').toLowerCase());
+  }
+
+  private entityPolicyFromHybridProfile(profile: QueryProfile): EntityPolicy {
+    const hardExplicit = profile.coreEntities.filter(
+      (entity) => entity.source === 'explicit' && entity.enforcement === 'hard',
+    );
+    return {
+      coreEntities: profile.coreEntities
+        .filter((entity) => entity.enforcement !== 'disabled')
+        .map((entity) => ({
+          canonical: entity.canonicalName,
+          type: entity.type === 'person' || entity.type === 'location' || entity.type === 'event'
+            ? entity.type
+            : 'organization',
+          aliases: [...new Set([entity.canonicalName, ...entity.aliases])],
+          importance: hardExplicit.some((item) => item.canonicalId === entity.canonicalId) ? 'primary' : 'context',
+        })),
+      entityRelations: [],
+      topicTerms: profile.coreTopics,
+      actionTerms: profile.eventType ? [profile.eventType] : [],
+      timeConstraints: [profile.timeRange?.start, profile.timeRange?.end].filter((value): value is string => Boolean(value)),
+      locationConstraints: [],
+      ambiguousTerms: [],
+      possibleConfusions: [],
+      requiredEntityMatch: hardExplicit.length > 0,
+      searchQueries: profile.queryVariants,
+      confidence: profile.coreEntities.length ? 0.95 : 0.5,
+      generatedBy: 'parsed',
+    };
   }
 
   private async enrichPayloadWithWebSupplement(job: JobRecord, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -3130,6 +3292,7 @@ export class ReportsService implements OnModuleDestroy {
     const databaseDir = this.remoteFs.joinPath(jobDir, 'database');
     const now = new Date().toISOString();
     const vectorSources = result.sources.slice(0, options.maxRows);
+    const isHybrid = vectorSources.some((source) => source.retrievalMode === 'hybrid');
     const acceptedMatches = new Map<string, SourceEntityMatch>();
     for (const source of options.sourceFilter?.acceptedSources || []) {
       const key = this.sourceEntityMatchKey(source);
@@ -3138,7 +3301,8 @@ export class ReportsService implements OnModuleDestroy {
     const databaseSources = vectorSources.map((source, index) => ({
       id: `pg-vector-${index + 1}`,
       source_type: 'pg_vector',
-      retrieval_channel: 'backend_pre_recall',
+      retrieval_channel: isHybrid ? 'backend_hybrid_recall' : 'backend_pre_recall',
+      document_id: source.documentId || '',
       ch_title: source.title,
       data_source_url: source.url,
       summary: source.summary,
@@ -3148,17 +3312,23 @@ export class ReportsService implements OnModuleDestroy {
       similarity: source.similarity,
       relevance_score: source.relevanceScore,
       relevance_level: this.databaseRelevanceLevel(source.relevanceScore),
-      relevance_reason: '后端在调用编报执行器前通过 PostgreSQL pgvector 语义召回命中。',
+      relevance_reason: isHybrid
+        ? '后端在调用编报执行器前通过向量、全文、标题和实体混合检索融合命中。'
+        : '后端在调用编报执行器前通过 PostgreSQL pgvector 语义召回命中。',
       needs_verification: true,
       entity_match: acceptedMatches.get(this.sourceEntityMatchKey(source)) || null,
+      retrieval_sources: source.retrievalSources || ['vector'],
+      retrieval_ranks: source.retrievalRanks || {},
+      retrieval_scores: source.retrievalScores || {},
+      retrieval_run_id: source.retrievalRunId || '',
     }));
     const queryPlan = {
       schema_version: 1,
-      generated_by: 'backend_pre_recall',
+      generated_by: isHybrid ? 'backend_hybrid_retrieval' : 'backend_pre_recall',
       generated_at: now,
       retrieval_mode: 'pg_vector',
       mcp_server: 'pg-sources',
-      actual_connector: 'backend_pgvector_direct',
+      actual_connector: isHybrid ? 'backend_pg_hybrid_direct' : 'backend_pgvector_direct',
       compatibility_note: 'This artifact mirrors the old MCP pg-sources output shape, but was produced by backend pre-recall before invoking the report agent.',
       storageMode: result.queryPlan.storageMode,
       sourceTable: result.queryPlan.sourceTable || String(options.databaseOptions.sourceTable || ''),
@@ -3864,6 +4034,46 @@ export class ReportsService implements OnModuleDestroy {
     };
   }
 
+  private acceptHybridDatabaseSources<T extends object>(
+    sources: T[],
+    entityPolicy: EntityPolicy,
+  ): SourceFilterResult<T> {
+    const acceptedSources = sources.map((source) => ({
+      ...source,
+      entityMatch: {
+        status: 'accepted' as const,
+        confidence: 1,
+        finalScore: 1,
+        matchedCoreEntities: [],
+        matchedAliases: [],
+        matchedTopicTerms: [],
+        matchedActionTerms: [],
+        matchedAmbiguousTerms: [],
+        matchedConfusions: [],
+        missingCoreEntities: [],
+        reason: '已通过混合检索融合、重排序和分级策略。',
+      },
+    }));
+    return {
+      acceptedSources,
+      uncertainSources: [],
+      rejectedSources: [],
+      diagnostics: {
+        entityPolicyEnabled: true,
+        requiredEntityMatch: entityPolicy.requiredEntityMatch,
+        coreEntities: entityPolicy.coreEntities.map((entity) => entity.canonical),
+        topicTerms: entityPolicy.topicTerms,
+        acceptedCount: acceptedSources.length,
+        uncertainCount: 0,
+        rejectedCount: 0,
+        rejectionSummary: [],
+        fallbackReason: acceptedSources.length ? '' : '混合数据库检索未返回达到阈值的信源。',
+        shouldUseWebSupplement: acceptedSources.length < 3,
+        recommendedSearchQueries: entityPolicy.searchQueries,
+      },
+    };
+  }
+
   private filterDatabaseSourcesForResponse(sources: DatabaseSourceItem[], entityPolicy: EntityPolicy): SourceFilterResult<DatabaseSourceItem> {
     return filterSourcesByEntityPolicy(
       sources.map((source) => ({
@@ -3924,9 +4134,17 @@ export class ReportsService implements OnModuleDestroy {
     const payloadContext = context || this.contextObjectFromPayload(payload);
     const reportPlan = this.plainObject(payloadContext.report_plan || payloadContext.reportPlan);
     const draftAssistantContext = this.plainObject(payloadContext.draftAssistantContext);
+    const cleanRetrievalInput = buildCleanRetrievalInput({
+      reportJobId: job.jobId,
+      topic: String(payload.topic || payloadContext.topic || ''),
+      supplement: payloadContext.supplement,
+      explicitEntities: payloadContext.explicitEntities,
+      explicitTimeRange: payloadContext.explicitTimeRange,
+      knownContext: payload.known_context,
+    });
     const input = {
-      topic: payload.topic || payloadContext.topic,
-      userSupplement: payloadContext.supplement || payload.known_context,
+      topic: cleanRetrievalInput.topic,
+      userSupplement: cleanRetrievalInput.supplement,
       reportPlan,
       databaseQueryIntent: payloadContext.databaseQueryIntent,
       selectedSearchQueries: payloadContext.selectedSearchQueries,

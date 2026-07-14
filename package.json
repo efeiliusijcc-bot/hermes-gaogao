@@ -9,6 +9,7 @@
     "backfill:vector-materials": "tsx scripts/backfill-vector-materials.ts",
     "backfill:vector-materials:qwen3": "tsx scripts/backfill-vector-materials.ts --pg-table=vector_materials_qwen3 --embedding-model=Qwen3-Embedding-0.6B-Q8 --embedding-dimensions=1024 --max-text-chars=600 --batch-size=1",
     "backfill:vector-materials:v4": "bash scripts/run-vector-materials-v4.sh",
+    "backfill:hybrid-retrieval": "tsx scripts/backfill-hybrid-retrieval.ts",
     "build": "tsc -p tsconfig.server.json",
     "lint": "eslint ."
   },
