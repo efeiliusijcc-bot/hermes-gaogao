@@ -5261,30 +5261,106 @@ export class ReportsService implements OnModuleDestroy {
     if (contextJson && !Array.isArray(contextJson) && Array.isArray(contextJson.webSources)) {
       contextSources.push(...contextJson.webSources.map((item) => ({ item, evidenceKind: 'research_source' as const })));
     }
-    const researchDir = this.remoteFs.joinPath(dir, 'research');
     const rawItems: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [...contextSources];
-    for (const filename of ['consolidated.json']) {
-      const parsed = await this.readJsonFile(this.remoteFs.joinPath(researchDir, filename));
-      rawItems.push(...this.extractToolSearchRawItems(parsed));
-    }
 
-    try {
-      const entries = await this.remoteFs.readdir(researchDir);
-      for (const entry of entries) {
-        if (!entry.isFile || !/^research_[a-z0-9_-]+\.json$/i.test(entry.name)) continue;
-        const parsed = await this.readJsonFile(this.remoteFs.joinPath(researchDir, entry.name));
-        rawItems.push(...this.extractToolSearchRawItems(parsed));
-        if (rawItems.length >= 300) break;
+    for (const researchDir of await this.toolSearchResearchDirs(job)) {
+      try {
+        const consolidated = await this.readJsonFile(this.remoteFs.joinPath(researchDir, 'consolidated.json'));
+        rawItems.push(...this.extractToolSearchRawItems(consolidated));
+
+        const entries = await this.remoteFs.readdir(researchDir);
+        for (const entry of entries) {
+          if (!entry.isFile || !/^research_[a-z0-9_-]+\.json$/i.test(entry.name)) continue;
+          const parsed = await this.readJsonFile(this.remoteFs.joinPath(researchDir, entry.name));
+          rawItems.push(...this.extractToolSearchRawItems(parsed));
+        }
+      } catch {
+        // A missing or unreadable research directory must not hide other sources.
       }
-    } catch {
-      // Missing research directory is a valid state for older or failed jobs.
     }
 
-    const normalized = rawItems
-      .slice(0, 300)
-      .map(({ item, evidenceKind }, index) => this.normalizeToolSearchSourceItem(item, index, evidenceKind))
-      .filter((item): item is ReportSourceListItem => Boolean(item));
-    return this.mergeReportSourceItems(normalized, 'tool_search').slice(0, 300);
+    const candidates = rawItems
+      .filter(({ item, evidenceKind }) => this.isHighValueToolSearchItem(item, evidenceKind))
+      .map(({ item, evidenceKind }, index) => ({
+        item: item as Record<string, unknown>,
+        evidenceKind,
+        source: this.normalizeToolSearchSourceItem(item, index, evidenceKind),
+      }))
+      .filter((candidate): candidate is {
+        item: Record<string, unknown>;
+        evidenceKind: ReportEvidenceKind;
+        source: ReportSourceListItem & { url: string };
+      } => typeof candidate.source?.url === 'string' && candidate.source.url.length > 0);
+    const deduped = new Map<string, typeof candidates[number]>();
+    for (const candidate of candidates) {
+      const key = this.canonicalToolSearchUrl(candidate.source.url);
+      const existing = deduped.get(key);
+      if (!existing || this.preferToolSearchSource(candidate, existing)) {
+        deduped.set(key, candidate);
+      }
+    }
+
+    return this.mergeReportSourceItems([...deduped.values()].map((candidate) => candidate.source), 'tool_search').slice(0, 50);
+  }
+
+  private async toolSearchResearchDirs(job: JobRecord): Promise<string[]> {
+    const dirs = new Set<string>();
+    dirs.add(this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId, 'research'));
+    const sharedRoot = String(process.env.HERMES_SHARED_REPORT_ROOT || '').trim();
+    if (sharedRoot) dirs.add(this.remoteFs.joinPath(sharedRoot, job.jobId, 'research'));
+    const resolved = await this.resolveHermesJobDir(job);
+    if (resolved) dirs.add(this.remoteFs.joinPath(resolved, 'research'));
+    return [...dirs];
+  }
+
+  private isHighValueToolSearchItem(item: unknown, evidenceKind: ReportEvidenceKind): boolean {
+    if (!item || typeof item !== 'object') return false;
+    if (evidenceKind === 'evidence_card') return true;
+    const source = item as Record<string, unknown>;
+    const credibility = this.firstNumber(source, ['credibility_score', 'credibilityScore']) || 0;
+    const tier = this.firstString(source, ['credibility_tier', 'credibilityTier']).toLowerCase();
+    const quality = source.sourceQuality;
+    const qualityObject = quality && typeof quality === 'object' ? quality as Record<string, unknown> : {};
+    const qualityScore = typeof quality === 'number'
+      ? quality
+      : this.firstNumber(qualityObject, ['score']) || 0;
+    const accepted = this.firstString(qualityObject, ['status']).toLowerCase() === 'accepted';
+    const normalizedQualityScore = qualityScore > 1 ? qualityScore / 100 : qualityScore;
+    return credibility >= 0.8 || ['high', 'medium-high'].includes(tier) || accepted || normalizedQualityScore >= 0.8;
+  }
+
+  private canonicalToolSearchUrl(value: string): string {
+    try {
+      const url = new URL(value);
+      url.hash = '';
+      for (const key of [...url.searchParams.keys()]) {
+        if (/^(utm_.+|iref|ref|source)$/i.test(key)) url.searchParams.delete(key);
+      }
+      url.hostname = url.hostname.toLowerCase();
+      return url.toString();
+    } catch {
+      return value;
+    }
+  }
+
+  private preferToolSearchSource(
+    candidate: { item: Record<string, unknown>; evidenceKind: ReportEvidenceKind; source: ReportSourceListItem },
+    existing: { item: Record<string, unknown>; evidenceKind: ReportEvidenceKind; source: ReportSourceListItem },
+  ): boolean {
+    const candidateEvidence = candidate.evidenceKind === 'evidence_card' ? 1 : 0;
+    const existingEvidence = existing.evidenceKind === 'evidence_card' ? 1 : 0;
+    if (candidateEvidence !== existingEvidence) return candidateEvidence > existingEvidence;
+
+    const credibility = (item: Record<string, unknown>) =>
+      this.firstNumber(item, ['credibility_score', 'credibilityScore']) || 0;
+    const candidateCredibility = credibility(candidate.item);
+    const existingCredibility = credibility(existing.item);
+    if (candidateCredibility !== existingCredibility) return candidateCredibility > existingCredibility;
+
+    const contentLength = (item: Record<string, unknown>) => [
+      'summary', 'excerpt', 'content', 'contentText', 'content_text', 'body', 'text',
+    ].reduce((length, key) => length + this.firstString(item, [key]).length, 0);
+    return contentLength(candidate.item) > contentLength(existing.item);
   }
 
   private extractToolSearchRawItems(value: unknown, depth = 0): Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> {
@@ -5298,7 +5374,7 @@ export class ReportsService implements OnModuleDestroy {
       const evidenceKind = this.evidenceKindForToolSearchKey(key);
       if (evidenceKind && Array.isArray(candidate)) {
         for (const item of candidate) {
-          if (this.isToolSearchRawItem(item)) result.push({ item, evidenceKind });
+          if (this.isToolSearchRawItem(item, evidenceKind)) result.push({ item, evidenceKind });
         }
       } else if (candidate && typeof candidate === 'object') {
         result.push(...this.extractToolSearchRawItems(candidate, depth + 1));
@@ -5317,7 +5393,7 @@ export class ReportsService implements OnModuleDestroy {
     return null;
   }
 
-  private isToolSearchRawItem(item: unknown): boolean {
+  private isToolSearchRawItem(item: unknown, evidenceKind?: ReportEvidenceKind): boolean {
     if (!item || typeof item !== 'object') return false;
     const source = item as Record<string, unknown>;
     const haystack = [
@@ -5326,7 +5402,8 @@ export class ReportsService implements OnModuleDestroy {
       this.firstString(source, ['source_type', 'type', 'sourceType']),
       this.firstString(source, ['url', 'source_url', 'data_source_url', 'sourceUrl']),
     ].join(' ').toLowerCase();
-    return /\b(exa|firecrawl|tavily|tavily_extract)\b/.test(haystack);
+    return /\b(exa|firecrawl|tavily|tavily_extract)\b/.test(haystack)
+      || (evidenceKind === 'evidence_card' && /\bweb_fetch\b/.test(haystack));
   }
 
   private normalizeToolSearchSourceItem(
@@ -5337,7 +5414,12 @@ export class ReportsService implements OnModuleDestroy {
     if (!item || typeof item !== 'object') return null;
     const source = item as Record<string, unknown>;
     const normalized = this.normalizeSourceRecord(source, index, 'tool_search');
-    const engine = this.inferToolSearchEngine(normalized, source);
+    const inferredEngine = this.inferToolSearchEngine(normalized, source);
+    const engine = inferredEngine || (
+      evidenceKind === 'evidence_card' && /\bweb_fetch\b/i.test(JSON.stringify(source))
+        ? 'tavily_extract'
+        : undefined
+    );
     if (!engine) return null;
     return {
       ...normalized,
