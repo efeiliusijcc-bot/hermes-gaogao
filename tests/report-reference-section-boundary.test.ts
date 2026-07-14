@@ -10,6 +10,8 @@ const service = Object.create(ReportsService.prototype) as ReportsService & {
   reportReferencesArtifactCandidatePaths(job: Record<string, unknown>): Promise<string[]>;
   readJsonFile(filePath: string): Promise<unknown>;
   readReportReferencesArtifact(job: Record<string, unknown>): Promise<Array<Record<string, unknown>> | null>;
+  reportMarkdown(job: Record<string, unknown>): Promise<string>;
+  readMarkdownFile(filePath: string | null, jobId?: string): Promise<{ filePath: string; markdown: string } | null>;
 };
 
 const markdown = `# Test report
@@ -79,6 +81,18 @@ const fullWidthMatchedReferences = await service.buildReportReferenceItems(
 assert.equal(fullWidthMatchedReferences.length, 1);
 assert.equal(fullWidthMatchedReferences[0].citationNo, 1);
 assert.equal(fullWidthMatchedReferences[0].matchStatus, 'matched');
+
+let markdownReadArgs: [string | null, string | undefined] | null = null;
+service.readMarkdownFile = async (filePath, jobId) => {
+  markdownReadArgs = [filePath, jobId];
+  return { filePath: '/app/storage/artifacts/reports/job-relative/final/report.md', markdown: fullWidthMarkdown };
+};
+const relativeReportMarkdown = await service.reportMarkdown({
+  jobId: 'job-relative',
+  resultPath: 'reports/job-relative/final/report.md',
+});
+assert.equal(relativeReportMarkdown, fullWidthMarkdown);
+assert.deepEqual(markdownReadArgs, ['reports/job-relative/final/report.md', 'job-relative']);
 
 service.reportReferencesArtifactCandidatePaths = async () => ['/tmp/legacy-report-references.json'];
 service.readJsonFile = async () => ({

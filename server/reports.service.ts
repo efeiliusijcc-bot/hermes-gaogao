@@ -5353,7 +5353,7 @@ export class ReportsService implements OnModuleDestroy {
 
   private async reportMarkdown(job: JobRecord): Promise<string> {
     if (job.markdown) return job.markdown;
-    const recovered = await this.readMarkdownFile(job.resultPath || null);
+    const recovered = await this.readMarkdownFile(job.resultPath || null, job.jobId);
     return recovered?.markdown || '';
   }
 
