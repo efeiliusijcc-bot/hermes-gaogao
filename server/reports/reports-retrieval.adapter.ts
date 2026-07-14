@@ -28,6 +28,7 @@ export class ReportsRetrievalAdapter {
 
   async retrieveDatabaseSources(input: {
     reportJobId: string;
+    lookbackDays?: number;
     payload: ExistingReportPayload;
     payloadContext: ExistingPayloadContext;
   }): Promise<ReportsRetrievalAdapterResult> {
@@ -36,7 +37,7 @@ export class ReportsRetrievalAdapter {
       topic: String(input.payload.topic || ''),
       supplement: input.payloadContext.supplement,
       explicitEntities: input.payloadContext.explicitEntities,
-      explicitTimeRange: input.payloadContext.explicitTimeRange,
+      explicitTimeRange: this.explicitTimeRange(input.payloadContext) || this.lookbackTimeRange(input.lookbackDays),
       knownContext: input.payload.known_context,
     });
     const result = await this.retrieval.retrieve(cleanInput);
@@ -58,6 +59,26 @@ export class ReportsRetrievalAdapter {
         retrievalScores: source.scores,
         retrievalRunId: result.runId,
       })),
+    };
+  }
+
+  private explicitTimeRange(context: ExistingPayloadContext): unknown {
+    for (const value of [context.explicitTimeRange, context.timeRange]) {
+      if (!value || typeof value !== 'object') continue;
+      const range = value as Record<string, unknown>;
+      if (typeof range.start === 'string' && range.start.trim()) return value;
+      if (typeof range.end === 'string' && range.end.trim()) return value;
+    }
+    return undefined;
+  }
+
+  private lookbackTimeRange(lookbackDays: number | undefined): { start: string; end: string } | undefined {
+    const days = lookbackDays ?? 30;
+    if (!Number.isFinite(days) || days <= 0) return undefined;
+    const end = new Date();
+    return {
+      start: new Date(end.getTime() - days * 24 * 60 * 60 * 1000).toISOString(),
+      end: end.toISOString(),
     };
   }
 }
