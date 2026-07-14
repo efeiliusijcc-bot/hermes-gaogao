@@ -50,7 +50,8 @@
 
 1. URL 被 `evidence_cards` 引用；
 2. `credibility_score >= 0.8`；
-3. `credibility_tier` 为 `high` 或 `medium-high`。
+3. `credibility_tier` 为 `high` 或 `medium-high`；
+4. 已由后端 Web Supplement 标记为 accepted，或 `sourceQuality` 分数不低于 0.8 / 80。
 
 没有 URL 的记录不进入信源列表。普通搜索候选、Wikipedia、YouTube、搜索结果页等未达到上述条件的来源不展示。
 
@@ -154,4 +155,3 @@ API artifact research 目录
 - `npx pnpm@9.15.9 --dir b_k3ewYvsOEc1 build`；
 - 生产环境只部署 `hermes-api` 和前端，不操作 `gaogao-api`；
 - 用运行中的深度编报确认联网高价值信源随进度出现。
-
