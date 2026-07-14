@@ -113,4 +113,92 @@ const boundedSources = await service.toolSearchSources({ jobId, payload: {} });
 assert.equal(boundedSources.length, 50);
 assert.ok(extraResearchReads <= 50, `expected a bounded research scan, read ${extraResearchReads} extra files`);
 
+const databaseSource = {
+  id: 'database-1',
+  sourceGroup: 'structured_sources' as const,
+  sourceOrigin: 'database_recall' as const,
+  evidenceKind: 'structured_source' as const,
+  engine: 'database' as const,
+  title: 'Database source',
+  url: 'https://example.com/database',
+  sourceName: 'Database',
+  publishTime: '',
+  summary: '',
+  excerpt: '',
+  sourceType: '数据库记录',
+  relevanceScore: 0.9,
+  status: 'accepted',
+  method: 'database',
+};
+
+const endpointService = Object.create(ReportsService.prototype) as ReportsService & Record<string, unknown>;
+endpointService.assertCanAccessJob = () => ({ jobId, payload: {} });
+endpointService.normalizeReportSourceType = () => 'all';
+endpointService.parsePositiveInt = (value: unknown, fallback: number) => Number(value) || fallback;
+endpointService.structuredReportSources = async () => [databaseSource];
+endpointService.crawlerReportSources = async () => [];
+endpointService.toolSearchSources = async () => [];
+endpointService.candidateHitSources = async () => ({ items: [], total: 0, detailSaved: false });
+endpointService.extractFailedSources = async () => [];
+endpointService.resolveHermesJobDir = async () => {
+  throw new Error('legacy job directory lookup failed');
+};
+endpointService.reportReferenceSources = async (job: Record<string, unknown>) => {
+  await (endpointService.resolveHermesJobDir as (value: Record<string, unknown>) => Promise<null>)(job);
+  return [];
+};
+endpointService.reportSourceDiagnostics = async (job: Record<string, unknown>) => {
+  await (endpointService.resolveHermesJobDir as (value: Record<string, unknown>) => Promise<null>)(job);
+  return {};
+};
+
+const databaseResponse = await endpointService.getSources(jobId, {}, {} as never);
+
+assert.deepEqual(databaseResponse?.items.map((item) => item.url), ['https://example.com/database']);
+assert.equal(databaseResponse?.meta?.summary && (databaseResponse.meta.summary as { databaseRecallCount: number }).databaseRecallCount, 1);
+
+const eligibleResearchSources = Array.from({ length: 55 }, (_, index) => ({
+  id: `high-value-${index}`,
+  sourceGroup: 'tool_search' as const,
+  sourceOrigin: 'tool_search' as const,
+  evidenceKind: 'research_source' as const,
+  engine: 'tavily' as const,
+  title: `High-value source ${index}`,
+  url: `https://example.com/high-value-${index}`,
+  sourceName: 'Example',
+  publishTime: '',
+  summary: '',
+  excerpt: '',
+  sourceType: '互联网搜索',
+  relevanceScore: 0.9,
+  status: 'accepted',
+  method: 'research',
+}));
+const eligibleMatchedReference = {
+  ...eligibleResearchSources[0],
+  id: 'report-ref-eligible',
+  sourceGroup: 'report_refs' as const,
+  evidenceKind: 'report_reference' as const,
+  title: 'Matched eligible report reference',
+  citationNo: 1,
+  matchStatus: 'matched' as const,
+};
+const ineligibleMatchedReference = {
+  ...eligibleMatchedReference,
+  id: 'report-ref-ineligible',
+  title: 'Matched but unverified report reference',
+  url: 'https://example.com/unverified-report-reference',
+  citationNo: 2,
+};
+
+const finalToolSearch = service.toolSearchChannelSources(
+  eligibleResearchSources,
+  [eligibleMatchedReference, ineligibleMatchedReference],
+  [],
+);
+
+assert.equal(finalToolSearch.length, 50);
+assert.ok(finalToolSearch.every((item) => item.url !== 'https://example.com/unverified-report-reference'));
+assert.equal(finalToolSearch.find((item) => item.url === 'https://example.com/high-value-0')?.citationNo, 1);
+
 console.log('report live tool search sources tests passed');

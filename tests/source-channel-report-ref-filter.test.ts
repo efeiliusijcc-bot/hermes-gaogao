@@ -43,7 +43,17 @@ const matchedRef = {
   matchStatus: 'matched',
 };
 
-const result = service.toolSearchChannelSources([], [rawOnlyRef, matchedRef], []);
+const eligibleResearchSource = {
+  ...matchedRef,
+  id: 'research-source',
+  sourceGroup: 'tool_search',
+  sourceOrigin: 'tool_search',
+  evidenceKind: 'evidence_card',
+  citationNo: undefined,
+  matchStatus: undefined,
+};
+
+const result = service.toolSearchChannelSources([eligibleResearchSource], [rawOnlyRef, matchedRef], []);
 
 assert.equal(result.length, 1);
 assert.equal(result[0].url, 'https://example.com/source');

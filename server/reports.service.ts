@@ -1458,19 +1458,28 @@ export class ReportsService implements OnModuleDestroy {
     const type = this.normalizeReportSourceType(options.type);
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 10), 100);
+    const optional = async <T>(load: () => Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await load();
+      } catch {
+        return fallback;
+      }
+    };
 
     const [reportRefs, structuredSources, crawlerSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
-      this.reportReferenceSources(job),
+      optional(() => this.reportReferenceSources(job), []),
       this.structuredReportSources(job),
-      this.crawlerReportSources(job),
-      this.toolSearchSources(job),
-      type === 'candidate_hits' ? this.candidateHitSources(job) : Promise.resolve({ items: [], total: 0, detailSaved: false }),
-      type === 'extract_failed' ? this.extractFailedSources(job) : Promise.resolve([]),
+      optional(() => this.crawlerReportSources(job), []),
+      optional(() => this.toolSearchSources(job), []),
+      type === 'candidate_hits'
+        ? optional(() => this.candidateHitSources(job), { items: [], total: 0, detailSaved: false })
+        : Promise.resolve({ items: [], total: 0, detailSaved: false }),
+      type === 'extract_failed' ? optional(() => this.extractFailedSources(job), []) : Promise.resolve([]),
     ]);
 
     const databaseRecall = this.databaseRecallChannelSources(structuredSources, reportRefs);
     const toolSearch = this.toolSearchChannelSources(toolSearchSources, reportRefs, databaseRecall);
-    const sourceDiagnostics = await this.reportSourceDiagnostics(job);
+    const sourceDiagnostics = await optional(() => this.reportSourceDiagnostics(job), {} as Record<string, unknown>);
     const summary: ReportSourceSummary = {
       databaseRecallCount: databaseRecall.length,
       crawlerCount: crawlerSources.length,
@@ -4824,7 +4833,6 @@ export class ReportsService implements OnModuleDestroy {
     reportRefs: ReportSourceListItem[],
     databaseRecall: ReportSourceListItem[],
   ): ReportSourceListItem[] {
-    const databaseKeys = new Set(databaseRecall.map((item) => this.sourceDedupeKey(item)).filter(Boolean));
     const researchItems = researchSources.map((source) => ({
       ...source,
       sourceGroup: 'tool_search' as const,
@@ -4837,7 +4845,7 @@ export class ReportsService implements OnModuleDestroy {
       .filter((ref) => {
         const key = this.sourceDedupeKey(ref);
         if (!key || !ref.url || ref.matchStatus !== 'matched') return false;
-        return !databaseKeys.has(key) || researchKeys.has(key);
+        return researchKeys.has(key);
       })
       .map((ref) => ({
         ...ref,
@@ -4846,7 +4854,7 @@ export class ReportsService implements OnModuleDestroy {
         evidenceKind: 'report_reference' as const,
         engine: this.inferToolSearchEngine(ref),
       }));
-    return this.mergeReportSourceItems([...researchItems, ...publicRefs], 'tool_search');
+    return this.mergeReportSourceItems([...researchItems, ...publicRefs], 'tool_search').slice(0, 50);
   }
 
   private mergeReportSourceItems(
