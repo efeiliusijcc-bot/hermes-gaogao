@@ -4897,11 +4897,11 @@ export class ReportsService implements OnModuleDestroy {
       /\n\s*(?:\*\*)?\s*(?:\u6765\u6e90\u53ef\u4fe1\u5ea6\u8bc4\u4f30|\u4fe1\u6e90\u53ef\u4fe1\u5ea6\u8bc4\u4f30|\u4fe1\u606f\u7f3a\u53e3|source credibility assessment|information gaps?)\s*[:\uff1a]?\s*(?:\*\*)?\s*(?=\n|$)/iu,
     );
     const refText = boundary >= 0 ? sectionText.slice(0, boundary) : sectionText;
-    const regex = /(?:^|\n)\s*(?:\[(\d{1,3})\]|(\d{1,3})[\u3001.\uff0e])\s*([\s\S]*?)(?=\n\s*(?:\[\d{1,3}\]|\d{1,3}[\u3001.\uff0e])\s*|$)/g;
+    const regex = /(?:^|\n)\s*(?:\[(\d{1,3})\]|〔(\d{1,3})〕|【(\d{1,3})】|(\d{1,3})[\u3001.\uff0e])\s*([\s\S]*?)(?=\n\s*(?:\[\d{1,3}\]|〔\d{1,3}〕|【\d{1,3}】|\d{1,3}[\u3001.\uff0e])\s*|$)/g;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(refText)) !== null) {
-      const number = Number(match[1] || match[2]);
-      const entry = String(match[3] || '').replace(/\s+/g, ' ').trim();
+      const number = Number(match[1] || match[2] || match[3] || match[4]);
+      const entry = String(match[5] || '').replace(/\s+/g, ' ').trim();
       if (!number || !entry) continue;
       const url = entry.match(/https?:\/\/\S+/)?.[0]?.replace(/[),.;\uff0c\u3002\uff1b\uff09]+$/g, '') || '';
       const title = url ? entry.replace(url, '').trim() : entry;
@@ -5372,10 +5372,10 @@ export class ReportsService implements OnModuleDestroy {
     const body = refsStart >= 0 ? markdown.slice(0, refsStart) : markdown;
     const seen = new Set<number>();
     const numbers: number[] = [];
-    const regex = /\[(\d{1,3})\]/g;
+    const regex = /\[(\d{1,3})\]|〔(\d{1,3})〕|【(\d{1,3})】/g;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(body)) !== null) {
-      const number = Number(match[1]);
+      const number = Number(match[1] || match[2] || match[3]);
       if (!number || seen.has(number)) continue;
       seen.add(number);
       numbers.push(number);

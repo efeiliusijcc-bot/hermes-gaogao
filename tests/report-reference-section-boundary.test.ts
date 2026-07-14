@@ -55,6 +55,31 @@ assert.equal(matchedReferences[0].url, 'https://example.com/source');
 assert.equal(matchedReferences[0].matchStatus, 'matched');
 assert.equal(matchedReferences[0].sourceOrigin, 'tool_search');
 
+const fullWidthMarkdown = `# 测试报告
+
+正文事实〔1〕。
+
+## 四、参考资料
+
+〔1〕Example News. Verified source. https://example.com/source
+
+**来源可信度评估：**
+
+该来源已经交叉验证。
+`;
+
+const fullWidthReferences = service.parseReferenceEntriesRobust(fullWidthMarkdown);
+assert.equal(fullWidthReferences.size, 1);
+assert.equal(fullWidthReferences.get(1)?.url, 'https://example.com/source');
+
+const fullWidthMatchedReferences = await service.buildReportReferenceItems(
+  { jobId: 'job-full-width-reference' },
+  fullWidthMarkdown,
+);
+assert.equal(fullWidthMatchedReferences.length, 1);
+assert.equal(fullWidthMatchedReferences[0].citationNo, 1);
+assert.equal(fullWidthMatchedReferences[0].matchStatus, 'matched');
+
 service.reportReferencesArtifactCandidatePaths = async () => ['/tmp/legacy-report-references.json'];
 service.readJsonFile = async () => ({
   references: [{
