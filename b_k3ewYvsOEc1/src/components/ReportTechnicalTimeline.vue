@@ -72,7 +72,7 @@ function statusLabel(status) {
 }
 
 function formatClock(value) {
-  if (!value) return ''
+  if (!value) return '时间未记录'
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return String(value)
   return parsed.toLocaleTimeString('zh-CN', { hour12: false })
@@ -100,6 +100,14 @@ function eventStatusLabel(status) {
   if (value === 'failed' || value === 'error') return '异常'
   if (value === 'done' || value === 'completed' || value === 'succeeded') return '已完成'
   return '进行中'
+}
+
+function actorLabel(actor) {
+  const value = String(actor || '').toLowerCase()
+  if (value === 'research-agent') return '调研智能体'
+  if (value === 'synthesis-agent') return '撰稿智能体'
+  if (value === 'main-agent') return '主智能体'
+  return '系统'
 }
 </script>
 
@@ -148,10 +156,13 @@ function eventStatusLabel(status) {
                 <span v-if="event.toolDisplayName" class="technical-timeline-event-tool">
                   {{ event.toolDisplayName }}
                 </span>
+                <span v-if="event.reconstructed" class="technical-timeline-event-reconstructed">状态还原</span>
+                <span class="technical-timeline-event-actor">执行角色：{{ actorLabel(event.actor) }}</span>
                 <strong>{{ event.title }}</strong>
               </div>
               <div class="technical-timeline-event-meta">
                 <time>{{ formatClock(event.occurredAt || event.time) }}</time>
+                <span v-if="event.durationLabel">耗时 {{ event.durationLabel }}</span>
                 <span>{{ eventStatusLabel(event.status) }}</span>
               </div>
             </header>
@@ -324,7 +335,9 @@ function eventStatusLabel(status) {
 }
 
 .technical-timeline-event-stage,
-.technical-timeline-event-tool {
+.technical-timeline-event-tool,
+.technical-timeline-event-reconstructed,
+.technical-timeline-event-actor {
   color: #2563eb;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
   font-size: 9px;
@@ -334,6 +347,18 @@ function eventStatusLabel(status) {
 .technical-timeline-event-tool {
   padding-left: 8px;
   border-left: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.technical-timeline-event-reconstructed {
+  padding: 2px 5px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 4px;
+  color: #475569;
+  background: #fff;
+}
+
+.technical-timeline-event-actor {
+  color: #64748b;
 }
 
 .technical-timeline-event-meta {

@@ -571,6 +571,8 @@ export function useReportJobs() {
   }
 
   function executionLogKey(entry) {
+    const identity = entry.eventId || entry.toolId || entry.id || entry.occurredAt || entry.time || ''
+    if (identity) return `${identity}:${entry.type || ''}:${entry.status || ''}`
     return `${entry.type}:${entry.status || ''}:${entry.toolName || ''}:${entry.summary || ''}:${entry.command || ''}`
   }
 
@@ -590,6 +592,7 @@ export function useReportJobs() {
       time: formatLogTime(occurredAt),
       ...entry,
     })
+    if (jobLogs.length > 500) jobLogs.splice(0, jobLogs.length - 500)
     if (activeExecutionLogJobId === jobId) {
       executionLogs.value = jobLogs
       if (!isLogDrawerOpen.value) unreadLogCount.value += 1

@@ -32,6 +32,7 @@ import {
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
 import { sanitizeLegacyPlanningContext, sanitizeReportPayload } from './legacy-planning-context.js';
 import { ResearchKeysService } from './research-keys.service.js';
+import { consumeHermesRunEventStream, HermesRunEventBridge } from './hermes-run-events.js';
 import { ENTITY_POLICY_PROMPT, extractEntityPolicy as extractEntityPolicyWithFallback, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
 import type { DeepReportSourceCollectionInput } from './deep-report-source-collection.types.js';
 import type { HermesHealth, ReportPlanRequest, ReportPlanResponse, RunInput, RunResult, ServerEvent } from './types.js';
@@ -285,51 +286,121 @@ export class HermesService {
         },
       }),
     });
-
-    const immediateText = this.extractRunsFinalText(created).trim();
-    if (this.isFinalReportText(immediateText, input.skill === 'write-hb')) {
-      input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes runs API returned a complete response.' });
-      this.assertNoApprovalCommands(immediateText);
-      return { markdown: immediateText, artifacts: { runMode: 'runs_api', hermesRunId: this.extractRunsId(created) || '' } };
-    }
-
     const runId = this.extractRunsId(created);
-    if (!runId) {
-      const fallbackText = immediateText || JSON.stringify(created).slice(0, 2000);
-      throw new Error(`Hermes runs API did not return a run id or final report text. Response: ${fallbackText}`);
-    }
+    const eventStream = runId ? this.startRunsEventStream(runId, input.onEvent) : null;
 
-    let announcedPoll = false;
-    while (Date.now() - startedAt < REPORT_TIMEOUT_MS) {
-      if (!announcedPoll) {
-        input.onEvent({
-          type: 'stage',
-          stage: 'waiting_final_report',
-          message: `Hermes run ${runId} is still running.`,
+    try {
+      const immediateText = this.extractRunsFinalText(created).trim();
+      if (this.isFinalReportText(immediateText, input.skill === 'write-hb')) {
+        input.onEvent({ type: 'stage', stage: 'received', message: 'Hermes runs API returned a complete response.' });
+        this.assertNoApprovalCommands(immediateText);
+        return { markdown: immediateText, artifacts: { runMode: 'runs_api', hermesRunId: runId || '' } };
+      }
+
+      if (!runId) {
+        const fallbackText = immediateText || JSON.stringify(created).slice(0, 2000);
+        throw new Error(`Hermes runs API did not return a run id or final report text. Response: ${fallbackText}`);
+      }
+
+      let announcedPoll = false;
+      while (Date.now() - startedAt < REPORT_TIMEOUT_MS) {
+        if (!announcedPoll) {
+          input.onEvent({
+            type: 'stage',
+            stage: 'waiting_final_report',
+            message: `Hermes run ${runId} is still running.`,
+          });
+          announcedPoll = true;
+        }
+
+        await this.sleep(RUNS_API_POLL_INTERVAL_MS);
+        const run = await this.fetchHermesRunsJson(`${HERMES_RUNS_URL.replace(/\/$/, '')}/${encodeURIComponent(runId)}`, {
+          method: 'GET',
         });
-        announcedPoll = true;
+        const status = this.extractRunsStatus(run);
+        const text = this.extractRunsFinalText(run).trim();
+
+        if (this.isFinalReportText(text, input.skill === 'write-hb')) {
+          input.onEvent({ type: 'stage', stage: 'received', message: `Hermes run ${runId} completed and returned REPORT_FILE.` });
+          this.assertNoApprovalCommands(text);
+          return { markdown: text, artifacts: { runMode: 'runs_api', hermesRunId: runId, hermesRunStatus: status } };
+        }
+
+        if (this.isRunsTerminalStatus(status)) {
+          const errorText = this.extractRunsError(run) || text || JSON.stringify(run).slice(0, 2000);
+          throw new Error(`Hermes run ${runId} ended with status ${status || 'unknown'}: ${errorText}`);
+        }
       }
 
-      await this.sleep(RUNS_API_POLL_INTERVAL_MS);
-      const run = await this.fetchHermesRunsJson(`${HERMES_RUNS_URL.replace(/\/$/, '')}/${encodeURIComponent(runId)}`, {
-        method: 'GET',
-      });
-      const status = this.extractRunsStatus(run);
-      const text = this.extractRunsFinalText(run).trim();
-
-      if (this.isFinalReportText(text, input.skill === 'write-hb')) {
-        input.onEvent({ type: 'stage', stage: 'received', message: `Hermes run ${runId} completed and returned REPORT_FILE.` });
-        this.assertNoApprovalCommands(text);
-        return { markdown: text, artifacts: { runMode: 'runs_api', hermesRunId: runId, hermesRunStatus: status } };
-      }
-
-      if (this.isRunsTerminalStatus(status)) {
-        const errorText = this.extractRunsError(run) || text || JSON.stringify(run).slice(0, 2000);
-        throw new Error(`Hermes run ${runId} ended with status ${status || 'unknown'}: ${errorText}`);
-      }
+      throw new Error(`Hermes run ${runId} timed out.`);
+    } finally {
+      await this.finishRunsEventStream(eventStream);
     }
+  }
 
-    throw new Error(`Hermes run ${runId} timed out.`);
+  private startRunsEventStream(runId: string, onEvent: (event: ServerEvent) => void) {
+    const controller = new AbortController();
+    const bridge = new HermesRunEventBridge(({ name, preview, status }) => {
+      const phase = status === 'started' ? 'call' : status === 'failed' ? 'error' : 'output';
+      const readable = this.summarizeToolEvent({
+        phase,
+        name,
+        status,
+        command: preview,
+        ...(status === 'failed' ? { error: 'tool failed' } : {}),
+      });
+      if (!readable.phase) {
+        const completed = status === 'started' ? '正在执行。' : status === 'failed' ? '执行失败。' : '已完成。';
+        return {
+          phase: 'technical_detail',
+          actor: 'main-agent',
+          label: '执行编报步骤',
+          summary: `编报步骤${completed}`,
+        };
+      }
+      return {
+        phase: readable.phase || 'technical_detail',
+        actor: readable.actor || 'main-agent',
+        label: readable.label,
+        summary: readable.summary,
+        command: readable.command,
+        detail: readable.detail,
+      };
+    });
+    const url = `${HERMES_RUNS_URL.replace(/\/$/, '')}/${encodeURIComponent(runId)}/events`;
+    const promise = consumeHermesRunEventStream({
+      url,
+      headers: HERMES_API_KEY ? { Authorization: `Bearer ${HERMES_API_KEY}` } : {},
+      signal: controller.signal,
+      onEvent: (event) => {
+        for (const translated of bridge.translate(event)) onEvent(translated);
+      },
+    }).catch((error) => {
+      if (controller.signal.aborted) return;
+      onEvent({
+        type: 'stage',
+        stage: 'execution_log_unavailable',
+        message: `执行记录通道暂不可用，编报任务继续运行。${this.sanitizeText(error instanceof Error ? error.message : String(error), 120)}`,
+      });
+    });
+    return { controller, promise };
+  }
+
+  private async finishRunsEventStream(
+    stream: { controller: AbortController; promise: Promise<unknown> } | null,
+  ): Promise<void> {
+    if (!stream) return;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    await Promise.race([
+      stream.promise,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, 1500);
+        timeout.unref?.();
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    stream.controller.abort();
+    await stream.promise;
   }
 
   async runReportViaHttpSse(input: RunInput): Promise<RunResult> {
@@ -2380,6 +2451,24 @@ export class HermesService {
         label: pgSourceEvent ? 'PG向量信源检索' : '数据库信源检索',
         summary: `${pgSourceEvent ? 'PG向量信源召回' : '数据库信源检索'}${completed}。`,
         detail: pgSourceEvent ? 'pg-sources__query PostgreSQL vector source lookup' : this.describeDatabaseMcpTool(name),
+      };
+    }
+
+    if (/web[_-]?(?:fetch|crawl|scrape)|browser[_-]?(?:fetch|crawl)|extract[_-]?(?:page|content)/.test(haystack)) {
+      return {
+        phase: 'research_collecting',
+        actor: 'research-agent',
+        label: '提取公开资料',
+        summary: `公开资料正文提取${completed}。`,
+      };
+    }
+
+    if (/web[_-]?search|browser[_-]?search|public[_-]?search/.test(haystack)) {
+      return {
+        phase: 'research_collecting',
+        actor: 'research-agent',
+        label: '公开资料检索',
+        summary: `公开资料检索${completed}。`,
       };
     }
 

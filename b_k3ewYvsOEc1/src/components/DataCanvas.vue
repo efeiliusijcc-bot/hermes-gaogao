@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
+import { buildReadableExecutionLogs, translateHermesExecutionLog } from '../lib/reportExecutionLogs.js'
 import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 import { getTruthfulSourceStats } from '../lib/sourceStats.js'
@@ -3001,7 +3002,7 @@ function rawProgressStageIndex(rawLog) {
 }
 
 function logProgressStageIndex(log) {
-  const view = translateHermesLog(log)
+  const view = translateHermesExecutionLog(log)
   const stageIndex = progressStageOrder[view.stage]
   if (Number.isInteger(stageIndex)) return stageIndex
   return rawProgressStageIndex(view.raw)
@@ -3042,13 +3043,18 @@ const progressStageFlow = computed(() => {
 
 const translatedTechnicalLogs = computed(() => technicalLogs.value.map((log) => ({
   ...log,
-  ...translateHermesLog(log),
+  ...translateHermesExecutionLog(log),
   occurredAt: log?.occurredAt || log?.time || '',
 })))
 
-const technicalTimelineGroups = computed(() => buildReportTechnicalTimeline({
+const readableTechnicalLogs = computed(() => buildReadableExecutionLogs({
   stages: progressStageFlow.value,
   logs: translatedTechnicalLogs.value,
+}))
+
+const technicalTimelineGroups = computed(() => buildReportTechnicalTimeline({
+  stages: progressStageFlow.value,
+  logs: readableTechnicalLogs.value,
 }))
 
 const executionTaskCards = computed(() => progressStageFlow.value.map((stage) => ({

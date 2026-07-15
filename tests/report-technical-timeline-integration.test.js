@@ -13,6 +13,8 @@ test('execution log cache preserves an ISO occurrence timestamp for history and 
   assert.match(source, /const occurredAt = new Date\(\)\.toISOString\(\)/);
   assert.match(source, /time:\s*formatLogTime\(occurredAt\)/);
   assert.match(source, /occurredAt,/);
+  assert.match(source, /entry\.eventId\s*\|\|\s*entry\.toolId\s*\|\|\s*entry\.id/);
+  assert.match(source, /jobLogs\.splice\(0,\s*jobLogs\.length\s*-\s*500\)/);
 });
 
 test('DataCanvas reuses the technical timeline for live and historical inline details', async () => {
@@ -22,12 +24,17 @@ test('DataCanvas reuses the technical timeline for live and historical inline de
   ]);
 
   assert.match(canvas, /import ReportTechnicalTimeline from '.\/ReportTechnicalTimeline\.vue'/);
+  assert.match(canvas, /buildReadableExecutionLogs/);
+  assert.match(canvas, /readableTechnicalLogs/);
   assert.equal((canvas.match(/<ReportTechnicalTimeline/g) || []).length, 2);
   assert.equal((canvas.match(/:task-status="overallProgressStatus"/g) || []).length, 2);
   assert.match(canvas, /deep_source_collection:\s*\['DEEP_COLLECTION'/);
   assert.match(timeline, /taskStatus/);
   assert.match(timeline, /defaultExpandedTimelineKeys/);
   assert.match(timeline, /原始记录/);
+  assert.match(timeline, /状态还原/);
+  assert.match(timeline, /actorLabel\(event\.actor\)/);
+  assert.match(timeline, /执行角色/);
   assert.match(timeline, /阶段内暂无技术事件/);
   assert.match(timeline, /technical-timeline-event-raw summary::after\s*\{\s*content:\s*none/);
 });

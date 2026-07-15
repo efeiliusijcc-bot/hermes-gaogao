@@ -3930,6 +3930,7 @@ export class ReportsService implements OnModuleDestroy {
       .replace(/Hermes\s+report-agent/gi, '编报智能体')
       .replace(/Hermes\s+qa-agent/gi, '问答智能体')
       .replace(/Hermes/gi, '智能体服务')
+      .replace(/\/(?:opt\/data|app\/storage|home\/[^/]+|usr\/docker\/hermes)(?:\/[^\s]*)?/gi, '.../[路径已隐藏]')
       .replace(/(?:\/home\/node\/\.hermes\/workspace\/|\/usr\/docker\/hermes\/workspace\/)/gi, '.../')
       .replace(/\breport-agent\b/gi, '编报智能体')
       .replace(/\bqa-agent\b/gi, '问答智能体')
