@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import {
   createRole,
   createUser,
@@ -13,6 +13,7 @@ import {
 } from '../lib/api.js'
 import { userPasswordValidationMessage, userPasswordValidationState } from '../lib/userValidation.js'
 import { deriveRoleModules, deriveUserModules } from '../lib/permissionModules.js'
+import { filterUsers, paginateUsers } from '../lib/userListView.js'
 
 const props = defineProps({
   currentUser: {
@@ -56,6 +57,11 @@ const editingRoleId = ref('')
 const selectedRoleId = ref('')
 const roleDrawerOpen = ref(false)
 const roleDrawerMode = ref('create')
+const createDialogOpen = ref(false)
+const createDialogError = ref('')
+const createUsernameInputRef = ref(null)
+const searchKeyword = ref('')
+const currentPage = ref(1)
 
 const createForm = reactive({
   username: '',
@@ -88,6 +94,18 @@ const selectedRole = computed(() => availableRoles.value.find((role) => role.id 
 const selectedRoleModules = computed(() => roleModules(selectedRole.value))
 const createPasswordState = computed(() => userPasswordValidationState(createForm.password))
 const resetPasswordState = computed(() => userPasswordValidationState(passwordValue.value))
+const filteredUsers = computed(() => filterUsers(users.value, searchKeyword.value))
+const userPagination = computed(() => paginateUsers(filteredUsers.value, currentPage.value))
+const paginatedUsers = computed(() => userPagination.value.items)
+const totalPages = computed(() => userPagination.value.totalPages)
+
+watch(searchKeyword, () => {
+  currentPage.value = 1
+})
+
+watch(totalPages, (value) => {
+  if (currentPage.value > value) currentPage.value = value
+})
 
 onMounted(() => {
   if (canAccessManagement.value) {
@@ -234,6 +252,30 @@ function resetCreateForm() {
   createForm.roles = []
 }
 
+function openCreateUserDialog() {
+  if (saving.value) return
+  clearMessages()
+  resetCreateForm()
+  createDialogError.value = ''
+  createDialogOpen.value = true
+  nextTick(() => createUsernameInputRef.value?.focus())
+}
+
+function closeCreateUserDialog() {
+  if (saving.value) return
+  createDialogOpen.value = false
+  createDialogError.value = ''
+  resetCreateForm()
+}
+
+function clearUserSearch() {
+  searchKeyword.value = ''
+}
+
+function setUserPage(page) {
+  currentPage.value = Math.min(totalPages.value, Math.max(1, Number(page) || 1))
+}
+
 function selectRole(role) {
   if (!role?.id) return
   selectedRoleId.value = role.id
@@ -290,10 +332,11 @@ function closeRoleDrawer() {
 }
 
 async function submitCreateUser() {
-  clearMessages()
+  if (saving.value) return
+  createDialogError.value = ''
   const passwordError = userPasswordValidationMessage(createForm.password)
   if (passwordError) {
-    errorMessage.value = passwordError
+    createDialogError.value = passwordError
     return
   }
   saving.value = true
@@ -306,11 +349,17 @@ async function submitCreateUser() {
       role: createForm.roles[0] || undefined,
       roles: createForm.roles,
     })
-    noticeMessage.value = '用户已创建'
-    resetCreateForm()
     await loadUsers()
+    searchKeyword.value = ''
+    currentPage.value = 1
+    createDialogOpen.value = false
+    createDialogError.value = ''
+    resetCreateForm()
+    noticeMessage.value = '用户已创建'
   } catch (error) {
-    setError(error)
+    createDialogError.value = error?.status === 403
+      ? '无权限访问用户管理'
+      : (error instanceof Error ? error.message : String(error))
   } finally {
     saving.value = false
   }
@@ -470,7 +519,7 @@ async function confirmDeleteRole(role) {
       </div>
       <div class="user-management__actions">
         <button class="sci-btn" type="button" @click="emit('back')">返回工作台</button>
-        <button class="sci-btn sci-btn-primary" type="button" :disabled="loading || !canAccessManagement" @click="activeTab === 'roles' ? loadRoleData() : loadUsers()">
+        <button v-if="activeTab === 'roles'" class="sci-btn sci-btn-primary" type="button" :disabled="loading || !canManageRoles" @click="loadRoleData">
           {{ loading ? '刷新中...' : '刷新列表' }}
         </button>
       </div>
@@ -488,60 +537,36 @@ async function confirmDeleteRole(role) {
       <div v-if="noticeMessage" class="user-management__notice">{{ noticeMessage }}</div>
 
       <template v-if="activeTab === 'users'">
-        <form class="user-management__create panel" @submit.prevent="submitCreateUser">
-          <div class="user-management__section-title">
-            <span>新增用户</span>
-            <small>默认启用，可绑定一个或多个角色</small>
+        <div class="user-management__toolbar panel">
+          <div class="user-management__search">
+            <span class="user-management__search-icon" aria-hidden="true">⌕</span>
+            <input
+              v-model="searchKeyword"
+              class="sci-input"
+              type="search"
+              placeholder="搜索用户名、邮箱或备注"
+              aria-label="搜索用户"
+            />
+            <button
+              v-if="searchKeyword"
+              class="user-management__search-clear"
+              type="button"
+              aria-label="清空用户搜索"
+              title="清空搜索"
+              @click="clearUserSearch"
+            >×</button>
           </div>
-          <div class="user-management__form-grid">
-            <label>
-              <span>用户名</span>
-              <input v-model="createForm.username" class="sci-input" required maxlength="64" autocomplete="off" />
-            </label>
-            <label>
-              <span>密码</span>
-              <input
-                v-model="createForm.password"
-                class="sci-input"
-                :class="{ 'is-invalid': createPasswordState.touched && !createPasswordState.valid, 'is-valid': createPasswordState.valid }"
-                required
-                type="password"
-                minlength="8"
-                pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}"
-                title="至少 8 位，并同时包含字母和数字"
-                autocomplete="new-password"
-                :aria-invalid="createPasswordState.touched && !createPasswordState.valid"
-                aria-describedby="create-password-hint"
-              />
-              <small
-                id="create-password-hint"
-                class="password-validation-hint"
-                :class="{ error: createPasswordState.touched && !createPasswordState.valid, success: createPasswordState.valid }"
-                aria-live="polite"
-              >{{ createPasswordState.message }}</small>
-            </label>
-            <label>
-              <span>备注</span>
-              <input v-model="createForm.displayName" class="sci-input" maxlength="128" autocomplete="off" />
-            </label>
-            <label>
-              <span>邮箱</span>
-              <input v-model="createForm.email" class="sci-input" type="email" maxlength="255" autocomplete="off" />
-            </label>
-            <fieldset class="user-management__role-picker">
-              <legend>角色</legend>
-              <label v-for="role in availableRoles" :key="role.id">
-                <input type="checkbox" :checked="roleChecked(createForm, role.name)" @change="toggleRole(createForm, role.name)" />
-                <span>{{ roleLabel(role.name) }}</span>
-              </label>
-            </fieldset>
-            <div class="user-management__form-actions">
-              <button class="sci-btn sci-btn-primary" type="submit" :disabled="saving">
-                {{ saving ? '保存中...' : '创建用户' }}
-              </button>
-            </div>
+          <div class="user-management__toolbar-actions">
+            <button class="sci-btn" type="button" :disabled="loading" @click="loadUsers">
+              <span aria-hidden="true">↻</span>
+              {{ loading ? '刷新中...' : '刷新列表' }}
+            </button>
+            <button class="sci-btn sci-btn-primary" type="button" :disabled="saving" @click="openCreateUserDialog">
+              <span aria-hidden="true">+</span>
+              新增用户
+            </button>
           </div>
-        </form>
+        </div>
 
         <div class="user-management__table panel">
           <div class="user-management__table-head">
@@ -555,9 +580,10 @@ async function confirmDeleteRole(role) {
 
           <div v-if="loading" class="user-management__empty">正在读取用户列表...</div>
           <div v-else-if="!users.length" class="user-management__empty">暂无用户。</div>
+          <div v-else-if="!filteredUsers.length" class="user-management__empty">未找到匹配用户。</div>
 
           <template v-else>
-            <div v-for="user in users" :key="user.id" class="user-management__row">
+            <div v-for="user in paginatedUsers" :key="user.id" class="user-management__row">
               <div class="user-management__cell user-management__username">{{ user.username }}</div>
               <div class="user-management__cell user-management__roles">
                 <span v-for="role in userRoleNames(user)" :key="role" class="user-management__role">{{ roleLabel(role) }}</span>
@@ -642,6 +668,14 @@ async function confirmDeleteRole(role) {
               </form>
             </div>
           </template>
+
+          <footer v-if="!loading && users.length" class="user-management__pagination">
+            <span>第 {{ currentPage }} / {{ totalPages }} 页 · 共 {{ filteredUsers.length }} 条</span>
+            <div>
+              <button class="sci-btn" type="button" :disabled="currentPage <= 1" @click="setUserPage(currentPage - 1)">上一页</button>
+              <button class="sci-btn" type="button" :disabled="currentPage >= totalPages" @click="setUserPage(currentPage + 1)">下一页</button>
+            </div>
+          </footer>
         </div>
       </template>
 
@@ -804,6 +838,81 @@ async function confirmDeleteRole(role) {
         </aside>
       </template>
     </template>
+
+    <Teleport to="body">
+      <div
+        v-if="createDialogOpen"
+        class="user-management__create-backdrop"
+        @click.self="closeCreateUserDialog"
+        @keydown.esc.stop="closeCreateUserDialog"
+      >
+        <section class="user-management__create-dialog" role="dialog" aria-modal="true" aria-labelledby="create-user-dialog-title">
+          <form class="user-management__create-dialog-form" @submit.prevent="submitCreateUser">
+            <header class="user-management__create-dialog-header">
+              <div>
+                <p>NEW USER</p>
+                <h2 id="create-user-dialog-title">新增用户</h2>
+              </div>
+              <button class="user-management__create-dialog-close" type="button" :disabled="saving" aria-label="关闭新增用户窗口" @click="closeCreateUserDialog">×</button>
+            </header>
+
+            <div class="user-management__create-dialog-body">
+              <div v-if="createDialogError" class="user-management__error" role="alert">{{ createDialogError }}</div>
+              <div class="user-management__form-grid">
+                <label>
+                  <span>用户名</span>
+                  <input ref="createUsernameInputRef" v-model="createForm.username" class="sci-input" required maxlength="64" autocomplete="off" />
+                </label>
+                <label>
+                  <span>密码</span>
+                  <input
+                    v-model="createForm.password"
+                    class="sci-input"
+                    :class="{ 'is-invalid': createPasswordState.touched && !createPasswordState.valid, 'is-valid': createPasswordState.valid }"
+                    required
+                    type="password"
+                    minlength="8"
+                    pattern="(?=.*[A-Za-z])(?=.*[0-9]).{8,}"
+                    title="至少 8 位，并同时包含字母和数字"
+                    autocomplete="new-password"
+                    :aria-invalid="createPasswordState.touched && !createPasswordState.valid"
+                    aria-describedby="create-password-hint"
+                  />
+                  <small
+                    id="create-password-hint"
+                    class="password-validation-hint"
+                    :class="{ error: createPasswordState.touched && !createPasswordState.valid, success: createPasswordState.valid }"
+                    aria-live="polite"
+                  >{{ createPasswordState.message }}</small>
+                </label>
+                <label>
+                  <span>备注</span>
+                  <input v-model="createForm.displayName" class="sci-input" maxlength="128" autocomplete="off" />
+                </label>
+                <label>
+                  <span>邮箱</span>
+                  <input v-model="createForm.email" class="sci-input" type="email" maxlength="255" autocomplete="off" />
+                </label>
+                <fieldset class="user-management__role-picker">
+                  <legend>角色</legend>
+                  <label v-for="role in availableRoles" :key="role.id">
+                    <input type="checkbox" :checked="roleChecked(createForm, role.name)" @change="toggleRole(createForm, role.name)" />
+                    <span>{{ roleLabel(role.name) }}</span>
+                  </label>
+                </fieldset>
+              </div>
+            </div>
+
+            <footer class="user-management__create-dialog-footer">
+              <button class="sci-btn" type="button" :disabled="saving" @click="closeCreateUserDialog">取消</button>
+              <button class="sci-btn sci-btn-primary" type="submit" :disabled="saving">
+                {{ saving ? '创建中...' : '创建用户' }}
+              </button>
+            </footer>
+          </form>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -820,7 +929,7 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management__header,
-.user-management__create,
+.user-management__toolbar,
 .user-management__table,
 .role-management__list,
 .role-management__detail {
@@ -865,6 +974,7 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management__actions,
+.user-management__toolbar-actions,
 .user-management__form-actions,
 .user-management__inline-actions,
 .user-management__ops,
@@ -873,6 +983,67 @@ async function confirmDeleteRole(role) {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.user-management__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+}
+
+.user-management__search {
+  position: relative;
+  width: min(420px, 100%);
+}
+
+.user-management__search .sci-input {
+  width: 100%;
+  padding-left: 36px;
+  padding-right: 36px;
+}
+
+.user-management__search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.user-management__search-icon,
+.user-management__search-clear {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.user-management__search-icon {
+  left: 13px;
+  color: #64748b;
+  font-size: 16px;
+  pointer-events: none;
+}
+
+.user-management__search-clear {
+  right: 7px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #64748b;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.user-management__search-clear:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.user-management__toolbar-actions {
+  flex: 0 0 auto;
 }
 
 .user-management__tabs {
@@ -928,11 +1099,6 @@ async function confirmDeleteRole(role) {
   background: rgba(255, 255, 255, 0.9);
   color: #64748b;
   text-align: center;
-}
-
-.user-management__create {
-  margin-bottom: 16px;
-  padding: 18px;
 }
 
 .user-management__section-title {
@@ -1060,6 +1226,24 @@ async function confirmDeleteRole(role) {
 
 .user-management__row:last-child {
   border-bottom: 0;
+}
+
+.user-management__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+  padding: 12px 16px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.user-management__pagination > div {
+  display: flex;
+  gap: 8px;
 }
 
 .user-management__cell {
@@ -1535,6 +1719,118 @@ async function confirmDeleteRole(role) {
   padding: 16px 24px;
 }
 
+.user-management__create-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 24px 16px;
+  background: rgba(15, 23, 42, 0.38);
+  backdrop-filter: blur(4px);
+}
+
+.user-management__create-dialog {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.user-management__create-dialog-form {
+  display: flex;
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+}
+
+.user-management__create-dialog-header,
+.user-management__create-dialog-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+}
+
+.user-management__create-dialog-header {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.user-management__create-dialog-header p {
+  margin: 0 0 4px;
+  color: #0369a1;
+  font-family: "Fira Code", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.user-management__create-dialog-header h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.user-management__create-dialog-close {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  color: #64748b;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.user-management__create-dialog-close:hover:not(:disabled) {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.user-management__create-dialog-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.user-management__create-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.user-management__create-dialog-body .user-management__error {
+  margin-bottom: 16px;
+}
+
+.user-management__create-dialog .user-management__form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.user-management__create-dialog .user-management__form-grid > label {
+  grid-column: span 1;
+}
+
+.user-management__create-dialog .user-management__role-picker {
+  grid-column: 1 / -1;
+}
+
+.user-management__create-dialog-footer {
+  justify-content: flex-end;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
 @media (max-width: 1100px) {
   .user-management__table-head {
     display: none;
@@ -1573,6 +1869,19 @@ async function confirmDeleteRole(role) {
     flex-direction: column;
   }
 
+  .user-management__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .user-management__search {
+    width: 100%;
+  }
+
+  .user-management__toolbar-actions {
+    justify-content: flex-end;
+  }
+
   .user-management__form-grid,
   .user-management__inline-form,
   .user-management__inline-form.is-password,
@@ -1591,6 +1900,34 @@ async function confirmDeleteRole(role) {
 
   .role-drawer {
     width: 100vw;
+  }
+
+  .user-management__pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .user-management__pagination > div,
+  .user-management__pagination .sci-btn {
+    flex: 1;
+  }
+
+  .user-management__create-backdrop {
+    align-items: flex-end;
+    padding: 12px;
+  }
+
+  .user-management__create-dialog,
+  .user-management__create-dialog-form {
+    max-height: calc(100vh - 24px);
+  }
+
+  .user-management__create-dialog .user-management__form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .user-management__create-dialog .user-management__role-picker {
+    grid-column: auto;
   }
 }
 </style>
