@@ -524,6 +524,7 @@ export function useReportJobs() {
     if (Array.isArray(items)) {
       const normalized = items.map((item, index) => ({
         id: item.id || `${jobId}-saved-${index}`,
+        occurredAt: item.occurredAt || item.time || '',
         time: formatLogTime(item.time),
         type: item.type || 'stage',
         label: item.label || '执行日志',
@@ -564,9 +565,11 @@ export function useReportJobs() {
     const key = executionLogKey(entry)
     if (seen.has(key)) return
     seen.add(key)
+    const occurredAt = new Date().toISOString()
     jobLogs.push({
       id: `${Date.now()}-${executionLogs.value.length}`,
-      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      occurredAt,
+      time: formatLogTime(occurredAt),
       ...entry,
     })
     if (activeExecutionLogJobId === jobId) {
