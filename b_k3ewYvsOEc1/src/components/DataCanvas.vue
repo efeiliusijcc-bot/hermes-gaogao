@@ -1,8 +1,10 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
+import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
+import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 
 const purifyConfig = {
@@ -2152,6 +2154,9 @@ function workflowLogView(phase, rawLog, status) {
     research_waiting: ['WAITING_RESEARCH', '资料采集', '系统正在采集公开资料并提取关键事实。'],
     research_collecting: ['RESEARCHING', '资料采集', '系统正在采集公开资料并提取关键事实。'],
     research_complete: ['RESEARCH_DONE', '调研结果已返回', '调研已完成，系统正在收集结果。'],
+    deep_source_collection: ['DEEP_COLLECTION', '资料深度采集', '系统正在补充并核验公开资料。'],
+    deep_source_collection_done: ['DEEP_COLLECTION_DONE', '资料深度采集', '深度资料采集与核验已完成。'],
+    deep_source_collection_failed: ['DEEP_COLLECTION_FAILED', '资料深度采集', '深度资料采集出现异常，请查看原始记录。'],
     synthesis_dispatch: ['SYNTHESIS_TASK', '素材整合', '系统正在汇总信源、证据和分析要点，并准备进入撰稿。'],
     synthesis_waiting: ['WAITING_SYNTHESIS', '素材整合', '系统正在等待素材整合任务完成。'],
     synthesis_writing: ['WRITING', '报告撰写', '系统正在撰写报告正文并完成校验。'],
@@ -3037,6 +3042,17 @@ const progressStageFlow = computed(() => {
     status: resolvedProgressStageStatuses.value[index],
   }))
 })
+
+const translatedTechnicalLogs = computed(() => technicalLogs.value.map((log) => ({
+  ...log,
+  ...translateHermesLog(log),
+  occurredAt: log?.occurredAt || log?.time || '',
+})))
+
+const technicalTimelineGroups = computed(() => buildReportTechnicalTimeline({
+  stages: progressStageFlow.value,
+  logs: translatedTechnicalLogs.value,
+}))
 
 const executionTaskCards = computed(() => progressStageFlow.value.map((stage) => ({
   ...stage,
@@ -5175,33 +5191,11 @@ function exportPdf() {
           <details class="source-technical-details" open>
             <summary>查看技术详情</summary>
             <div ref="liveLogListRef" class="source-technical-log" @scroll="handleLogScroll('live', $event)">
-              <div v-if="technicalLogs.length" class="space-y-3">
-                <div
-                  v-for="log in technicalLogs"
-                  :key="log.id"
-                  class="friendly-log-card"
-                  :class="friendlyLogStatusClass(translateHermesLog(log).status)"
-                >
-                  <div class="friendly-log-main">
-                    <div class="friendly-log-dot"></div>
-                    <div class="min-w-0 flex-1">
-                      <div class="flex items-start justify-between gap-3">
-                        <div>
-                          <div class="friendly-log-stage">{{ translateHermesLog(log).stage }}</div>
-                          <div v-if="translateHermesLog(log).toolDisplayName" class="friendly-log-tool">
-                            工具：{{ translateHermesLog(log).toolDisplayName }}
-                          </div>
-                          <div class="friendly-log-title">{{ translateHermesLog(log).title }}</div>
-                        </div>
-                        <span class="friendly-log-status">{{ friendlyLogStatusLabel(translateHermesLog(log).status) }}</span>
-                      </div>
-                      <div class="friendly-log-description">{{ translateHermesLog(log).description }}</div>
-                      <pre v-if="translateHermesLog(log).raw" class="friendly-log-raw">{{ translateHermesLog(log).raw }}</pre>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div v-else class="source-empty-state">等待任务执行日志...</div>
+              <ReportTechnicalTimeline
+                :groups="technicalTimelineGroups"
+                :task-status="overallProgressStatus"
+                empty-text="等待任务执行日志..."
+              />
               <button
                 v-if="liveLogHasNewItems"
                 class="log-new-items-button"
@@ -5835,33 +5829,11 @@ function exportPdf() {
           <details class="source-technical-details result-technical-details" open>
             <summary>查看技术详情</summary>
             <div ref="liveLogListRef" class="source-technical-log" @scroll="handleLogScroll('live', $event)">
-              <div v-if="technicalLogs.length" class="space-y-3">
-                <div
-                  v-for="log in technicalLogs"
-                  :key="log.id"
-                  class="friendly-log-card"
-                  :class="friendlyLogStatusClass(translateHermesLog(log).status)"
-                >
-                  <div class="friendly-log-main">
-                    <div class="friendly-log-dot"></div>
-                    <div class="min-w-0 flex-1">
-                      <div class="flex items-start justify-between gap-3">
-                        <div>
-                          <div class="friendly-log-stage">{{ translateHermesLog(log).stage }}</div>
-                          <div v-if="translateHermesLog(log).toolDisplayName" class="friendly-log-tool">
-                            工具：{{ translateHermesLog(log).toolDisplayName }}
-                          </div>
-                          <div class="friendly-log-title">{{ translateHermesLog(log).title }}</div>
-                        </div>
-                        <span class="friendly-log-status">{{ friendlyLogStatusLabel(translateHermesLog(log).status) }}</span>
-                      </div>
-                      <div class="friendly-log-description">{{ translateHermesLog(log).description }}</div>
-                      <pre v-if="translateHermesLog(log).raw" class="friendly-log-raw">{{ translateHermesLog(log).raw }}</pre>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div v-else class="source-empty-state">当前任务暂无可展示进度日志。</div>
+              <ReportTechnicalTimeline
+                :groups="technicalTimelineGroups"
+                :task-status="overallProgressStatus"
+                empty-text="当前任务暂无可展示进度日志。"
+              />
               <button
                 v-if="liveLogHasNewItems"
                 class="log-new-items-button"
