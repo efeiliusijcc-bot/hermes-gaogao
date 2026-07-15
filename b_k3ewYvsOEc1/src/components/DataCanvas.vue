@@ -6,6 +6,7 @@ import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchRep
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
 import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
+import { getTruthfulSourceStats } from '../lib/sourceStats.js'
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -2745,12 +2746,7 @@ const reportReferenceIndex = computed(() => {
 })
 
 const sourceStats = computed(() => {
-  const data = props.databaseSources
-  const candidateHits = data?.totalHits || data?.queryPlan?.totalHits || data?.vectorPlan?.vectorHits || null
-  const highValue = data?.vectorPlan?.vectorHits || data?.queryPlan?.strictHits || null
-  const visibleSources = normalizedSources.value.length || null
-  const extracted = data?.queryPlan?.contentRowsRead || null
-  return { candidateHits, highValue, visibleSources, extracted }
+  return getTruthfulSourceStats(props.databaseSources, normalizedSources.value.length)
 })
 
 function firstPositiveCount(...values) {
@@ -5058,29 +5054,29 @@ function exportPdf() {
             <div class="source-stat-card">
               <div class="source-stat-icon">◎</div>
               <div>
-                <div class="source-stat-title">候选命中</div>
-                <div class="source-stat-value">{{ sourceStats.candidateHits ?? '--' }}</div>
+                <div class="source-stat-title">初筛候选</div>
+                <div class="source-stat-value">{{ sourceStats.initialCandidates ?? '--' }}</div>
               </div>
             </div>
             <div class="source-stat-card">
               <div class="source-stat-icon">◇</div>
               <div>
-                <div class="source-stat-title">高相关候选</div>
-                <div class="source-stat-value">{{ sourceStats.highValue ?? '--' }}</div>
+                <div class="source-stat-title">融合候选</div>
+                <div class="source-stat-value">{{ sourceStats.fusedCandidates ?? '--' }}</div>
               </div>
             </div>
             <div class="source-stat-card">
               <div class="source-stat-icon">▤</div>
               <div>
-                <div class="source-stat-title">已展示信源</div>
-                <div class="source-stat-value">{{ sourceStats.visibleSources ?? '--' }}</div>
+                <div class="source-stat-title">最终入选</div>
+                <div class="source-stat-value">{{ sourceStats.selectedSources ?? '--' }}</div>
               </div>
             </div>
             <div class="source-stat-card">
               <div class="source-stat-icon source-stat-warning">⌛</div>
               <div>
-                <div class="source-stat-title">正文抽取</div>
-                <div class="source-stat-value">{{ sourceStats.extracted ?? '--' }}</div>
+                <div class="source-stat-title">实际展示</div>
+                <div class="source-stat-value">{{ sourceStats.visibleSources ?? '--' }}</div>
               </div>
             </div>
           </div>
