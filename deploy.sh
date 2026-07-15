@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
 export COPYFILE_DISABLE=1
 
 if [ ! -f .env ]; then
@@ -21,10 +21,31 @@ rm -f "$ENV_FILE"
 : "${PGVECTOR_DATABASE_URL:?Missing PGVECTOR_DATABASE_URL}"
 : "${JWT_SECRET:?Missing JWT_SECRET}"
 : "${AUTH_DATABASE_URL:=${PGVECTOR_DATABASE_URL%/*}/hermes_auth}"
+: "${BOOTSTRAP_ADMIN_PASSWORD:?Missing BOOTSTRAP_ADMIN_PASSWORD}"
+
+if [ "${#BOOTSTRAP_ADMIN_PASSWORD}" -lt 16 ]; then
+  echo "BOOTSTRAP_ADMIN_PASSWORD must be at least 16 characters." >&2
+  exit 1
+fi
+ROTATE_BOOTSTRAP_ADMIN_PASSWORD="${ROTATE_BOOTSTRAP_ADMIN_PASSWORD:-false}"
+case "${ROTATE_BOOTSTRAP_ADMIN_PASSWORD,,}" in
+  true|false) ;;
+  *)
+    echo "ROTATE_BOOTSTRAP_ADMIN_PASSWORD must be true or false." >&2
+    exit 1
+    ;;
+esac
+
+BOOTSTRAP_ADMIN_PASSWORD_HASH=$(
+  BOOTSTRAP_ADMIN_PASSWORD="$BOOTSTRAP_ADMIN_PASSWORD" node --input-type=module -e \
+    "import bcrypt from 'bcrypt'; process.stdout.write(await bcrypt.hash(process.env.BOOTSTRAP_ADMIN_PASSWORD, 12));"
+)
 
 REMOTE_DIR=/usr/docker/hermes-api
-SRC_DIR=$REMOTE_DIR/src
+RELEASE_ID="$(date +%Y%m%d-%H%M%S)-$$"
+SRC_DIR=$REMOTE_DIR/releases/$RELEASE_ID
 REMOTE_ENV_FILE=$REMOTE_DIR/hermes-api.env
+REMOTE_BOOTSTRAP_FILE=$REMOTE_DIR/bootstrap-$RELEASE_ID.secret
 HERMES_API_LEGACY_DATA_MOUNT="${HERMES_API_LEGACY_DATA_MOUNT:-true}"
 if [[ "$HERMES_API_LEGACY_DATA_MOUNT" == "false" ]]; then
   DEFAULT_HERMES_STATE_DIR=/app/storage/artifacts/hermes-state
@@ -34,7 +55,14 @@ fi
 DEFAULT_HERMES_RESEARCH_KEYS_DIR=/app/hermes-config
 
 DEPLOY_ENV_FILE=$(mktemp)
-trap 'rm -f "$DEPLOY_ENV_FILE"' EXIT
+DEPLOY_BOOTSTRAP_FILE=$(mktemp)
+cleanup_local_files() {
+  rm -f "$DEPLOY_ENV_FILE" "$DEPLOY_BOOTSTRAP_FILE"
+}
+trap cleanup_local_files EXIT
+
+printf '%s\n%s\n' "$BOOTSTRAP_ADMIN_PASSWORD_HASH" "$ROTATE_BOOTSTRAP_ADMIN_PASSWORD" > "$DEPLOY_BOOTSTRAP_FILE"
+chmod 600 "$DEPLOY_BOOTSTRAP_FILE"
 
 write_env() {
   local key="$1"
@@ -94,8 +122,9 @@ write_env OPENAI_API_KEY "${OPENAI_API_KEY:-}"
 
 echo "=== 1. Upload backend source ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "
+  rm -rf '$SRC_DIR'
   mkdir -p '$SRC_DIR/server/artifact-storage' '$SRC_DIR/server/reports' '$SRC_DIR/server/migrations' '$SRC_DIR/src/types' '$SRC_DIR/scripts' /opt/hermes/workspace/report-agent/agents /opt/hermes/workspace/report-agent/skills
-  rm -f '$SRC_DIR/server/crawler.controller.ts' /opt/hermes/workspace/report-agent/agents/source-collection-agent.md
+  rm -f /opt/hermes/workspace/report-agent/agents/source-collection-agent.md
   rm -rf /opt/hermes/workspace/report-agent/skills/controlled-web-collector
 "
 
@@ -121,21 +150,33 @@ scp -i "$SSH_KEY" agents/*.md "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/r
 scp -r -i "$SSH_KEY" skills/planning-source-collection "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/report-agent/skills/"
 scp -i "$SSH_KEY" "$DEPLOY_ENV_FILE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_ENV_FILE.tmp"
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "install -m 600 '$REMOTE_ENV_FILE.tmp' '$REMOTE_ENV_FILE' && rm -f '$REMOTE_ENV_FILE.tmp'"
+scp -i "$SSH_KEY" "$DEPLOY_BOOTSTRAP_FILE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_BOOTSTRAP_FILE.tmp"
+ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "install -m 600 '$REMOTE_BOOTSTRAP_FILE.tmp' '$REMOTE_BOOTSTRAP_FILE' && rm -f '$REMOTE_BOOTSTRAP_FILE.tmp'"
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "find '$SRC_DIR/server' -type f -name '._*' -delete"
 
 echo "=== 2. Build and deploy backend remotely ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << REMOTE_SCRIPT
-set -euo pipefail
+set -Eeuo pipefail
 
-SRC_DIR=/usr/docker/hermes-api/src
+REMOTE_DIR=/usr/docker/hermes-api
+SRC_DIR=$SRC_DIR
 REMOTE_ENV_FILE=$REMOTE_ENV_FILE
+REMOTE_BOOTSTRAP_FILE=$REMOTE_BOOTSTRAP_FILE
+trap 'rm -f "\$REMOTE_BOOTSTRAP_FILE"' EXIT
+mapfile -t BOOTSTRAP_VALUES < "\$REMOTE_BOOTSTRAP_FILE"
+BOOTSTRAP_ADMIN_PASSWORD_HASH="\${BOOTSTRAP_VALUES[0]:-}"
+ROTATE_BOOTSTRAP_ADMIN_PASSWORD="\${BOOTSTRAP_VALUES[1]:-false}"
+if [ -z "\$BOOTSTRAP_ADMIN_PASSWORD_HASH" ]; then
+  echo "Missing administrator bootstrap hash." >&2
+  exit 1
+fi
 set -a
 . "\$REMOTE_ENV_FILE"
 set +a
 cd "\$SRC_DIR"
 
 echo "--- Build image ---"
-IMAGE_TAG=hermes-api:latest
+IMAGE_TAG=hermes-api:$RELEASE_ID
 docker build -t "\$IMAGE_TAG" .
 
 echo "--- Apply database migrations ---"
@@ -143,7 +184,10 @@ AUTH_DATABASE_NAME="\${AUTH_DATABASE_URL##*/}"
 AUTH_DATABASE_NAME="\${AUTH_DATABASE_NAME%%\?*}"
 docker exec todo_postgres psql -U postgres -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '\$AUTH_DATABASE_NAME'" | grep -q 1 \
   || docker exec todo_postgres createdb -U postgres "\$AUTH_DATABASE_NAME"
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-auth-users.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 \
+  -v bootstrap_admin_password_hash="\$BOOTSTRAP_ADMIN_PASSWORD_HASH" \
+  -v rotate_bootstrap_admin_password="\$ROTATE_BOOTSTRAP_ADMIN_PASSWORD" \
+  "\$AUTH_DATABASE_URL" < scripts/init-auth-users.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-chat-sessions.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-draft-assistant.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-plans.sql
@@ -200,34 +244,101 @@ docker run --rm --user 0:0 \
   alpine:3.20 \
   sh -lc 'chown -R 1000:1000 /data && chmod 770 /data'
 
-echo "--- Replace hermes-api container ---"
+run_api_container() {
+  local name="\$1"
+  local restart_policy="\$2"
+  local publish_port="\${3:-false}"
+  local stage_label="hermes.stage=artifact-stage-a"
+  local publish_args=()
+  local legacy_mount_args=(--mount type=bind,src=/opt/hermes,dst=/opt/data)
+  if [ "\${HERMES_API_LEGACY_DATA_MOUNT:-true}" = "false" ]; then
+    stage_label="hermes.stage=artifact-stage-b"
+    legacy_mount_args=()
+  fi
+  if [ "\$publish_port" = "true" ]; then
+    publish_args=(-p 1556:1555)
+  fi
+
+  docker run -d \
+    --label "\$stage_label" \
+    --name "\$name" \
+    --network hermes-net \
+    --restart="\$restart_policy" \
+    --user 1000:1000 \
+    "\${publish_args[@]}" \
+    --env-file "\$REMOTE_ENV_FILE" \
+    --mount type=volume,source=report-artifacts,target=/app/storage/artifacts \
+    --mount type=bind,src=/opt/hermes/workspace/report-agent/reports,dst=/app/hermes-inbox,readonly \
+    --mount type=bind,src=/opt/hermes/workspace/report-agent/config,dst=/app/hermes-config \
+    "\${legacy_mount_args[@]}" \
+    "\$IMAGE_TAG"
+}
+
+wait_container_health() {
+  local name="\$1"
+  local attempt
+  for attempt in \$(seq 1 30); do
+    if docker exec "\$name" node -e \
+      "fetch('http://127.0.0.1:1555/api/hermes/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))"; then
+      return 0
+    fi
+    sleep 1
+  done
+  docker logs --tail 80 "\$name" >&2 || true
+  return 1
+}
+
+echo "--- Validate candidate hermes-api container ---"
 TS=\$(date +%Y%m%d-%H%M%S)
+CANDIDATE_NAME="hermes-api-candidate-\$TS"
+ROLLBACK_NAME=""
+LIVE_REPLACED=false
+FINAL_STARTED=false
+
+rollback_deploy() {
+  local exit_code=\$?
+  set +e
+  [ -z "\$CANDIDATE_NAME" ] || docker rm -f "\$CANDIDATE_NAME" >/dev/null 2>&1
+  if [ "\$LIVE_REPLACED" = "true" ]; then
+    if [ "\$FINAL_STARTED" = "true" ]; then
+      docker rm -f hermes-api >/dev/null 2>&1
+    fi
+    if [ -n "\$ROLLBACK_NAME" ] && docker inspect "\$ROLLBACK_NAME" >/dev/null 2>&1; then
+      docker rename "\$ROLLBACK_NAME" hermes-api
+      docker start hermes-api >/dev/null
+      echo "Deployment failed; previous hermes-api was restored." >&2
+    elif docker inspect hermes-api >/dev/null 2>&1; then
+      docker start hermes-api >/dev/null
+    fi
+  fi
+  exit "\$exit_code"
+}
+trap 'rollback_deploy' ERR
+
+docker rm -f "\$CANDIDATE_NAME" >/dev/null 2>&1 || true
+run_api_container "\$CANDIDATE_NAME" no false
+docker exec "\$CANDIDATE_NAME" getent hosts todo_postgres
+wait_container_health "\$CANDIDATE_NAME"
+docker rm -f "\$CANDIDATE_NAME" >/dev/null
+CANDIDATE_NAME=""
+
+echo "--- Replace hermes-api container ---"
+LIVE_REPLACED=true
 if docker inspect hermes-api >/dev/null 2>&1; then
+  ROLLBACK_NAME="hermes-api-rollback-\$TS"
   docker stop hermes-api
-  docker rename hermes-api "hermes-api-rollback-\$TS"
-  echo "Previous hermes-api kept as hermes-api-rollback-\$TS"
+  docker rename hermes-api "\$ROLLBACK_NAME"
+  echo "Previous hermes-api kept as \$ROLLBACK_NAME"
 fi
 
-docker run -d \
-  \$(if [ "\${HERMES_API_LEGACY_DATA_MOUNT:-true}" = "false" ]; then printf '%s\n' "--label=hermes.stage=artifact-stage-b"; else printf '%s\n' "--label=hermes.stage=artifact-stage-a"; fi) \
-  --name hermes-api \
-  --network hermes-net \
-  --restart=unless-stopped \
-  --user 1000:1000 \
-  -p 1556:1555 \
-  --env-file "\$REMOTE_ENV_FILE" \
-  --mount type=volume,source=report-artifacts,target=/app/storage/artifacts \
-  --mount type=bind,src=/opt/hermes/workspace/report-agent/reports,dst=/app/hermes-inbox,readonly \
-  --mount type=bind,src=/opt/hermes/workspace/report-agent/config,dst=/app/hermes-config \
-  \$(if [ "\${HERMES_API_LEGACY_DATA_MOUNT:-true}" != "false" ]; then printf '%s\n' "--mount type=bind,src=/opt/hermes,dst=/opt/data"; fi) \
-  "\$IMAGE_TAG"
-
-sleep 3
+run_api_container hermes-api unless-stopped true
+FINAL_STARTED=true
 docker exec hermes-api getent hosts todo_postgres
+wait_container_health hermes-api
 curl -fsS http://127.0.0.1:1556/api/hermes/health
-AUTH_TOKEN=\$(curl -fsS -X POST http://127.0.0.1:1556/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).access_token")
-curl -fsS -H "Authorization: Bearer \$AUTH_TOKEN" http://127.0.0.1:1556/api/auth/me
-curl -fsS -H "Authorization: Bearer \$AUTH_TOKEN" http://127.0.0.1:1556/api/vector-sources/status
+LIVE_REPLACED=false
+trap - ERR
+
 docker ps --filter name=hermes-api --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 docker logs --tail 30 hermes-api
 chmod +x scripts/install-hybrid-retrieval-timer.sh scripts/uninstall-hybrid-retrieval-timer.sh
@@ -243,6 +354,11 @@ case "\$HYBRID_FLAG" in
     fi
     ;;
 esac
+
+mapfile -t OLD_RELEASES < <(find "\$REMOTE_DIR/releases" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | tail -n +6)
+for release_name in "\${OLD_RELEASES[@]}"; do
+  rm -rf -- "\$REMOTE_DIR/releases/\$release_name"
+done
 REMOTE_SCRIPT
 
 echo "=== Deploy complete ==="

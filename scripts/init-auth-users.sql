@@ -50,14 +50,17 @@ EXECUTE FUNCTION set_users_updated_at();
 INSERT INTO users (username, password_hash, display_name, role, is_active)
 VALUES (
   'admin',
-  '$2b$12$5.l3.9wE1MRi.TOBucFDQenVaZy/4xUpuZY6RNzjjMir887VKC0ke',
+  :'bootstrap_admin_password_hash',
   'Administrator',
   'admin',
   true
 )
 ON CONFLICT (username) DO UPDATE
 SET
-  password_hash = EXCLUDED.password_hash,
+  password_hash = CASE
+    WHEN :'rotate_bootstrap_admin_password'::boolean THEN EXCLUDED.password_hash
+    ELSE users.password_hash
+  END,
   display_name = EXCLUDED.display_name,
   role = EXCLUDED.role,
   is_active = true,

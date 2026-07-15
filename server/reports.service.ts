@@ -1475,27 +1475,42 @@ export class ReportsService implements OnModuleDestroy {
     const type = this.normalizeReportSourceType(options.type);
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 10), 100);
-    const optional = async <T>(load: () => Promise<T>, fallback: T): Promise<T> => {
+    const degradedSources: Array<{ sourceGroup: string; reason: 'load_failed' }> = [];
+    const loadSourceGroup = async <T>(sourceGroup: string, load: () => Promise<T>, fallback: T): Promise<T> => {
       try {
         return await load();
-      } catch {
+      } catch (error) {
+        degradedSources.push({ sourceGroup, reason: 'load_failed' });
+        const message = (error instanceof Error ? error.message : String(error))
+          .replace(/(token|password|secret|api[_-]?key)=([^\s&]+)/gi, '$1=[redacted]')
+          .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[redacted]@')
+          .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+          .replace(/\b(?:sk|pk)-[A-Za-z0-9_-]{12,}\b/g, '[redacted]')
+          .slice(0, 240);
+        console.warn('Report source loader degraded:', { jobId, sourceGroup, error: message });
         return fallback;
       }
     };
 
     const [reportRefs, structuredSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
-      optional(() => this.reportReferenceSources(job), []),
-      this.structuredReportSources(job),
-      optional(() => this.toolSearchSources(job), []),
+      loadSourceGroup('report_refs', () => this.reportReferenceSources(job), []),
+      loadSourceGroup('structured_sources', () => this.structuredReportSources(job), []),
+      loadSourceGroup('tool_search', () => this.toolSearchSources(job), []),
       type === 'candidate_hits'
-        ? optional(() => this.candidateHitSources(job), { items: [], total: 0, detailSaved: false })
+        ? loadSourceGroup('candidate_hits', () => this.candidateHitSources(job), { items: [], total: 0, detailSaved: false })
         : Promise.resolve({ items: [], total: 0, detailSaved: false }),
-      type === 'extract_failed' ? optional(() => this.extractFailedSources(job), []) : Promise.resolve([]),
+      type === 'extract_failed'
+        ? loadSourceGroup('extract_failed', () => this.extractFailedSources(job), [])
+        : Promise.resolve([]),
     ]);
 
     const databaseRecall = this.databaseRecallChannelSources(structuredSources, reportRefs);
     const toolSearch = this.toolSearchChannelSources(toolSearchSources, reportRefs, databaseRecall);
-    const sourceDiagnostics = await optional(() => this.reportSourceDiagnostics(job), {} as Record<string, unknown>);
+    const sourceDiagnostics = await loadSourceGroup(
+      'source_diagnostics',
+      () => this.reportSourceDiagnostics(job),
+      {} as Record<string, unknown>,
+    );
     const summary: ReportSourceSummary = {
       databaseRecallCount: databaseRecall.length,
       toolSearchCount: toolSearch.length,
@@ -1529,7 +1544,10 @@ export class ReportsService implements OnModuleDestroy {
       hasMore: start + items.length < total && allItems.length > start + items.length,
       meta: {
         summary,
-        sourceDiagnostics,
+        sourceDiagnostics: {
+          ...sourceDiagnostics,
+          degradedSources,
+        },
         ...(type === 'candidate_hits'
           ? {
             detailSaved: candidateResult.detailSaved,
