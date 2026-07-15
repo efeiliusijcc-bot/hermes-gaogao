@@ -6,6 +6,7 @@ import {
   sanitizeReportExecutionText,
   translateHermesExecutionLog,
 } from '../b_k3ewYvsOEc1/src/lib/reportExecutionLogs.js'
+import { buildReportTechnicalTimeline } from '../b_k3ewYvsOEc1/src/lib/reportTechnicalTimeline.js'
 
 test('translates database, public research and unknown tools into readable Chinese actions', () => {
   const database = translateHermesExecutionLog({
@@ -118,4 +119,48 @@ test('uses truthful generic copy when a completed stage has no saved evidence', 
   assert.equal(result[0].reconstructed, true)
   assert.equal(result[0].occurredAt, '')
   assert.match(result[0].description, /详细执行事件未保存/)
+})
+
+test('turns legacy runs lifecycle records into a truthful completed timeline', () => {
+  const stages = [
+    { key: 'plan', title: '任务规划', status: 'done', evidence: [{ source: 'job_status', message: '任务已成功完成。', time: '2026-07-15T06:19:49.216Z' }] },
+    { key: 'database', title: '数据库检索', status: 'done', evidence: [{ source: 'event', message: 'PG hybrid sources recalled: 12 items.', time: '2026-07-15T06:10:13.480Z' }, { source: 'job_status', message: '任务已成功完成。', time: '2026-07-15T06:19:49.216Z' }] },
+    { key: 'research', title: '资料采集', status: 'done', evidence: [{ source: 'job_status', message: '任务已成功完成。', time: '2026-07-15T06:19:49.216Z' }] },
+    { key: 'consolidate', title: '素材整合', status: 'done', evidence: [{ source: 'job_status', message: '任务已成功完成。', time: '2026-07-15T06:19:49.216Z' }] },
+    { key: 'report', title: '报告撰写', status: 'done', evidence: [{ source: 'report_file', message: '最终报告已确认生成。', time: '2026-07-15T06:19:49.216Z' }] },
+    { key: 'quality', title: '成稿自检', status: 'done', evidence: [{ source: 'event', message: '成稿自检：完成，综合评分 85。', time: '2026-07-15T06:19:49.376Z' }] },
+  ]
+  const rawLogs = [
+    { id: 'database', type: 'stage', status: 'database_sources', phase: 'database_sources', summary: 'PG hybrid sources recalled: 12 items.', time: '2026-07-15T06:10:13.480Z' },
+    { id: 'start', type: 'stage', status: 'start', phase: 'start', summary: 'Preparing runs API request...', time: '2026-07-15T06:10:13.514Z' },
+    { id: 'running', type: 'stage', status: 'running', phase: 'running', summary: 'Running report agent...', time: '2026-07-15T06:10:13.515Z' },
+    { id: 'waiting', type: 'stage', status: 'waiting_final_report', phase: 'waiting_final_report', summary: 'Run is still running.', time: '2026-07-15T06:10:13.538Z' },
+    { id: 'received', type: 'stage', status: 'received', phase: 'received', summary: 'Run completed and returned REPORT_FILE.', time: '2026-07-15T06:19:49.125Z' },
+    { id: 'quality-start', type: 'stage', status: 'quality_review', phase: 'quality_review', summary: '成稿自检：开始检查报告质量。', time: '2026-07-15T06:19:49.218Z' },
+    { id: 'done-stage', type: 'stage', status: 'done', phase: 'done', summary: 'Report generation completed and saved to disk.', time: '2026-07-15T06:19:49.219Z' },
+    { id: 'done', type: 'done', status: 'completed', phase: 'done', summary: '后端任务已结束。', time: '2026-07-15T06:19:49.220Z' },
+    { id: 'quality-done', type: 'stage', status: 'quality_review_done', phase: 'quality_review_done', summary: '成稿自检：完成，综合评分 85。', time: '2026-07-15T06:19:49.376Z' },
+  ]
+  const translated = rawLogs.map((log) => ({
+    ...log,
+    ...translateHermesExecutionLog(log),
+    occurredAt: log.time,
+  }))
+  const readable = buildReadableExecutionLogs({ stages, logs: translated })
+  const groups = buildReportTechnicalTimeline({ stages, logs: readable })
+  const byKey = new Map(groups.map((group) => [group.key, group]))
+
+  assert.equal(byKey.has('other'), false)
+  assert.equal(byKey.get('plan').eventCount, 1)
+  assert.equal(byKey.get('database').eventCount, 1)
+  assert.match(byKey.get('database').events[0].description, /12 条/)
+  assert.equal(byKey.get('database').events[0].status, 'done')
+  assert.equal(byKey.get('research').events[0].reconstructed, true)
+  assert.match(byKey.get('research').events[0].description, /详细执行事件未保存/)
+  assert.doesNotMatch(byKey.get('research').events[0].description, /任务已成功完成/)
+  assert.equal(byKey.get('report').status, 'done')
+  assert.equal(byKey.get('report').eventCount, 3)
+  assert.ok(byKey.get('report').events.some((event) => event.status === 'running'))
+  assert.equal(byKey.get('report').events.at(-1).status, 'done')
+  assert.equal(byKey.get('quality').events.at(-1).status, 'done')
 })

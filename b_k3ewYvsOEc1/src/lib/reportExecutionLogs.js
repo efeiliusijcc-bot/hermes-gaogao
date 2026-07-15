@@ -13,6 +13,7 @@ const STAGE_CODES = {
 const PHASE_VIEWS = {
   start: ['CONNECTING', '任务规划', '系统正在整理编报要求、确定信源范围并拆解调研任务。'],
   running: ['TASK_START', '任务规划', '系统正在整理编报要求、确定信源范围并拆解调研任务。'],
+  database_sources: ['PG_RECALL', '数据库检索', '数据库信源检索已完成。'],
   context_preparing: ['PREPARING', '任务规划', '系统正在整理编报要求、确定信源范围并拆解调研任务。'],
   research_planning: ['PLANNING', '任务规划', '系统正在生成调研计划并拆解任务。'],
   research_dispatch: ['RESEARCH_TASK', '资料采集', '系统正在启动资料调研任务。'],
@@ -27,12 +28,15 @@ const PHASE_VIEWS = {
   synthesis_writing: ['WRITING', '报告撰写', '系统正在撰写报告正文并完成校验。'],
   report_verifying: ['VERIFYING', '报告撰写', '系统正在校验报告结构和内容。'],
   report_saving: ['SAVING', '报告撰写', '系统正在保存报告文件。'],
+  waiting_final_report: ['WRITING', '等待报告成稿', '编报智能体正在完成报告正文并等待成稿文件确认。'],
+  received: ['SAVING', '报告成稿已接收', '最终报告文件已返回并完成确认。'],
   quality_review: ['QUALITY_REVIEW', '成稿自检', '系统正在检查主题一致性、信源依据、风险推理和写作质量。'],
   quality_review_done: ['QUALITY_REVIEW_DONE', '成稿自检', '成稿自检已完成，可查看评分和建议。'],
   quality_review_failed: ['QUALITY_REVIEW_FAILED', '成稿自检', '成稿自检出现异常，可稍后重试。'],
   approval_required: ['DETAIL', '等待工具授权', '编报智能体正在等待必要的工具授权。'],
   execution_log_unavailable: ['DETAIL', '执行记录降级', '执行记录通道暂不可用，编报任务仍在继续。'],
   hermes_run_completed: ['SAVING', '整理报告产物', '编报智能体已完成核心执行，正在整理报告产物。'],
+  hermes_run_cancelled: ['ERROR', '编报任务已取消', '编报智能体执行已取消。'],
   done: ['COMPLETED', '编报任务已完成', '报告已生成，可以查看或导出。'],
   error: ['ERROR', '任务执行出现异常', '系统执行过程中出现异常，请查看技术详情或重试。'],
 }
@@ -53,6 +57,7 @@ function classifyToolDisplayName(rawValue) {
 }
 
 export function logToolDisplayName(log) {
+  if (log?.type === 'stage' || log?.type === 'done' || log?.type === 'error') return '系统进度'
   const explicit = log?.toolDisplayName || log?.toolName
   const raw = [log?.label, log?.summary, log?.command, log?.detail].filter(Boolean).join('\n')
   return classifyToolDisplayName(explicit) || classifyToolDisplayName(raw)
@@ -92,8 +97,19 @@ function extractQuery(rawLog) {
 }
 
 function readableStatus(log) {
-  if (log?.status === 'failed' || log?.status === 'error' || log?.type === 'tool_error' || log?.type === 'error') return 'error'
-  if (log?.status === 'completed' || log?.status === 'succeeded' || log?.status === 'done' || log?.type === 'done') return 'done'
+  const status = String(log?.status || '').toLowerCase()
+  const phase = String(log?.phase || status).toLowerCase()
+  if (status === 'failed' || status === 'error' || log?.type === 'tool_error' || log?.type === 'error' || /(?:^|_)failed$|cancelled/.test(phase)) return 'error'
+  if (
+    status === 'completed' ||
+    status === 'succeeded' ||
+    status === 'done' ||
+    log?.type === 'done' ||
+    phase === 'received' ||
+    phase === 'database_sources' ||
+    phase === 'hermes_run_completed' ||
+    /_done$/.test(phase)
+  ) return 'done'
   return 'running'
 }
 
@@ -125,8 +141,18 @@ export function translateHermesExecutionLog(log) {
   if (status === 'error' || /\b(error|failed|timed out|timeout exceeded)\b|超时/.test(lower)) {
     return { ...base, stage: 'ERROR', title: '任务执行出现异常', description: '系统执行过程中出现异常，请查看技术详情或重试。', status: 'error' }
   }
-  if (/pg-sources__query|pg_sources__query|vector_sources\.json|database_sources\.json|database_query_plan\.json|pgvector|数据库|向量信源/.test(lower)) {
-    return { ...base, stage: 'PG_RECALL', title: '数据库检索', description: status === 'done' ? 'PG 向量库和数据库信源检索已完成。' : '系统正在优先召回 PG 向量库和数据库信源。' }
+  if (/pg-sources__query|pg_sources__query|pg hybrid sources recalled|vector_sources\.json|database_sources(?:\.json|$)|database_query_plan\.json|pgvector|数据库|向量信源/.test(lower) || String(log?.phase || '').toLowerCase() === 'database_sources') {
+    const recalledCount = String(log?.summary || '').match(/recalled:\s*(\d+)\s+items?/i)?.[1]
+    return {
+      ...base,
+      stage: 'PG_RECALL',
+      title: '数据库检索',
+      description: status === 'done'
+        ? recalledCount
+          ? `数据库检索已完成，召回 ${recalledCount} 条候选信源。`
+          : 'PG 向量库和数据库信源检索已完成。'
+        : '系统正在优先召回 PG 向量库和数据库信源。',
+    }
   }
   if (/deep_source_collection|深度资料采集/.test(lower)) {
     return { ...base, stage: status === 'done' ? 'DEEP_COLLECTION_DONE' : 'DEEP_COLLECTION', title: '资料深度采集', description: status === 'done' ? '深度资料采集与核验已完成。' : '系统正在补充并核验公开资料。' }
@@ -168,6 +194,26 @@ function normalizedStageStatus(status) {
   return 'waiting'
 }
 
+function dedupeLifecycleLogs(logs) {
+  const result = []
+  const latestByKey = new Map()
+
+  for (const log of logs) {
+    if (log?.type !== 'stage' && log?.type !== 'done') {
+      result.push(log)
+      continue
+    }
+    const key = [log.title, log.description, log.status].join('|')
+    const occurredAt = new Date(log.occurredAt || log.time || '').getTime()
+    const previous = latestByKey.get(key)
+    if (previous && Number.isFinite(occurredAt) && Math.abs(occurredAt - previous.occurredAt) <= 1000) continue
+    latestByKey.set(key, { occurredAt })
+    result.push(log)
+  }
+
+  return result
+}
+
 export function buildReadableExecutionLogs({ stages = [], logs = [] } = {}) {
   const covered = new Set(logs.map((log) => timelineStageKey(log)).filter((key) => key !== 'other'))
   const reconstructed = []
@@ -175,7 +221,9 @@ export function buildReadableExecutionLogs({ stages = [], logs = [] } = {}) {
   for (const stage of stages) {
     const status = normalizedStageStatus(stage?.status)
     if (!stage?.key || status === 'waiting' || covered.has(stage.key)) continue
-    const evidence = Array.isArray(stage.evidence) ? stage.evidence.filter(Boolean) : []
+    const evidence = Array.isArray(stage.evidence)
+      ? stage.evidence.filter((item) => item && item.source !== 'job_status')
+      : []
     const latestEvidence = evidence.at(-1) || null
     const occurredAt = String(latestEvidence?.time || '')
     const description = latestEvidence?.message
@@ -201,5 +249,5 @@ export function buildReadableExecutionLogs({ stages = [], logs = [] } = {}) {
     })
   }
 
-  return [...logs, ...reconstructed]
+  return [...dedupeLifecycleLogs(logs), ...reconstructed]
 }

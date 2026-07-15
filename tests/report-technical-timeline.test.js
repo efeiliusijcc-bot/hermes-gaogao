@@ -85,6 +85,20 @@ test('sorts events chronologically and places unmapped logs in a final other gro
   assert.equal(timeline[2].eventCount, 1);
 });
 
+test('uses completed progress to close unmatched historical events', () => {
+  const timeline = buildReportTechnicalTimeline({
+    stages: stages.map((stage) => ({ ...stage, status: 'done' })),
+    logs: [
+      log('unknown-start', 'CUSTOM_EVENT', '2026-07-15T02:01:00.000Z', 'running'),
+      log('unknown-end', 'CUSTOM_EVENT', '2026-07-15T02:02:00.000Z', 'done'),
+    ],
+  });
+
+  assert.equal(timeline.at(-1).key, 'other');
+  assert.equal(timeline.at(-1).status, 'done');
+  assert.equal(timeline.at(-1).durationLabel, '1分钟');
+});
+
 test('accepts historical ISO timestamps and live occurredAt timestamps consistently', () => {
   const timeline = buildReportTechnicalTimeline({
     stages: stages.slice(0, 1),

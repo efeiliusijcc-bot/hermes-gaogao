@@ -4,7 +4,7 @@ const STAGE_PATTERNS = [
   ['plan', /^(CONNECTING|TASK_START|AGENT_START|PREPARING|PLANNING|HARNESS_PLAN)$/],
   ['research', /^(RESEARCH_TASK|WAITING_RESEARCH|RESEARCHING|RESEARCH_RUN|RESEARCH_DONE|SEARCHING|EXTRACTING)$/],
   ['consolidate', /^(CONSOLIDATE|ANALYZING|SYNTHESIS_TASK|WAITING_SYNTHESIS|SYNTHESIS)$/],
-  ['report', /^(WRITING|VERIFYING|VALIDATE_SAVE|SAVING)$/],
+  ['report', /^(WRITING|VERIFYING|VALIDATE_SAVE|SAVING|COMPLETED)$/],
   ['quality', /^(QUALITY_REVIEW|QUALITY_REVIEW_DONE|QUALITY_REVIEW_FAILED)$/],
 ]
 
@@ -46,8 +46,9 @@ function isoAt(value) {
   return Number.isFinite(value) ? new Date(value).toISOString() : ''
 }
 
-function otherStatus(events) {
+function otherStatus(events, stages = []) {
   if (events.some((event) => normalizedStatus(event.status) === 'error')) return 'error'
+  if (stages.length && stages.every((stage) => normalizedStatus(stage.status) === 'done')) return 'done'
   if (events.some((event) => normalizedStatus(event.status) === 'current')) return 'current'
   if (events.length && events.every((event) => normalizedStatus(event.status) === 'done')) return 'done'
   return 'waiting'
@@ -124,7 +125,7 @@ export function buildReportTechnicalTimeline({ stages = [], logs = [], now = new
       key: 'other',
       title: '其他技术事件',
       desc: '未归入标准编报阶段的系统执行记录',
-      status: otherStatus(otherEvents),
+      status: otherStatus(otherEvents, stages),
     }, otherEvents, nowMs))
   }
   return result

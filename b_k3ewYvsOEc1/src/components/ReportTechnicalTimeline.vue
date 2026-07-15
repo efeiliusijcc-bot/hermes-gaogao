@@ -152,7 +152,6 @@ function actorLabel(actor) {
           <div class="technical-timeline-event-body">
             <header>
               <div>
-                <span class="technical-timeline-event-stage">{{ event.stage }}</span>
                 <span v-if="event.toolDisplayName" class="technical-timeline-event-tool">
                   {{ event.toolDisplayName }}
                 </span>
@@ -334,7 +333,6 @@ function actorLabel(actor) {
   line-height: 1.45;
 }
 
-.technical-timeline-event-stage,
 .technical-timeline-event-tool,
 .technical-timeline-event-reconstructed,
 .technical-timeline-event-actor {

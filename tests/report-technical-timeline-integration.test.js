@@ -35,6 +35,7 @@ test('DataCanvas reuses the technical timeline for live and historical inline de
   assert.match(timeline, /状态还原/);
   assert.match(timeline, /actorLabel\(event\.actor\)/);
   assert.match(timeline, /执行角色/);
+  assert.doesNotMatch(timeline, /\{\{\s*event\.stage\s*\}\}/);
   assert.match(timeline, /阶段内暂无技术事件/);
   assert.match(timeline, /technical-timeline-event-raw summary::after\s*\{\s*content:\s*none/);
 });
