@@ -28,7 +28,8 @@ if [ "${#BOOTSTRAP_ADMIN_PASSWORD}" -lt 16 ]; then
   exit 1
 fi
 ROTATE_BOOTSTRAP_ADMIN_PASSWORD="${ROTATE_BOOTSTRAP_ADMIN_PASSWORD:-false}"
-case "${ROTATE_BOOTSTRAP_ADMIN_PASSWORD,,}" in
+ROTATE_BOOTSTRAP_ADMIN_PASSWORD=$(printf '%s' "$ROTATE_BOOTSTRAP_ADMIN_PASSWORD" | tr '[:upper:]' '[:lower:]')
+case "$ROTATE_BOOTSTRAP_ADMIN_PASSWORD" in
   true|false) ;;
   *)
     echo "ROTATE_BOOTSTRAP_ADMIN_PASSWORD must be true or false." >&2

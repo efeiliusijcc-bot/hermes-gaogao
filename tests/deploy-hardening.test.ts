@@ -5,6 +5,7 @@ const deployScript = await readFile(new URL('../deploy.sh', import.meta.url), 'u
 const authBootstrap = await readFile(new URL('../scripts/init-auth-users.sql', import.meta.url), 'utf8');
 
 assert.match(deployScript, /BOOTSTRAP_ADMIN_PASSWORD:\?Missing BOOTSTRAP_ADMIN_PASSWORD/);
+assert.doesNotMatch(deployScript, /\$\{[^}]+,,\}/, 'deploy script must remain compatible with macOS Bash 3.2');
 assert.doesNotMatch(deployScript, /"password"\s*:\s*"admin"/);
 assert.doesNotMatch(authBootstrap, /\$2[aby]\$\d{2}\$/);
 assert.match(authBootstrap, /bootstrap_admin_password_hash/);
