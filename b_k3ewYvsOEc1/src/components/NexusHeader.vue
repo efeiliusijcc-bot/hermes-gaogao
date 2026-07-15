@@ -34,10 +34,8 @@ const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-managemen
 
 const currentTime = ref('')
 const canvasRef = ref(null)
-const workspaceNavRef = ref(null)
 const settingsButtonRef = ref(null)
 const settingsMenuRef = ref(null)
-const workspaceNavOpen = ref(false)
 const showSettingsMenu = ref(false)
 const settingsMenuStyle = ref({})
 const showKeySettings = ref(false)
@@ -294,55 +292,16 @@ function closeSettingsMenu() {
   showSettingsMenu.value = false
 }
 
-let workspaceNavCloseTimer = null
-
-function openWorkspaceNav() {
-  if (workspaceNavCloseTimer) {
-    clearTimeout(workspaceNavCloseTimer)
-    workspaceNavCloseTimer = null
-  }
-  workspaceNavOpen.value = true
-}
-
-function scheduleWorkspaceNavClose() {
-  if (workspaceNavCloseTimer) clearTimeout(workspaceNavCloseTimer)
-  workspaceNavCloseTimer = window.setTimeout(() => {
-    workspaceNavOpen.value = false
-    workspaceNavCloseTimer = null
-  }, 180)
-}
-
-function closeWorkspaceNav() {
-  if (workspaceNavCloseTimer) {
-    clearTimeout(workspaceNavCloseTimer)
-    workspaceNavCloseTimer = null
-  }
-  workspaceNavOpen.value = false
-}
-
-function toggleWorkspaceNav() {
-  if (workspaceNavOpen.value) closeWorkspaceNav()
-  else openWorkspaceNav()
-}
-
-function switchWorkspace(key) {
-  closeWorkspaceNav()
-  emit('switch-workspace', key)
-}
-
 function handleDocumentClick(event) {
   const menu = settingsMenuRef.value
   const button = settingsButtonRef.value
   if (menu?.contains(event.target) || button?.contains(event.target)) return
-  if (workspaceNavRef.value?.contains(event.target)) return
   closeSettingsMenu()
-  closeWorkspaceNav()
 }
 
 function handleDocumentKeydown(event) {
   if (event.key === 'Escape') closeSettingsMenu()
   if (event.key === 'Escape') closeLoginDialog()
-  if (event.key === 'Escape') closeWorkspaceNav()
 }
 
 function handleWindowResize() {
@@ -476,7 +435,6 @@ onMounted(() => {
 onUnmounted(() => {
   window.clearInterval(timeInterval)
   stopVectorStatusPolling()
-  closeWorkspaceNav()
   document.removeEventListener('click', handleDocumentClick)
   document.removeEventListener('keydown', handleDocumentKeydown)
   window.removeEventListener('resize', handleWindowResize)
@@ -516,41 +474,20 @@ watch(() => props.authError, (error) => {
       </span>
     </div>
 
-    <div class="header-center">
-      <div
-        ref="workspaceNavRef"
-        class="workspace-quick-nav header-workspace-nav"
-        :class="{ expanded: workspaceNavOpen }"
-        @mouseenter="openWorkspaceNav"
-        @mouseleave="scheduleWorkspaceNavClose"
-        @focusin="openWorkspaceNav"
+    <nav class="header-module-nav" role="tablist" aria-label="功能模块导航">
+      <button
+        v-for="item in visibleWorkspaceItems"
+        :key="item.key"
+        class="header-module-entry"
+        :class="{ active: item.key === currentWorkspace }"
+        type="button"
+        role="tab"
+        :aria-selected="item.key === currentWorkspace"
+        @click="emit('switch-workspace', item.key)"
       >
-        <button
-          class="workspace-quick-trigger"
-          type="button"
-          :aria-expanded="workspaceNavOpen"
-          aria-controls="global-workspace-quick-options"
-          @click.stop="toggleWorkspaceNav"
-        >
-          <span>当前模块：{{ activeWorkspaceItem.title }}</span>
-          <span class="workspace-quick-chevron">▾</span>
-        </button>
-        <div id="global-workspace-quick-options" class="workspace-quick-options" role="tablist" aria-label="全局工作区导航">
-          <button
-            v-for="item in visibleWorkspaceItems"
-            :key="item.key"
-            class="workspace-quick-option"
-            :class="{ active: item.key === currentWorkspace }"
-            type="button"
-            role="tab"
-            :aria-selected="item.key === currentWorkspace"
-            @click.stop="switchWorkspace(item.key)"
-          >
-            {{ item.title }}
-          </button>
-        </div>
-      </div>
-    </div>
+        {{ item.title }}
+      </button>
+    </nav>
 
     <div class="header-tech-line flex-1 mx-8 h-10">
       <canvas ref="canvasRef" class="w-full h-full"></canvas>
