@@ -4189,6 +4189,14 @@ canvas {
   text-overflow: ellipsis;
 }
 
+.source-status-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
 .source-stats-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

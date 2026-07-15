@@ -262,7 +262,8 @@ const canOpenLogDrawer = computed(() => !isLiveLogVisible.value)
 const isHistoryDetailLoading = computed(() => props.detailLoading || props.phase === 'history-loading')
 const isHistoryDetailError = computed(() => props.phase === 'history-error' || Boolean(props.detailLoadError))
 const showLogDrawer = computed(() => props.isLogDrawerOpen && canOpenLogDrawer.value && !isHistoryDetailLoading.value && !isHistoryDetailError.value)
-const showNewReportButton = computed(() => props.isHistoryMode || props.phase === 'done' || props.phase === 'error')
+const showNewReportButton = computed(() => props.isHistoryMode || props.phase === 'loading' || props.phase === 'done' || props.phase === 'error')
+const newReportButtonLabel = computed(() => props.phase === 'loading' ? '开启下一个编报' : '新建编报')
 const effectiveReportType = computed(() => props.reportType || 'write-hb-k')
 const canSubmitPlanning = computed(() => Boolean(props.title?.trim()) && Boolean(effectiveReportType.value) && !props.isGenerating && !props.isPlanning)
 const titleLength = computed(() => props.title?.length || 0)
@@ -4049,7 +4050,7 @@ function exportPdf() {
             QA问答
           </button>
           <button v-if="showNewReportButton" @click="emit('new-report')" class="sci-btn text-[10px] px-3 py-2">
-            清屏并开启下一个编报
+            {{ newReportButtonLabel }}
           </button>
           <button @click="exportWord" :disabled="!canExport" class="sci-btn text-[10px] px-3 py-2" :title="canExport ? '导出 Word' : '报告生成后可导出'">导出 Word</button>
           <button
@@ -5000,6 +5001,14 @@ function exportPdf() {
             <h1>正在执行编报任务</h1>
             <p>系统正在按计划执行任务，请稍候。您可以离开页面，任务将继续在后台运行。</p>
             <div class="source-task-pill">{{ taskSummaryText }}</div>
+            <div class="source-status-actions">
+              <button class="sci-btn text-[10px] px-3 py-2 border-neon-green text-neon-green" type="button" @click="emit('new-report')">
+                开启下一个编报
+              </button>
+              <button v-if="hasReturnableWorkspace" class="sci-btn text-[10px] px-3 py-2" type="button" @click="emit('show-active-workspace')">
+                返回当前编报
+              </button>
+            </div>
           </div>
 
           <div class="task-progress-panel execution-progress-timeline">

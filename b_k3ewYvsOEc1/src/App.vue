@@ -416,6 +416,7 @@ function startReportFromSidebar() {
   showPersonalSettings.value = false
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
+  resetForNewReport()
 }
 
 function openReportHistoryList() {
@@ -430,6 +431,17 @@ function openReportHistoryList() {
   homeMode.value = 'report'
   selectedQaSessionId.value = ''
   loadJobList(true)
+}
+
+function showReportWorkspace() {
+  showUserManagement.value = false
+  showDraftAssistant.value = false
+  showDailyAwareness.value = false
+  showPersonalSettings.value = false
+  draftInitialEventId.value = ''
+  homeMode.value = 'report'
+  selectedQaSessionId.value = ''
+  showGenerator()
 }
 
 function resetForNewReportFromCanvas() {
@@ -646,7 +658,7 @@ function jobActionLabel(status) {
         @delete-report="deleteReportFromList"
         @new-report="resetForNewReportFromCanvas"
         @retry-history-report="retryOpenCurrentHistoryReport"
-        @show-active-workspace="showGenerator"
+        @show-active-workspace="showReportWorkspace"
         @toggle-log-drawer="toggleLogDrawer"
         @open-daily-awareness="openDailyAwareness"
       />
@@ -664,7 +676,7 @@ function jobActionLabel(status) {
             v-if="hasActiveWorkspace"
             class="sci-btn text-[10px] px-3 py-2"
             :class="hasGeneratingWorkspace ? 'border-neon-green text-neon-green shadow-[0_0_18px_rgba(0,255,159,0.18)]' : ''"
-            @click="showGenerator"
+            @click="showReportWorkspace"
           >
             {{ hasGeneratingWorkspace ? '返回生成编报' : '返回当前编报' }}
           </button>

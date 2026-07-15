@@ -16,6 +16,12 @@ import {
   permanentlyDeleteReportJob,
   restoreReportJob,
 } from '../lib/api.js'
+import {
+  includeOpenedHistoryJob,
+  isUnfinishedReportJob,
+  resolveActiveWorkspaceJob,
+  upsertReportJob,
+} from '../lib/reportWorkspaceState.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
 
@@ -191,23 +197,42 @@ export function useReportJobs() {
   let jobListRequestId = 0
   let recentJobsRequestId = 0
   let databaseSourcesRequestId = 0
+  let generationRequestId = 0
   const activeWorkspaceSnapshot = ref(null)
   const executionLogsByJobId = new Map()
   const seenExecutionEventsByJobId = new Map()
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-  const isHistoryMode = computed(() => Boolean(openedHistoryJobId.value) && phase.value === 'done')
+  const isHistoryMode = computed(() => Boolean(openedHistoryJobId.value) && (
+    phase.value === 'done' ||
+    phase.value === 'loading' ||
+    phase.value === 'history-loading' ||
+    phase.value === 'history-error' ||
+    phase.value === 'error'
+  ))
+  const isViewingHistoryJob = computed(() => Boolean(openedHistoryJobId.value))
+  const activeWorkspaceJob = computed(() => resolveActiveWorkspaceJob(
+    activeWorkspaceSnapshot.value,
+    job.value,
+    openedHistoryJobId.value,
+  ))
   const hasActiveWorkspace = computed(() => {
+    if (openedHistoryJobId.value) return Boolean(activeWorkspaceSnapshot.value)
     return Boolean(activeWorkspaceSnapshot.value) || phase.value !== 'idle' || Boolean(job.value) || Boolean(title.value.trim()) || Boolean(generatedHtml.value)
   })
-  const activeWorkspaceJobId = computed(() => activeWorkspaceSnapshot.value?.job?.jobId || job.value?.jobId || '')
-  const activeWorkspaceStatus = computed(() => activeWorkspaceSnapshot.value?.job?.status || job.value?.status || '')
+  const activeWorkspaceJobId = computed(() => activeWorkspaceJob.value?.jobId || '')
+  const activeWorkspaceStatus = computed(() => activeWorkspaceJob.value?.status || '')
   const returnableWorkspaceJobId = computed(() => {
     const snapshotJob = activeWorkspaceSnapshot.value?.job
-    if (!snapshotJob?.jobId || !isUnfinishedJob(snapshotJob)) return ''
+    if (!snapshotJob?.jobId) return ''
     if (!job.value?.jobId) return snapshotJob.jobId
     return snapshotJob.jobId !== job.value.jobId ? snapshotJob.jobId : ''
   })
+  const displayRecentJobs = computed(() => includeOpenedHistoryJob(
+    recentJobs.value,
+    openedHistoryJobId.value,
+    job.value,
+  ))
 
   const filteredJobs = computed(() => {
     return [...jobList.value].sort((a, b) => {
@@ -236,9 +261,7 @@ export function useReportJobs() {
     }
   }
 
-  function isUnfinishedJob(item) {
-    return item?.status === 'running' || item?.status === 'queued'
-  }
+  const isUnfinishedJob = isUnfinishedReportJob
 
   function makeWorkspaceSnapshot(overrides = {}) {
     return {
@@ -262,6 +285,7 @@ export function useReportJobs() {
       loadingStep: loadingStep.value,
       job: job.value ? { ...job.value } : null,
       progressState: progressState.value ? { ...progressState.value } : null,
+      databaseSources: databaseSources.value,
       errorMessage: errorMessage.value,
       selectedReport: selectedReport.value ? { ...selectedReport.value } : null,
       savedNotice: savedNotice.value,
@@ -275,8 +299,9 @@ export function useReportJobs() {
     const currentJobId = current?.job?.jobId
     const visibleJobId = job.value?.jobId
     if (!currentJobId && !visibleJobId) return
-    if (!__force && currentJobId && visibleJobId && currentJobId !== visibleJobId) {
-      if (isUnfinishedJob(current?.job) || openedHistoryJobId.value) return
+    if (!__force) {
+      if (currentJobId && currentJobId !== visibleJobId) return
+      if (!currentJobId && openedHistoryJobId.value) return
     }
     const shouldRefreshFromVisibleState = Object.keys(nextOverrides).length === 0
     activeWorkspaceSnapshot.value = {
@@ -312,6 +337,7 @@ export function useReportJobs() {
     loadingStep.value = snapshot.loadingStep || ''
     job.value = snapshot.job ? { ...snapshot.job } : null
     progressState.value = snapshot.progressState || job.value?.progressState || null
+    databaseSources.value = snapshot.databaseSources || null
     errorMessage.value = snapshot.errorMessage || ''
     selectedReport.value = snapshot.selectedReport ? { ...snapshot.selectedReport } : null
     savedNotice.value = snapshot.savedNotice || ''
@@ -347,7 +373,7 @@ export function useReportJobs() {
     isLogDrawerOpen.value = false
     isGenerating.value = false
     phase.value = 'idle'
-    loadingStep.value = '绛夊緟杈撳叆浠诲姟'
+    loadingStep.value = '等待输入任务'
     currentView.value = 'generator'
     return true
   }
@@ -361,49 +387,33 @@ export function useReportJobs() {
       return activeWorkspaceSnapshot.value
     }
 
-    if (job.value?.jobId && job.value.jobId !== exceptJobId && isUnfinishedJob(job.value)) {
+    if (!openedHistoryJobId.value && job.value?.jobId && job.value.jobId !== exceptJobId && isUnfinishedJob(job.value)) {
       return makeWorkspaceSnapshot()
     }
 
     return null
   }
 
-  function upsertJobInList(item) {
+  function upsertJobInList(item, options = {}) {
     if (!item?.jobId) return
     const drafts = readDrafts()
     const nextItem = {
       ...item,
       displayTitle: drafts[item.jobId]?.title || item.displayTitle,
     }
-    const index = jobList.value.findIndex((existing) => existing.jobId === item.jobId)
-    if (index >= 0) {
-      jobList.value = [
-        nextItem,
-        ...jobList.value.slice(0, index),
-        ...jobList.value.slice(index + 1),
-      ]
-    } else {
-      jobList.value = [nextItem, ...jobList.value]
-    }
+    const promote = options.promote ?? isUnfinishedJob(item)
+    jobList.value = upsertReportJob(jobList.value, nextItem, { promote })
   }
 
-  function upsertJobInRecent(item) {
+  function upsertJobInRecent(item, options = {}) {
     if (!item?.jobId) return
     const drafts = readDrafts()
     const nextItem = {
       ...item,
       displayTitle: drafts[item.jobId]?.title || item.displayTitle,
     }
-    const index = recentJobs.value.findIndex((existing) => existing.jobId === item.jobId)
-    if (index >= 0) {
-      recentJobs.value = [
-        nextItem,
-        ...recentJobs.value.slice(0, index),
-        ...recentJobs.value.slice(index + 1),
-      ]
-    } else {
-      recentJobs.value = [nextItem, ...recentJobs.value]
-    }
+    const promote = options.promote ?? isUnfinishedJob(item)
+    recentJobs.value = upsertReportJob(recentJobs.value, nextItem, { promote })
   }
 
   async function loadMoreRecentReports({ reset = false } = {}) {
@@ -488,6 +498,14 @@ export function useReportJobs() {
     progressPollJobId = null
   }
 
+  function isVisibleJob(jobId) {
+    return Boolean(jobId) && job.value?.jobId === jobId
+  }
+
+  function shouldApplyVisibleJobData(jobId) {
+    return isVisibleJob(jobId)
+  }
+
   function startProgressPolling(jobId) {
     if (!jobId) return
     if (progressPollJobId === jobId && progressPollTimer) return
@@ -495,7 +513,7 @@ export function useReportJobs() {
     progressPollJobId = jobId
     const refresh = () => {
       void loadProgressState(jobId, () => {
-        const visibleJob = job.value?.jobId === jobId && openedHistoryJobId.value !== jobId
+        const visibleJob = isVisibleJob(jobId)
         const activeWorkspaceJob = activeWorkspaceSnapshot.value?.job?.jobId === jobId
         return progressPollJobId === jobId && (visibleJob || activeWorkspaceJob)
       })
@@ -578,13 +596,14 @@ export function useReportJobs() {
     }
   }
 
-  async function fetchDatabaseSourcesData(jobId, shouldApply = () => true) {
-    const requestId = ++databaseSourcesRequestId
+  async function fetchDatabaseSourcesData(jobId, shouldApply = () => shouldApplyVisibleJobData(jobId)) {
     if (!jobId) {
       databaseSources.value = null
       databaseSourcesLoading.value = false
       return
     }
+    if (!shouldApply()) return
+    const requestId = ++databaseSourcesRequestId
     databaseSourcesLoading.value = true
     try {
       const result = await fetchReportDatabaseSources(jobId)
@@ -594,30 +613,37 @@ export function useReportJobs() {
       if (requestId !== databaseSourcesRequestId || !shouldApply()) return
       databaseSources.value = null
     } finally {
-      if (requestId === databaseSourcesRequestId && shouldApply()) databaseSourcesLoading.value = false
+      if (requestId === databaseSourcesRequestId) databaseSourcesLoading.value = false
     }
   }
 
   function applyLiveDatabaseSources(sources, jobId = activeExecutionLogJobId) {
     if (!Array.isArray(sources)) return
     const nextSources = sources.filter(Boolean)
+    const visibleForSources = isVisibleJob(jobId)
+    const snapshotForSources = activeWorkspaceSnapshot.value?.job?.jobId === jobId
+      ? activeWorkspaceSnapshot.value?.databaseSources
+      : null
+    const previousSources = visibleForSources ? databaseSources.value : snapshotForSources
     const nextData = {
-      ...(databaseSources.value && typeof databaseSources.value === 'object' ? databaseSources.value : {}),
+      ...(previousSources && typeof previousSources === 'object' ? previousSources : {}),
       status: nextSources.length ? 'hit' : 'empty',
       sources: nextSources,
       fallbackReason: '',
-      totalHits: Math.max(databaseSources.value?.totalHits || 0, nextSources.length),
+      totalHits: Math.max(previousSources?.totalHits || 0, nextSources.length),
       updatedAt: new Date().toISOString(),
       retrievalMode: 'vector',
-      queryPlan: databaseSources.value?.queryPlan || null,
+      queryPlan: previousSources?.queryPlan || null,
       vectorPlan: {
-        ...(databaseSources.value?.vectorPlan || {}),
+        ...(previousSources?.vectorPlan || {}),
         returnedSources: nextSources.length,
       },
     }
-    databaseSources.value = nextData
-    databaseSourcesLoading.value = false
-    databaseSourcesRequestId += 1
+    if (visibleForSources) {
+      databaseSources.value = nextData
+      databaseSourcesLoading.value = false
+      databaseSourcesRequestId += 1
+    }
     if (activeWorkspaceSnapshot.value?.job?.jobId === jobId) {
       patchActiveWorkspaceSnapshot({ databaseSources: nextData, __force: true })
     }
@@ -642,8 +668,8 @@ export function useReportJobs() {
 
   function applyProgressState(next, jobId = activeExecutionLogJobId) {
     if (!next?.stages?.length) return
-    progressState.value = next
-    if (job.value?.jobId === jobId && !openedHistoryJobId.value) {
+    if (isVisibleJob(jobId)) {
+      progressState.value = next
       job.value = { ...job.value, progressState: next }
     }
     if (activeWorkspaceSnapshot.value?.job?.jobId === jobId) {
@@ -659,7 +685,7 @@ export function useReportJobs() {
 
   async function loadProgressState(jobId, shouldApply = () => true) {
     if (!jobId) {
-      progressState.value = null
+      if (!openedHistoryJobId.value) progressState.value = null
       return
     }
     try {
@@ -775,7 +801,7 @@ export function useReportJobs() {
 
     const log = normalizeEventLog(event)
     if (log) appendExecutionLog(log, eventJobId)
-    const visibleForEvent = job.value?.jobId === eventJobId && openedHistoryJobId.value !== job.value?.jobId
+    const visibleForEvent = isVisibleJob(eventJobId)
 
     if (event.type === 'stage' && event.message) {
       if (visibleForEvent) {
@@ -858,6 +884,7 @@ export function useReportJobs() {
     jobEventSource = source
 
     source.onmessage = (message) => {
+      if (jobEventSource !== source || subscribedJobId !== jobId) return
       try {
         handleJobEvent(JSON.parse(message.data), jobId)
       } catch {
@@ -871,9 +898,11 @@ export function useReportJobs() {
     }
 
     source.onerror = async () => {
+      if (jobEventSource !== source || subscribedJobId !== jobId) return
       try {
         const latest = await fetchReportJob(jobId)
-        if (job.value?.jobId === jobId && !openedHistoryJobId.value) job.value = latest
+        if (jobEventSource !== source || subscribedJobId !== jobId) return
+        if (isVisibleJob(jobId)) job.value = latest
         if (activeWorkspaceSnapshot.value?.job?.jobId === jobId) patchActiveWorkspaceSnapshot({ job: latest, __force: true })
         await loadProgressState(jobId)
         if (latest.status === 'succeeded' || latest.status === 'failed' || latest.status === 'cancelled') {
@@ -936,8 +965,10 @@ export function useReportJobs() {
   }
 
   function clearScreenForNextReport() {
-    activeWorkspaceSnapshot.value = null
+    const preservedWorkspace = getUnfinishedWorkspaceSnapshot()
+    generationRequestId += 1
     resetExecutionLogs()
+    activeWorkspaceSnapshot.value = preservedWorkspace
     openedHistoryJobId.value = null
     detailLoading.value = false
     detailLoadError.value = ''
@@ -946,6 +977,11 @@ export function useReportJobs() {
     errorMessage.value = ''
     processLogs.value = []
     job.value = null
+    databaseSources.value = null
+    databaseSourcesLoading.value = false
+    databaseSourcesRequestId += 1
+    isGenerating.value = false
+    isPlanning.value = false
     phase.value = 'idle'
     loadingStep.value = '等待输入任务'
     savedNotice.value = ''
@@ -1364,7 +1400,7 @@ export function useReportJobs() {
         const next = await fetchReportJob(jobId)
         if (next?.progressState) applyProgressState(next.progressState, jobId)
         else void loadProgressState(jobId, () => activePollJobId.value === jobId)
-        const visibleForPoll = job.value?.jobId === jobId && openedHistoryJobId.value !== jobId
+        const visibleForPoll = isVisibleJob(jobId)
         const nextLoadingStep = stepMessages[tick % stepMessages.length]
         if (visibleForPoll) {
           job.value = next
@@ -1374,8 +1410,9 @@ export function useReportJobs() {
           patchActiveWorkspaceSnapshot({ job: next, loadingStep: nextLoadingStep, __force: true })
           pushWorkspaceSnapshotLog(`任务状态：${next.status}${next.stage ? ` / ${next.stage}` : ''}`)
         }
-        upsertJobInList(next)
-        upsertJobInRecent(next)
+        const promotePolledJob = openedHistoryJobId.value !== jobId && isUnfinishedJob(next)
+        upsertJobInList(next, { promote: promotePolledJob })
+        upsertJobInRecent(next, { promote: promotePolledJob })
         tick += 1
 
         if (tick % 4 === 0) fetchDatabaseSourcesData(jobId)
@@ -1385,7 +1422,7 @@ export function useReportJobs() {
           if (visibleForPoll) loadingStep.value = '正在读取报告文件内容'
           const result = await fetchReportResult(jobId)
           const completedJob = { ...next, resultPath: result.resultPath || next.resultPath }
-          if (visibleForPoll) {
+          if (isVisibleJob(jobId)) {
             generatedHtml.value = result.html || ''
             job.value = completedJob
             selectedReport.value = {
@@ -1393,17 +1430,19 @@ export function useReportJobs() {
               html: generatedHtml.value,
             }
             phase.value = 'done'
-            openedHistoryJobId.value = null
+            if (openedHistoryJobId.value !== jobId) openedHistoryJobId.value = null
             pushLog('已读取后端返回的 HTML 报告。')
           }
-          activeWorkspaceSnapshot.value = {
-            ...(activeWorkspaceSnapshot.value || makeWorkspaceSnapshot()),
-            job: completedJob,
-            generatedHtml: result.html || '',
-            selectedReport: { ...completedJob, html: result.html || '' },
-            phase: 'done',
-            loadingStep: '已完成',
-            isGenerating: false,
+          if (!activeWorkspaceSnapshot.value || activeWorkspaceSnapshot.value.job?.jobId === jobId) {
+            activeWorkspaceSnapshot.value = {
+              ...(activeWorkspaceSnapshot.value || makeWorkspaceSnapshot()),
+              job: completedJob,
+              generatedHtml: result.html || '',
+              selectedReport: { ...completedJob, html: result.html || '' },
+              phase: 'done',
+              loadingStep: '已完成',
+              isGenerating: false,
+            }
           }
           upsertJobInList(completedJob)
           upsertJobInRecent(completedJob)
@@ -1549,6 +1588,7 @@ export function useReportJobs() {
   async function confirmReportPlan() {
     if (isGenerating.value || !title.value.trim() || !reportType.value) return
 
+    const requestId = ++generationRequestId
     const plannedContext = buildPlanningContext()
     resetExecutionLogs()
     openedHistoryJobId.value = null
@@ -1566,6 +1606,7 @@ export function useReportJobs() {
     loadingStep.value = '预计 3-5 分钟生成，请耐心等待'
     savedNotice.value = ''
 
+    let submittedJobId = ''
     try {
       pushLog('提交报告生成任务到后端。')
       if (!getAuthToken()) {
@@ -1573,6 +1614,13 @@ export function useReportJobs() {
       }
       await refreshHealth()
       const created = await createReportJob(buildPayload(plannedContext))
+      submittedJobId = created.jobId
+      if (requestId !== generationRequestId) {
+        const backgroundJob = { jobId: created.jobId, status: created.status }
+        upsertJobInList(backgroundJob)
+        upsertJobInRecent(backgroundJob)
+        return
+      }
       job.value = { jobId: created.jobId, status: created.status }
       activeWorkspaceSnapshot.value = makeWorkspaceSnapshot({ job: job.value })
       upsertJobInList(job.value)
@@ -1584,13 +1632,15 @@ export function useReportJobs() {
       await pollUntilDone(created.jobId)
     } catch (error) {
       const backgroundMessage = error instanceof Error ? error.message : String(error)
-      if (openedHistoryJobId.value && activeWorkspaceSnapshot.value?.job?.jobId) {
+      if (requestId !== generationRequestId && !submittedJobId) return
+      if (submittedJobId && !isVisibleJob(submittedJobId)) {
+        if (activeWorkspaceSnapshot.value?.job?.jobId !== submittedJobId) return
         patchActiveWorkspaceSnapshot({
           errorMessage: backgroundMessage,
           phase: 'error',
           loadingStep: '任务失败',
           isGenerating: false,
-          job: activeWorkspaceSnapshot.value.job
+          job: activeWorkspaceSnapshot.value?.job
             ? { ...activeWorkspaceSnapshot.value.job, status: 'failed', errorMessage: backgroundMessage }
             : null,
           __force: true,
@@ -1603,7 +1653,9 @@ export function useReportJobs() {
       loadingStep.value = '任务失败'
       pushLog(`错误：${errorMessage.value}`)
     } finally {
-      isGenerating.value = false
+      if (requestId === generationRequestId && (!submittedJobId || isVisibleJob(submittedJobId))) {
+        isGenerating.value = false
+      }
     }
   }
 
@@ -1675,9 +1727,11 @@ export function useReportJobs() {
   }
 
   async function openReportFromList(item) {
+    generationRequestId += 1
     const requestId = ++historyOpenRequestId
     const unfinishedWorkspace = getUnfinishedWorkspaceSnapshot(item.jobId)
-    if (!unfinishedWorkspace) closeJobEvents()
+    closeJobEvents()
+    stopProgressPolling()
     if (unfinishedWorkspace) activeWorkspaceSnapshot.value = unfinishedWorkspace
     currentView.value = 'generator'
     openedHistoryJobId.value = item.jobId
@@ -1725,6 +1779,7 @@ export function useReportJobs() {
   }
 
   async function monitorJobFromList(item) {
+    generationRequestId += 1
     historyOpenRequestId += 1
     const requestId = historyOpenRequestId
     if (activeWorkspaceSnapshot.value?.job?.jobId === item.jobId) {
@@ -1739,13 +1794,14 @@ export function useReportJobs() {
 
     const unfinishedWorkspace = getUnfinishedWorkspaceSnapshot(item.jobId)
     currentView.value = 'generator'
-    if (activePollJobId.value === item.jobId) {
+    if (activePollJobId.value === item.jobId && activeWorkspaceSnapshot.value?.job?.jobId === item.jobId) {
       restoreWorkspaceSnapshot()
       return
     }
 
-    if (!unfinishedWorkspace) closeJobEvents()
-    openedHistoryJobId.value = null
+    closeJobEvents()
+    stopProgressPolling()
+    openedHistoryJobId.value = item.jobId
     detailLoading.value = false
     detailLoadError.value = ''
     selectedReport.value = null
@@ -1763,10 +1819,10 @@ export function useReportJobs() {
     phase.value = 'loading'
     loadingStep.value = '正在跟踪后端任务状态'
     applyJobFormData(item)
-    activeWorkspaceSnapshot.value = unfinishedWorkspace || makeWorkspaceSnapshot({ job: item })
-    upsertJobInList(item)
-    if (!unfinishedWorkspace) subscribeJobEvents(item.jobId)
-    const isCurrentRunning = () => historyOpenRequestId === requestId && openedHistoryJobId.value === null && job.value?.jobId === item.jobId
+    if (unfinishedWorkspace) activeWorkspaceSnapshot.value = unfinishedWorkspace
+    upsertJobInList(item, { promote: false })
+    subscribeJobEvents(item.jobId)
+    const isCurrentRunning = () => historyOpenRequestId === requestId && openedHistoryJobId.value === item.jobId && job.value?.jobId === item.jobId
     void loadExecutionLog(item.jobId, isCurrentRunning)
     void loadProgressState(item.jobId, isCurrentRunning)
     void fetchDatabaseSourcesData(item.jobId, isCurrentRunning)
@@ -1780,19 +1836,33 @@ export function useReportJobs() {
     }
 
     isGenerating.value = true
-    activeWorkspaceSnapshot.value = makeWorkspaceSnapshot({ job: item, phase: 'loading', loadingStep: loadingStep.value, isGenerating: true })
     pushLog(`继续查看任务：${item.jobId}`)
 
     try {
       await pollUntilDone(item.jobId)
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : String(error)
-      phase.value = 'error'
-      loadingStep.value = '任务失败'
-      pushLog(`错误：${errorMessage.value}`)
+      const message = error instanceof Error ? error.message : String(error)
+      if (isVisibleJob(item.jobId)) {
+        errorMessage.value = message
+        phase.value = 'error'
+        loadingStep.value = '任务失败'
+        pushLog(`错误：${errorMessage.value}`)
+      } else if (activeWorkspaceSnapshot.value?.job?.jobId === item.jobId) {
+        patchActiveWorkspaceSnapshot({
+          errorMessage: message,
+          phase: 'error',
+          loadingStep: '任务失败',
+          isGenerating: false,
+          job: { ...activeWorkspaceSnapshot.value.job, status: 'failed', errorMessage: message },
+          __force: true,
+        })
+        pushWorkspaceSnapshotLog(`错误：${message}`)
+      }
     } finally {
-      isGenerating.value = false
-      if (activeWorkspaceSnapshot.value?.job?.jobId) patchActiveWorkspaceSnapshot({ isGenerating: false, __force: true })
+      if (isVisibleJob(item.jobId)) isGenerating.value = false
+      if (activeWorkspaceSnapshot.value?.job?.jobId === item.jobId) {
+        patchActiveWorkspaceSnapshot({ isGenerating: false, __force: true })
+      }
     }
   }
 
@@ -1897,6 +1967,16 @@ export function useReportJobs() {
       if (currentView.value === 'list' && runningCount.value > 0) {
         loadJobList(false)
       }
+      if (
+        !isViewingHistoryJob.value &&
+        (
+          runningCount.value > 0 ||
+          recentJobs.value.some((item) => isUnfinishedJob(item)) ||
+          activeWorkspaceSnapshot.value?.job?.jobId
+        )
+      ) {
+        refreshRecentReports()
+      }
     }, 5000)
   })
 
@@ -1943,7 +2023,7 @@ export function useReportJobs() {
     loadingStep,
     job,
     jobList,
-    recentJobs,
+    recentJobs: displayRecentJobs,
     recentLoadingMore,
     recentHasMore,
     recentLoadError,
