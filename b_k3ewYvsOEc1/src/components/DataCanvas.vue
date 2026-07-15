@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
+import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 
 const purifyConfig = {
@@ -198,6 +199,7 @@ const sourceListNotice = ref('')
 const acceptedCitationSources = ref([])
 const acceptedCitationSourcesLoading = ref(false)
 const activeResultTab = ref('report')
+const SOURCE_AUTO_REFRESH_MS = 5000
 const homeMode = computed({
   get: () => props.homeMode || 'report',
   set: (value) => emit('update:homeMode', value === 'qa' ? 'qa' : 'report'),
@@ -243,6 +245,14 @@ let qaStreamRecoveryTimer = null
 let sourceListRequestId = 0
 let resultTabWheelLockedUntil = 0
 const qaStreamStates = new Map()
+const sourceRefreshController = createLiveSourceRefreshController({
+  intervalMs: SOURCE_AUTO_REFRESH_MS,
+  setIntervalFn: window.setInterval,
+  clearIntervalFn: window.clearInterval,
+  onRefresh: () => {
+    if (!sourceListLoading.value) void loadSourceListPage(1, { preserveOnError: true })
+  },
+})
 
 const canExport = computed(() => props.phase === 'done' && Boolean(props.generatedHtml))
 const isLiveLogVisible = computed(() => props.phase === 'loading')
@@ -3167,6 +3177,13 @@ function normalizeSourceKind(value, source = null) {
   return text.length > 8 ? '其他' : text
 }
 
+function sourceChannelLabel(source) {
+  if (source?.sourceGroup === 'database_recall') return '数据库召回'
+  if (source?.sourceGroup === 'tool_search') return '联网搜索采集'
+  if (source?.sourceGroup === 'crawler') return '资料采集'
+  return source?.sourceType || '--'
+}
+
 function normalizeNumericScore(value) {
   if (value === undefined || value === null || value === '') return 0
   const number = Number(value)
@@ -3374,7 +3391,7 @@ function scrollSourceListToTop() {
   })
 }
 
-async function loadSourceListPage(page = 1) {
+async function loadSourceListPage(page = 1, { preserveOnError = false } = {}) {
   const jobId = props.job?.jobId
   if (!jobId || !activeSourceType.value || (sourceListLoading.value && page > 1)) return
   const requestId = sourceListRequestId + 1
@@ -3383,22 +3400,63 @@ async function loadSourceListPage(page = 1) {
   sourceListLoading.value = true
   sourceListError.value = ''
   sourceListNotice.value = ''
+  const requestResult = await sourceRefreshController.runRequest({
+    request: async () => {
+      try {
+        const response = await fetchReportSources(jobId, sourceRequestType(requestType), {
+          page,
+          pageSize: sourceListPageSize.value,
+        })
+        return { response, usedUntypedFallback: false }
+      } catch {
+        const response = await fetchReportSources(jobId, '', {
+          page,
+          pageSize: sourceListPageSize.value,
+        })
+        return { response, usedUntypedFallback: true }
+      }
+    },
+    preserveOnError,
+    hasExistingRows: sourceListItems.value.length > 0,
+  })
   try {
-    let response
-    let usedUntypedFallback = false
-    try {
-      response = await fetchReportSources(jobId, sourceRequestType(requestType), {
-        page,
-        pageSize: sourceListPageSize.value,
-      })
-    } catch {
-      usedUntypedFallback = true
-      response = await fetchReportSources(jobId, '', {
-        page,
-        pageSize: sourceListPageSize.value,
-      })
+    if (
+      requestResult.kind === 'stale' ||
+      requestId !== sourceListRequestId ||
+      requestType !== activeSourceType.value ||
+      jobId !== props.job?.jobId
+    ) return
+    if (requestResult.kind === 'failure') {
+      if (requestResult.preserveExistingRows) {
+        sourceListError.value = ''
+        return
+      }
+      const fallback = localSourcePool(requestType)
+      if (fallback.length) {
+        sourceListItems.value = page === 1 ? fallback : [...sourceListItems.value, ...fallback]
+        sourceListPage.value = page
+        sourceCurrentPage.value = 1
+        if (requestType === 'candidate_hits' && page === 1) {
+          sourceListNotice.value = candidateDetailNotice(fallback)
+        }
+        sourceListTotal.value = requestType === 'candidate_hits'
+          ? (sourceCandidateHitTotal() || sourceListItems.value.length)
+          : sourceListItems.value.length
+        sourceListHasMore.value = false
+      } else if (requestType === 'candidate_hits' && sourceCandidateHitTotal() > 0) {
+        sourceListItems.value = page === 1 ? [] : sourceListItems.value
+        sourceListPage.value = page
+        sourceCurrentPage.value = 1
+        sourceListTotal.value = sourceCandidateHitTotal()
+        sourceListNotice.value = `候选池共 ${sourceCandidateHitTotal()} 条，当前历史任务未保存候选明细。`
+        sourceListHasMore.value = false
+      } else {
+        sourceListError.value = requestResult.errorMessage
+        sourceListHasMore.value = false
+      }
+      return
     }
-    if (requestId !== sourceListRequestId || requestType !== activeSourceType.value || jobId !== props.job?.jobId) return
+    const { response, usedUntypedFallback } = requestResult.value
     const fallbackGroup = usedUntypedFallback
       ? 'all'
       : requestType
@@ -3422,34 +3480,28 @@ async function loadSourceListPage(page = 1) {
       : (normalized.total ?? sourceListItems.value.length)
     sourceListHasMore.value = normalized.hasMore ||
       (typeof normalized.total === 'number' && sourceListItems.value.length < normalized.total)
-  } catch {
-    if (requestId !== sourceListRequestId || requestType !== activeSourceType.value || jobId !== props.job?.jobId) return
-    const fallback = localSourcePool(requestType)
-    if (fallback.length) {
-      sourceListItems.value = page === 1 ? fallback : [...sourceListItems.value, ...fallback]
-      sourceListPage.value = page
-      sourceCurrentPage.value = 1
-      if (requestType === 'candidate_hits' && page === 1) {
-        sourceListNotice.value = candidateDetailNotice(fallback)
-      }
-      sourceListTotal.value = requestType === 'candidate_hits'
-        ? (sourceCandidateHitTotal() || sourceListItems.value.length)
-        : sourceListItems.value.length
-      sourceListHasMore.value = false
-    } else if (requestType === 'candidate_hits' && sourceCandidateHitTotal() > 0) {
-      sourceListItems.value = page === 1 ? [] : sourceListItems.value
-      sourceListPage.value = page
-      sourceCurrentPage.value = 1
-      sourceListTotal.value = sourceCandidateHitTotal()
-      sourceListNotice.value = `候选池共 ${sourceCandidateHitTotal()} 条，当前历史任务未保存候选明细。`
-      sourceListHasMore.value = false
-    } else {
-      sourceListError.value = '信源加载失败，请稍后重试。'
-      sourceListHasMore.value = false
-    }
   } finally {
     if (requestId === sourceListRequestId) sourceListLoading.value = false
   }
+}
+
+function stopSourceAutoRefresh() {
+  sourceRefreshController.stop()
+  sourceListRequestId += 1
+  sourceListLoading.value = false
+}
+
+function startSourceAutoRefresh() {
+  sourceRefreshController.sync({
+    activeTab: activeResultTab.value,
+    jobId: props.job?.jobId || '',
+    status: props.job?.status || '',
+  })
+}
+
+function invalidateSourceListRequests() {
+  sourceListRequestId += 1
+  sourceListLoading.value = false
 }
 
 async function loadMoreSourceRows() {
@@ -3652,6 +3704,8 @@ watch(() => [props.phase, props.job?.jobId], () => {
   resetSourceListState()
 })
 watch(() => activeResultTab.value, (tab) => {
+  invalidateSourceListRequests()
+  startSourceAutoRefresh()
   if (tab === 'sources' && props.job?.jobId && !sourceListItems.value.length && !sourceListLoading.value) {
     selectSourceType(activeSourceType.value || 'database_recall')
   }
@@ -3661,6 +3715,10 @@ watch(() => activeResultTab.value, (tab) => {
   if (tab === 'quality' && props.job?.jobId && !qualityReview.value && !qualityReviewLoading.value) {
     loadQualityReview()
   }
+})
+watch(() => [props.job?.jobId, props.job?.status], () => {
+  invalidateSourceListRequests()
+  startSourceAutoRefresh()
 })
 watch([sourceSearchQuery, sourceKindFilter, sourceTimeFilter, sourceSortMode], handleSourceFiltersChanged)
 watch(() => props.processLogs?.length || 0, () => {
@@ -3721,6 +3779,7 @@ watch(() => props.phase, (phase) => {
 })
 
 onBeforeUnmount(() => {
+  stopSourceAutoRefresh()
   window.removeEventListener('scroll', handleQaPageScroll)
   window.removeEventListener('keydown', handleQaGuideKeydown)
   reportRef.value?.removeEventListener('scroll', handleQaPageScroll)
@@ -5428,7 +5487,7 @@ function exportPdf() {
                           <strong>{{ source.title }}</strong>
                           <p>{{ source.summary }}</p>
                         </td>
-                        <td><span class="source-type-pill">{{ source.sourceType || '--' }}</span></td>
+                        <td><span class="source-type-pill">{{ sourceChannelLabel(source) }}</span></td>
                         <td>{{ source.sourceName || '--' }}</td>
                         <td>{{ source.publishTime || '--' }}</td>
                         <td><span class="source-score">{{ source.relevance || '--' }}</span></td>

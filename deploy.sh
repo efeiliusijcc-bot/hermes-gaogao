@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+export COPYFILE_DISABLE=1
 
 if [ ! -f .env ]; then
   echo "Missing .env. Copy .env.example and fill deployment values."
@@ -88,11 +89,12 @@ write_env PGVECTOR_EMBEDDING_MODEL "${PGVECTOR_EMBEDDING_MODEL:-text-embedding-v
 write_env PGVECTOR_EMBEDDING_DIMENSIONS "${PGVECTOR_EMBEDDING_DIMENSIONS:-1024}"
 write_env PGVECTOR_EMBEDDING_INPUT_CHARS "${PGVECTOR_EMBEDDING_INPUT_CHARS:-600}"
 write_env PGVECTOR_EMBEDDING_BASE_URL "${PGVECTOR_EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+write_env HYBRID_RETRIEVAL_ENABLED "${HYBRID_RETRIEVAL_ENABLED:-1}"
 write_env OPENAI_API_KEY "${OPENAI_API_KEY:-}"
 
 echo "=== 1. Upload backend source ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "
-  mkdir -p '$SRC_DIR/server/artifact-storage' '$SRC_DIR/src/types' '$SRC_DIR/scripts' /opt/hermes/workspace/report-agent/agents /opt/hermes/workspace/report-agent/skills
+  mkdir -p '$SRC_DIR/server/artifact-storage' '$SRC_DIR/server/reports' '$SRC_DIR/server/migrations' '$SRC_DIR/src/types' '$SRC_DIR/scripts' /opt/hermes/workspace/report-agent/agents /opt/hermes/workspace/report-agent/skills
   rm -f '$SRC_DIR/server/crawler.controller.ts' /opt/hermes/workspace/report-agent/agents/source-collection-agent.md
   rm -rf /opt/hermes/workspace/report-agent/skills/controlled-web-collector
 "
@@ -103,18 +105,23 @@ scp -i "$SSH_KEY" \
 
 scp -i "$SSH_KEY" server/*.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/server/"
 scp -i "$SSH_KEY" server/artifact-storage/*.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/server/artifact-storage/"
+scp -i "$SSH_KEY" -r server/reports "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/server/"
+scp -i "$SSH_KEY" server/migrations/20260714_hybrid_retrieval.sql "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/server/migrations/"
 scp -i "$SSH_KEY" src/types/report.ts "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/src/types/"
 scp -i "$SSH_KEY" \
   scripts/init-auth-users.sql scripts/init-chat-sessions.sql scripts/init-draft-assistant.sql \
   scripts/init-report-plans.sql scripts/init-daily-awareness.sql scripts/init-rbac.sql \
   scripts/init-audit-logs.sql scripts/init-user-preferences.sql scripts/init-report-edits.sql \
   scripts/init-crawler.sql scripts/init-report-quality-reviews.sql \
+  scripts/backfill-hybrid-retrieval.ts scripts/install-hybrid-retrieval-timer.sh \
+  scripts/uninstall-hybrid-retrieval-timer.sh \
   "$REMOTE_USER@$REMOTE_HOST:$SRC_DIR/scripts/"
 
 scp -i "$SSH_KEY" agents/*.md "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/report-agent/agents/"
 scp -r -i "$SSH_KEY" skills/planning-source-collection "$REMOTE_USER@$REMOTE_HOST:/opt/hermes/workspace/report-agent/skills/"
 scp -i "$SSH_KEY" "$DEPLOY_ENV_FILE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_ENV_FILE.tmp"
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "install -m 600 '$REMOTE_ENV_FILE.tmp' '$REMOTE_ENV_FILE' && rm -f '$REMOTE_ENV_FILE.tmp'"
+ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "find '$SRC_DIR/server' -type f -name '._*' -delete"
 
 echo "=== 2. Build and deploy backend remotely ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << REMOTE_SCRIPT
@@ -147,6 +154,7 @@ docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-user-pref
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-edits.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-crawler.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-quality-reviews.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$PGVECTOR_DATABASE_URL" < server/migrations/20260714_hybrid_retrieval.sql
 
 echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true
@@ -222,6 +230,19 @@ curl -fsS -H "Authorization: Bearer \$AUTH_TOKEN" http://127.0.0.1:1556/api/auth
 curl -fsS -H "Authorization: Bearer \$AUTH_TOKEN" http://127.0.0.1:1556/api/vector-sources/status
 docker ps --filter name=hermes-api --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 docker logs --tail 30 hermes-api
+chmod +x scripts/install-hybrid-retrieval-timer.sh scripts/uninstall-hybrid-retrieval-timer.sh
+HYBRID_FLAG="\$(printf '%s' "\${HYBRID_RETRIEVAL_ENABLED:-1}" | tr '[:upper:]' '[:lower:]')"
+HYBRID_SOURCE_TABLE="\${PGVECTOR_NEWS_TABLE:-vector_materials_text_embedding_v4}"
+case "\$HYBRID_FLAG" in
+  0|false|off) scripts/uninstall-hybrid-retrieval-timer.sh ;;
+  *)
+    if [[ "\$HYBRID_SOURCE_TABLE" == "vector_materials_text_embedding_v4" ]]; then
+      scripts/install-hybrid-retrieval-timer.sh
+    else
+      scripts/uninstall-hybrid-retrieval-timer.sh
+    fi
+    ;;
+esac
 REMOTE_SCRIPT
 
 echo "=== Deploy complete ==="

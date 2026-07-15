@@ -13,5 +13,5 @@
     "outDir": "dist-server",
     "rootDir": "."
   },
-  "include": ["server/**/*.ts", "src/types/report.ts"]
+  "include": ["server/**/*.ts", "src/types/report.ts", "scripts/backfill-hybrid-retrieval.ts"]
 }

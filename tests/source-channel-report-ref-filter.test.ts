@@ -43,11 +43,61 @@ const matchedRef = {
   matchStatus: 'matched',
 };
 
-const result = service.toolSearchChannelSources([], [rawOnlyRef, matchedRef], []);
+const eligibleResearchSource = {
+  ...matchedRef,
+  id: 'research-source',
+  sourceGroup: 'tool_search',
+  sourceOrigin: 'tool_search',
+  evidenceKind: 'evidence_card',
+  url: 'https://example.com/source?utm_source=live',
+  citationNo: undefined,
+  matchStatus: undefined,
+};
+
+const result = service.toolSearchChannelSources([eligibleResearchSource], [rawOnlyRef, matchedRef], []);
 
 assert.equal(result.length, 1);
-assert.equal(result[0].url, 'https://example.com/source');
+assert.equal(result[0].url, 'https://example.com/source?utm_source=live');
 assert.equal(result[0].matchStatus, 'matched');
+assert.equal(result[0].citationNo, 2);
 assert.equal(result.some((item: { matchStatus?: string }) => item.matchStatus === 'raw_only'), false);
+
+const databaseSource = {
+  ...matchedRef,
+  id: 'database-source',
+  sourceGroup: 'database_recall',
+  sourceOrigin: 'database_recall',
+  evidenceKind: 'structured_source',
+  url: 'https://example.com/database',
+};
+const databaseOnlyRef = {
+  ...matchedRef,
+  id: 'database-report-ref',
+  url: 'https://example.com/database?utm_source=live',
+  citationNo: 3,
+};
+const resultWithDatabaseOnlyRef = service.toolSearchChannelSources(
+  [eligibleResearchSource],
+  [databaseOnlyRef],
+  [databaseSource],
+);
+
+assert.equal(resultWithDatabaseOnlyRef.length, 1);
+assert.equal(resultWithDatabaseOnlyRef[0].url, 'https://example.com/source?utm_source=live');
+
+const unmatchedPublicRef = {
+  ...matchedRef,
+  id: 'unmatched-public-ref',
+  url: 'https://example.com/unverified',
+  citationNo: 4,
+};
+const resultWithUnmatchedPublicRef = service.toolSearchChannelSources(
+  [eligibleResearchSource],
+  [unmatchedPublicRef],
+  [],
+);
+
+assert.equal(resultWithUnmatchedPublicRef.length, 1);
+assert.equal(resultWithUnmatchedPublicRef[0].url, 'https://example.com/source?utm_source=live');
 
 console.log('source channel report reference filter tests passed');

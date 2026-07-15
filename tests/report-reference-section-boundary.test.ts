@@ -5,7 +5,7 @@ const service = Object.create(ReportsService.prototype) as ReportsService & {
   parseReferenceEntriesRobust(markdown: string): Map<number, { title?: string; url?: string }>;
   buildReportReferenceItems(job: Record<string, unknown>, markdown: string): Promise<Array<Record<string, unknown>>>;
   structuredReportSources(job: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
-  toolSearchSources(job: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
+  reportCitationToolSearchSources(job: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
   reportReferencesArtifactCandidatePaths(job: Record<string, unknown>): Promise<string[]>;
   readJsonFile(filePath: string): Promise<unknown>;
   readReportReferencesArtifact(job: Record<string, unknown>): Promise<Array<Record<string, unknown>> | null>;
@@ -38,7 +38,7 @@ assert.equal(references.get(1)?.url, 'https://example.com/source');
 assert.doesNotMatch(references.get(1)?.title || '', /Information gaps|Internal production data/);
 
 service.structuredReportSources = async () => [];
-service.toolSearchSources = async () => [{
+service.reportCitationToolSearchSources = async () => [{
   title: 'Example News verified source',
   url: 'https://example.com/source',
   sourceName: 'Example News',

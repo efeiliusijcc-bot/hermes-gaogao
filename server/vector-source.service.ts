@@ -4,9 +4,18 @@ import { createRequire } from 'module';
 import OpenAI from 'openai';
 import { buildDailyMaterialWindow } from './daily-awareness.utils.js';
 import { ResearchKeysService } from './research-keys.service.js';
+import type { CandidateRanks, CandidateScores } from './reports/retrieval/retrieval.types.js';
+
+type PgQueryResult = { rows: Array<Record<string, unknown>>; rowCount?: number | null };
+
+type PgClient = {
+  query: (text: string, params?: unknown[]) => Promise<PgQueryResult>;
+  release: () => void;
+};
 
 type PgPool = {
-  query: (text: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>;
+  query: (text: string, params?: unknown[]) => Promise<PgQueryResult>;
+  connect: () => Promise<PgClient>;
   end: () => Promise<void>;
 };
 
@@ -22,7 +31,12 @@ export interface VectorSourceItem {
   publishTime: string;
   similarity: number;
   relevanceScore: number;
-  retrievalMode: 'vector';
+  retrievalMode: 'vector' | 'hybrid';
+  documentId?: string;
+  retrievalSources?: string[];
+  retrievalRanks?: CandidateRanks;
+  retrievalScores?: CandidateScores;
+  retrievalRunId?: string;
 }
 
 export interface VectorQueryPlan {
@@ -255,6 +269,55 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       lastIndexedAt: stats.lastIndexedAt || this.lastIndexedAt,
       fallbackReason: available ? this.legacyFallbackReason : this.lastError || 'PGVECTOR_DATABASE_URL is not configured',
     };
+  }
+
+  async query<T>(sql: string, params: readonly unknown[] = []): Promise<{ rows: T[]; rowCount?: number | null }> {
+    const pool = await this.getPool();
+    const result = await pool.query(sql, [...params]);
+    return { rows: result.rows as unknown as T[], rowCount: result.rowCount };
+  }
+
+  async queryWithHnswEfSearch<T>(
+    efSearch: number,
+    sql: string,
+    params: readonly unknown[] = [],
+  ): Promise<{ rows: T[]; rowCount?: number | null }> {
+    const safeEfSearch = Math.max(40, Math.min(1000, Math.floor(efSearch)));
+    const client = await (await this.getPool()).connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SET LOCAL hnsw.ef_search = ${safeEfSearch}`);
+      const result = await client.query(sql, [...params]);
+      await client.query('COMMIT');
+      return { rows: result.rows as unknown as T[], rowCount: result.rowCount };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  retrievalProfile(): { sourceTable: string; embeddingModel: string; embeddingDimensions: number } {
+    return {
+      sourceTable: ACTIVE_VECTOR_CONFIG.sourceTable,
+      embeddingModel: ACTIVE_VECTOR_CONFIG.embeddingModel,
+      embeddingDimensions: ACTIVE_VECTOR_CONFIG.embeddingDimensions,
+    };
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    const input = this.clean(text, ACTIVE_VECTOR_CONFIG.embeddingInputChars);
+    if (!input) throw new Error('Embedding query text is empty');
+    const vectors = await this.researchKeys.withKeyFailover(
+      'openaiEmbeddingApiKey',
+      (apiKey) => this.embedTexts(apiKey, [input]),
+    );
+    const vector = vectors[0] || [];
+    if (vector.length !== ACTIVE_VECTOR_CONFIG.embeddingDimensions) {
+      throw new Error(`Embedding dimensions mismatch: expected ${ACTIVE_VECTOR_CONFIG.embeddingDimensions}, received ${vector.length}`);
+    }
+    return vector;
   }
 
   private async resetRuntimeState(): Promise<void> {

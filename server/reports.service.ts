@@ -16,6 +16,9 @@ import { createAuthPool, type PgPool } from './auth-database.js';
 import { UserPreferencesService } from './user-preferences.service.js';
 import { buildRuleBasedEntityPolicy, parseEntityPolicy, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
 import { filterSourcesByEntityPolicy, type SourceEntityMatch, type SourceFilterDiagnostics, type SourceFilterResult } from './source-entity-guard.js';
+import { buildCleanRetrievalInput } from './reports/retrieval/query/clean-query-input.js';
+import { ReportsRetrievalAdapter } from './reports/reports-retrieval.adapter.js';
+import type { QueryProfile } from './reports/retrieval/retrieval.types.js';
 import {
   WebSupplementService,
   assessSourceQuality,
@@ -273,6 +276,7 @@ export class ReportsService implements OnModuleDestroy {
     @Optional() @Inject(ArtifactPathResolver) private readonly artifactResolver?: ArtifactPathResolver,
     @Optional() @Inject(ArtifactSyncService) private readonly artifactSync?: ArtifactSyncService,
     @Optional() @Inject(DeepReportSourceCollectionService) private readonly deepReportSourceCollection?: DeepReportSourceCollectionService,
+    @Optional() @Inject(ReportsRetrievalAdapter) private readonly reportsRetrieval?: ReportsRetrievalAdapter,
   ) {
     this.jobsReady = this.loadPersistedJobs();
   }
@@ -1343,7 +1347,9 @@ export class ReportsService implements OnModuleDestroy {
       const vectorResult = this.vectorResultFromJob(job);
       const vectorSources = this.normalizeVectorSources(vectorResult?.sources || []).slice(0, 50);
       const entityPolicy = await this.entityPolicyForJob(job, null);
-      const filtered = this.filterDatabaseSourcesForResponse(vectorSources, entityPolicy);
+      const filtered = job.artifacts?.hybridRetrievalEnabled === true
+        ? this.acceptHybridDatabaseSources(vectorSources, entityPolicy)
+        : this.filterDatabaseSourcesForResponse(vectorSources, entityPolicy);
       if (vectorSources.length) {
         const status: DatabaseSourcesResponse['status'] = filtered.acceptedSources.length
           ? 'hit'
@@ -1390,7 +1396,11 @@ export class ReportsService implements OnModuleDestroy {
     const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
     const contextObject = contextJson && !Array.isArray(contextJson) ? contextJson : null;
     const entityPolicy = await this.entityPolicyForJob(job, dir, contextObject);
-    const filtered = this.filterDatabaseSourcesForResponse(candidates, entityPolicy);
+    const isHybrid = job.artifacts?.hybridRetrievalEnabled === true ||
+      this.firstString(planObject, ['retrieval_mode', 'retrievalMode']) === 'hybrid';
+    const filtered = isHybrid
+      ? this.acceptHybridDatabaseSources(candidates, entityPolicy)
+      : this.filterDatabaseSourcesForResponse(candidates, entityPolicy);
     const savedDiagnostics = await this.readDatabaseSourceDiagnostics(dir);
     const uncertainSources = filtered.uncertainSources.length
       ? filtered.uncertainSources
@@ -1465,18 +1475,27 @@ export class ReportsService implements OnModuleDestroy {
     const type = this.normalizeReportSourceType(options.type);
     const page = this.parsePositiveInt(options.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(options.pageSize, 10), 100);
+    const optional = async <T>(load: () => Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await load();
+      } catch {
+        return fallback;
+      }
+    };
 
     const [reportRefs, structuredSources, toolSearchSources, candidateResult, extractFailed] = await Promise.all([
-      this.reportReferenceSources(job),
+      optional(() => this.reportReferenceSources(job), []),
       this.structuredReportSources(job),
-      this.toolSearchSources(job),
-      type === 'candidate_hits' ? this.candidateHitSources(job) : Promise.resolve({ items: [], total: 0, detailSaved: false }),
-      type === 'extract_failed' ? this.extractFailedSources(job) : Promise.resolve([]),
+      optional(() => this.toolSearchSources(job), []),
+      type === 'candidate_hits'
+        ? optional(() => this.candidateHitSources(job), { items: [], total: 0, detailSaved: false })
+        : Promise.resolve({ items: [], total: 0, detailSaved: false }),
+      type === 'extract_failed' ? optional(() => this.extractFailedSources(job), []) : Promise.resolve([]),
     ]);
 
     const databaseRecall = this.databaseRecallChannelSources(structuredSources, reportRefs);
     const toolSearch = this.toolSearchChannelSources(toolSearchSources, reportRefs, databaseRecall);
-    const sourceDiagnostics = await this.reportSourceDiagnostics(job);
+    const sourceDiagnostics = await optional(() => this.reportSourceDiagnostics(job), {} as Record<string, unknown>);
     const summary: ReportSourceSummary = {
       databaseRecallCount: databaseRecall.length,
       toolSearchCount: toolSearch.length,
@@ -1537,6 +1556,24 @@ export class ReportsService implements OnModuleDestroy {
 
     const maxRows = this.boundInt(databaseOptions.maxMetadataRows, 50, 1, 100);
     const lookbackDays = this.boundInt(databaseOptions.lookbackDays, 30, 0, 365);
+    if (this.hybridRetrievalEnabled() && this.reportsRetrieval) {
+      try {
+        return await this.enrichPayloadWithHybridDatabaseSources(
+          job,
+          payload,
+          parsed,
+          databaseOptions,
+          maxRows,
+          lookbackDays,
+        );
+      } catch (error) {
+        this.pushEvent(job, {
+          type: 'stage',
+          stage: 'database_sources',
+          message: '混合数据库检索当前不可用，已回退现有向量检索。',
+        });
+      }
+    }
     const result = await this.vectorSources.search({
       topic: String(payload.topic || parsed.topic || ''),
       knownContext: parsed,
@@ -1607,6 +1644,141 @@ export class ReportsService implements OnModuleDestroy {
 
     payload.known_context = JSON.stringify(enrichedContext, null, 2);
     return payload;
+  }
+
+  private async enrichPayloadWithHybridDatabaseSources(
+    job: JobRecord,
+    payload: Record<string, unknown>,
+    parsed: Record<string, unknown>,
+    databaseOptions: Record<string, unknown>,
+    maxRows: number,
+    lookbackDays: number,
+  ): Promise<Record<string, unknown>> {
+    if (!this.reportsRetrieval) return payload;
+    const adapted = await this.reportsRetrieval.retrieveDatabaseSources({
+      reportJobId: job.jobId,
+      lookbackDays,
+      payload,
+      payloadContext: parsed,
+    });
+    const sources = adapted.sources.slice(0, maxRows);
+    const entityPolicy = this.entityPolicyFromHybridProfile(adapted.result.profile);
+    const basePlan = await this.vectorSources.status();
+    const result: VectorSearchResult = {
+      status: sources.length ? 'hit' : 'empty',
+      sources,
+      totalHits: adapted.result.diagnostics.mergedCandidateCount,
+      updatedAt: new Date().toISOString(),
+      queryPlan: {
+        ...basePlan,
+        vectorHits: adapted.result.diagnostics.vectorCandidateCount,
+        keywordBoostedHits:
+          adapted.result.diagnostics.fulltextCandidateCount +
+          adapted.result.diagnostics.titleCandidateCount +
+          adapted.result.diagnostics.entityCandidateCount,
+        returnedSources: sources.length,
+        broadeningApplied: adapted.result.diagnostics.fallbackLevel > 0,
+        fallbackReason: sources.length ? '' : adapted.result.diagnostics.suspiciousEntityPolicy
+          ? '实体策略可疑：候选存在，但派生实体策略导致统一拒绝。'
+          : '混合数据库检索未返回达到阈值的信源。',
+      },
+    };
+    const hybridDiagnostics = {
+      runId: adapted.result.runId,
+      ...adapted.result.diagnostics,
+    };
+
+    job.artifacts = {
+      ...job.artifacts,
+      vectorDatabaseCandidateSources: sources,
+      vectorDatabaseSources: sources,
+      vectorDatabaseUncertainSources: [],
+      vectorDatabaseRejectedSources: [],
+      vectorDatabaseQueryPlan: result.queryPlan,
+      vectorDatabaseSourceStatus: result.status,
+      entityPolicy,
+      databaseSourceDiagnostics: hybridDiagnostics,
+      hybridRetrievalEnabled: true,
+      hybridRetrievalRunId: adapted.result.runId,
+      hybridRetrievalProfile: adapted.result.profile,
+      hybridRetrievalDiagnostics: adapted.result.diagnostics,
+    };
+    await this.writeJobState(job);
+
+    const enrichedContext = {
+      ...parsed,
+      entityPolicy,
+      hybridRetrieval: {
+        enabled: true,
+        runId: adapted.result.runId,
+        profile: adapted.result.profile,
+        diagnostics: adapted.result.diagnostics,
+      },
+      vectorDatabaseSourceOptions: {
+        enabled: true,
+        provider: 'postgres_pgvector',
+        mode: 'hybrid',
+        lookbackDays,
+        maxMetadataRows: maxRows,
+      },
+      vectorDatabaseSources: sources,
+      vectorDatabaseQueryPlan: result.queryPlan,
+      sourceDiagnostics: {
+        ...this.plainObject(parsed.sourceDiagnostics),
+        database: { entityPolicy, ...hybridDiagnostics },
+      },
+    };
+    await this.writeBackendDatabaseRecallArtifacts(job, enrichedContext, result, {
+      maxRows,
+      lookbackDays,
+      databaseOptions,
+      entityPolicy,
+    });
+
+    const liveSources = this.normalizeVectorSources(sources).slice(0, 50);
+    this.pushEvent(job, {
+      type: 'stage',
+      stage: 'database_sources',
+      message: liveSources.length
+        ? `PG hybrid sources recalled: ${liveSources.length} items.`
+        : '混合数据库检索未找到达到相关性阈值的信源。',
+    });
+    this.pushEvent(job, { type: 'sources', sources: liveSources.map((source) => ({ ...source })) });
+    payload.known_context = JSON.stringify(enrichedContext, null, 2);
+    return payload;
+  }
+
+  private hybridRetrievalEnabled(): boolean {
+    return !['0', 'false', 'off'].includes(String(process.env.HYBRID_RETRIEVAL_ENABLED || '1').toLowerCase());
+  }
+
+  private entityPolicyFromHybridProfile(profile: QueryProfile): EntityPolicy {
+    const hardExplicit = profile.coreEntities.filter(
+      (entity) => entity.source === 'explicit' && entity.enforcement === 'hard',
+    );
+    return {
+      coreEntities: profile.coreEntities
+        .filter((entity) => entity.enforcement !== 'disabled')
+        .map((entity) => ({
+          canonical: entity.canonicalName,
+          type: entity.type === 'person' || entity.type === 'location' || entity.type === 'event'
+            ? entity.type
+            : 'organization',
+          aliases: [...new Set([entity.canonicalName, ...entity.aliases])],
+          importance: hardExplicit.some((item) => item.canonicalId === entity.canonicalId) ? 'primary' : 'context',
+        })),
+      entityRelations: [],
+      topicTerms: profile.coreTopics,
+      actionTerms: profile.eventType ? [profile.eventType] : [],
+      timeConstraints: [profile.timeRange?.start, profile.timeRange?.end].filter((value): value is string => Boolean(value)),
+      locationConstraints: [],
+      ambiguousTerms: [],
+      possibleConfusions: [],
+      requiredEntityMatch: hardExplicit.length > 0,
+      searchQueries: profile.queryVariants,
+      confidence: profile.coreEntities.length ? 0.95 : 0.5,
+      generatedBy: 'parsed',
+    };
   }
 
   private async enrichPayloadWithWebSupplement(job: JobRecord, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -2692,6 +2864,7 @@ export class ReportsService implements OnModuleDestroy {
     const databaseDir = this.remoteFs.joinPath(jobDir, 'database');
     const now = new Date().toISOString();
     const vectorSources = result.sources.slice(0, options.maxRows);
+    const isHybrid = vectorSources.some((source) => source.retrievalMode === 'hybrid');
     const acceptedMatches = new Map<string, SourceEntityMatch>();
     for (const source of options.sourceFilter?.acceptedSources || []) {
       const key = this.sourceEntityMatchKey(source);
@@ -2700,7 +2873,8 @@ export class ReportsService implements OnModuleDestroy {
     const databaseSources = vectorSources.map((source, index) => ({
       id: `pg-vector-${index + 1}`,
       source_type: 'pg_vector',
-      retrieval_channel: 'backend_pre_recall',
+      retrieval_channel: isHybrid ? 'backend_hybrid_recall' : 'backend_pre_recall',
+      document_id: source.documentId || '',
       ch_title: source.title,
       data_source_url: source.url,
       summary: source.summary,
@@ -2710,17 +2884,23 @@ export class ReportsService implements OnModuleDestroy {
       similarity: source.similarity,
       relevance_score: source.relevanceScore,
       relevance_level: this.databaseRelevanceLevel(source.relevanceScore),
-      relevance_reason: '后端在调用编报执行器前通过 PostgreSQL pgvector 语义召回命中。',
+      relevance_reason: isHybrid
+        ? '后端在调用编报执行器前通过向量、全文、标题和实体混合检索融合命中。'
+        : '后端在调用编报执行器前通过 PostgreSQL pgvector 语义召回命中。',
       needs_verification: true,
       entity_match: acceptedMatches.get(this.sourceEntityMatchKey(source)) || null,
+      retrieval_sources: source.retrievalSources || ['vector'],
+      retrieval_ranks: source.retrievalRanks || {},
+      retrieval_scores: source.retrievalScores || {},
+      retrieval_run_id: source.retrievalRunId || '',
     }));
     const queryPlan = {
       schema_version: 1,
-      generated_by: 'backend_pre_recall',
+      generated_by: isHybrid ? 'backend_hybrid_retrieval' : 'backend_pre_recall',
       generated_at: now,
       retrieval_mode: 'pg_vector',
       mcp_server: 'pg-sources',
-      actual_connector: 'backend_pgvector_direct',
+      actual_connector: isHybrid ? 'backend_pg_hybrid_direct' : 'backend_pgvector_direct',
       compatibility_note: 'This artifact mirrors the old MCP pg-sources output shape, but was produced by backend pre-recall before invoking the report agent.',
       storageMode: result.queryPlan.storageMode,
       sourceTable: result.queryPlan.sourceTable || String(options.databaseOptions.sourceTable || ''),
@@ -3499,6 +3679,46 @@ export class ReportsService implements OnModuleDestroy {
     };
   }
 
+  private acceptHybridDatabaseSources<T extends object>(
+    sources: T[],
+    entityPolicy: EntityPolicy,
+  ): SourceFilterResult<T> {
+    const acceptedSources = sources.map((source) => ({
+      ...source,
+      entityMatch: {
+        status: 'accepted' as const,
+        confidence: 1,
+        finalScore: 1,
+        matchedCoreEntities: [],
+        matchedAliases: [],
+        matchedTopicTerms: [],
+        matchedActionTerms: [],
+        matchedAmbiguousTerms: [],
+        matchedConfusions: [],
+        missingCoreEntities: [],
+        reason: '已通过混合检索融合、重排序和分级策略。',
+      },
+    }));
+    return {
+      acceptedSources,
+      uncertainSources: [],
+      rejectedSources: [],
+      diagnostics: {
+        entityPolicyEnabled: true,
+        requiredEntityMatch: entityPolicy.requiredEntityMatch,
+        coreEntities: entityPolicy.coreEntities.map((entity) => entity.canonical),
+        topicTerms: entityPolicy.topicTerms,
+        acceptedCount: acceptedSources.length,
+        uncertainCount: 0,
+        rejectedCount: 0,
+        rejectionSummary: [],
+        fallbackReason: acceptedSources.length ? '' : '混合数据库检索未返回达到阈值的信源。',
+        shouldUseWebSupplement: acceptedSources.length < 3,
+        recommendedSearchQueries: entityPolicy.searchQueries,
+      },
+    };
+  }
+
   private filterDatabaseSourcesForResponse(sources: DatabaseSourceItem[], entityPolicy: EntityPolicy): SourceFilterResult<DatabaseSourceItem> {
     return filterSourcesByEntityPolicy(
       sources.map((source) => ({
@@ -3559,9 +3779,17 @@ export class ReportsService implements OnModuleDestroy {
     const payloadContext = context || this.contextObjectFromPayload(payload);
     const reportPlan = this.plainObject(payloadContext.report_plan || payloadContext.reportPlan);
     const draftAssistantContext = this.plainObject(payloadContext.draftAssistantContext);
+    const cleanRetrievalInput = buildCleanRetrievalInput({
+      reportJobId: job.jobId,
+      topic: String(payload.topic || payloadContext.topic || ''),
+      supplement: payloadContext.supplement,
+      explicitEntities: payloadContext.explicitEntities,
+      explicitTimeRange: payloadContext.explicitTimeRange,
+      knownContext: payload.known_context,
+    });
     const input = {
-      topic: payload.topic || payloadContext.topic,
-      userSupplement: payloadContext.supplement || payload.known_context,
+      topic: cleanRetrievalInput.topic,
+      userSupplement: cleanRetrievalInput.supplement,
       reportPlan,
       databaseQueryIntent: payloadContext.databaseQueryIntent,
       selectedSearchQueries: payloadContext.selectedSearchQueries,
@@ -4243,7 +4471,7 @@ export class ReportsService implements OnModuleDestroy {
     reportRefs: ReportSourceListItem[],
     databaseRecall: ReportSourceListItem[],
   ): ReportSourceListItem[] {
-    const databaseKeys = new Set(databaseRecall.map((item) => this.sourceDedupeKey(item)).filter(Boolean));
+    void databaseRecall;
     const researchItems = researchSources.map((source) => ({
       ...source,
       sourceGroup: 'tool_search' as const,
@@ -4251,12 +4479,12 @@ export class ReportsService implements OnModuleDestroy {
       evidenceKind: source.evidenceKind || 'research_source' as const,
       engine: source.engine || this.inferToolSearchEngine(source),
     }));
-    const researchKeys = new Set(researchItems.map((item) => this.sourceDedupeKey(item)).filter(Boolean));
+    const researchKeys = new Set(researchItems.map((item) => this.toolSearchSourceDedupeKey(item)).filter(Boolean));
     const publicRefs = reportRefs
       .filter((ref) => {
-        const key = this.sourceDedupeKey(ref);
+        const key = this.toolSearchSourceDedupeKey(ref);
         if (!key || !ref.url || ref.matchStatus !== 'matched') return false;
-        return !databaseKeys.has(key) || researchKeys.has(key);
+        return researchKeys.has(key);
       })
       .map((ref) => ({
         ...ref,
@@ -4265,7 +4493,7 @@ export class ReportsService implements OnModuleDestroy {
         evidenceKind: 'report_reference' as const,
         engine: this.inferToolSearchEngine(ref),
       }));
-    return this.mergeReportSourceItems([...researchItems, ...publicRefs], 'tool_search');
+    return this.mergeReportSourceItems([...researchItems, ...publicRefs], 'tool_search').slice(0, 50);
   }
 
   private mergeReportSourceItems(
@@ -4274,7 +4502,8 @@ export class ReportsService implements OnModuleDestroy {
   ): ReportSourceListItem[] {
     const merged = new Map<string, ReportSourceListItem>();
     for (const item of items) {
-      const key = this.sourceDedupeKey(item) || `${sourceGroup}:${item.id}`;
+      const key = (sourceGroup === 'tool_search' ? this.toolSearchSourceDedupeKey(item) : this.sourceDedupeKey(item))
+        || `${sourceGroup}:${item.id}`;
       const existing = merged.get(key);
       if (!existing) {
         merged.set(key, { ...item, sourceGroup });
@@ -4308,6 +4537,12 @@ export class ReportsService implements OnModuleDestroy {
     const title = String(item.title || '').trim().toLowerCase();
     const sourceName = String(item.sourceName || '').trim().toLowerCase();
     return title ? `title:${title}|${sourceName}` : '';
+  }
+
+  private toolSearchSourceDedupeKey(item: Partial<ReportSourceListItem>): string {
+    const url = item.url ? this.canonicalToolSearchUrl(item.url) : '';
+    if (url) return `url:${url}`;
+    return this.sourceDedupeKey(item);
   }
 
   private reportSourcePriority(item: ReportSourceListItem): number {
@@ -4356,12 +4591,17 @@ export class ReportsService implements OnModuleDestroy {
     const citationNumbers = this.parseCitationNumbers(markdown);
     const [structured, toolSearch] = await Promise.all([
       this.structuredReportSources(job),
-      this.toolSearchSources(job),
+      this.reportCitationToolSearchSources(job),
     ]);
     const acceptedSources = [...structured, ...toolSearch];
     const acceptedByUrl = new Map(
       acceptedSources
         .map((source) => [this.normalizeSourceUrl(source.url), source] as const)
+        .filter(([url]) => Boolean(url)),
+    );
+    const toolSearchByCanonicalUrl = new Map(
+      toolSearch
+        .map((source) => [source.url ? this.canonicalToolSearchUrl(source.url) : '', source] as const)
         .filter(([url]) => Boolean(url)),
     );
     const titleKey = (value: unknown) => String(value || '')
@@ -4379,9 +4619,11 @@ export class ReportsService implements OnModuleDestroy {
     return allNumbers.map((number, index) => {
       const reference = references.get(number);
       const referenceUrl = this.normalizeSourceUrl(reference?.url);
+      const canonicalReferenceUrl = reference?.url ? this.canonicalToolSearchUrl(reference.url) : '';
       const referenceTitle = titleKey(reference?.title);
       const matchedSource = reference
         ? (referenceUrl ? acceptedByUrl.get(referenceUrl) : undefined) ||
+          (canonicalReferenceUrl ? toolSearchByCanonicalUrl.get(canonicalReferenceUrl) : undefined) ||
           (referenceTitle ? acceptedByTitle.get(referenceTitle) : undefined)
         : structured[number - 1];
       const rawReferenceText = reference?.rawReferenceText || reference?.summary || reference?.title || '';
@@ -4615,8 +4857,22 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private async toolSearchSources(job: JobRecord): Promise<ReportSourceListItem[]> {
+    const rawItems = await this.collectToolSearchRawItems(job);
+    const highValueItems = rawItems
+      .filter(({ item, evidenceKind }) => this.isHighValueToolSearchItem(item, evidenceKind))
+      .slice(0, 300);
+    return this.normalizeAndDedupeToolSearchSources(highValueItems).slice(0, 50);
+  }
+
+  private async reportCitationToolSearchSources(job: JobRecord): Promise<ReportSourceListItem[]> {
+    const rawItems = await this.collectToolSearchRawItems(job);
+    return this.normalizeAndDedupeToolSearchSources(rawItems);
+  }
+
+  private async collectToolSearchRawItems(
+    job: JobRecord,
+  ): Promise<Array<{ item: unknown; evidenceKind: ReportEvidenceKind }>> {
     const maxResearchFilesPerDirectory = 50;
-    const maxEligibleItems = 300;
     const dir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
     const contextSources: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }> = [];
     const payloadContext = this.contextObjectFromPayload(job.payload as unknown as Record<string, unknown>);
@@ -4648,9 +4904,13 @@ export class ReportsService implements OnModuleDestroy {
       }
     }
 
+    return rawItems;
+  }
+
+  private normalizeAndDedupeToolSearchSources(
+    rawItems: Array<{ item: unknown; evidenceKind: ReportEvidenceKind }>,
+  ): ReportSourceListItem[] {
     const candidates = rawItems
-      .filter(({ item, evidenceKind }) => this.isHighValueToolSearchItem(item, evidenceKind))
-      .slice(0, maxEligibleItems)
       .map(({ item, evidenceKind }, index) => ({
         item: item as Record<string, unknown>,
         evidenceKind,
@@ -4670,7 +4930,7 @@ export class ReportsService implements OnModuleDestroy {
       }
     }
 
-    return this.mergeReportSourceItems([...deduped.values()].map((candidate) => candidate.source), 'tool_search').slice(0, 50);
+    return this.mergeReportSourceItems([...deduped.values()].map((candidate) => candidate.source), 'tool_search');
   }
 
   private async toolSearchResearchDirs(job: JobRecord): Promise<string[]> {
@@ -4706,10 +4966,12 @@ export class ReportsService implements OnModuleDestroy {
   private canonicalToolSearchUrl(value: string): string {
     try {
       const url = new URL(value);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
       url.hash = '';
       for (const key of [...url.searchParams.keys()]) {
         if (/^(utm_.+|iref|ref|source)$/i.test(key)) url.searchParams.delete(key);
       }
+      url.searchParams.sort();
       url.hostname = url.hostname.toLowerCase();
       return url.toString();
     } catch {
@@ -4762,7 +5024,7 @@ export class ReportsService implements OnModuleDestroy {
     if (normalized === 'sources' || normalized === 'source_list') return 'research_source';
     if (normalized === 'documents') return 'research_source';
     if (normalized === 'evidence_cards' || normalized === 'evidencecards') return 'evidence_card';
-    if (normalized === 'key_findings' || normalized === 'keyfindings' || normalized === 'verification_needed') return 'evidence_card';
+    if (normalized === 'key_findings' || normalized === 'keyfindings' || normalized === 'verification_needed') return 'research_source';
     return null;
   }
 
@@ -4775,8 +5037,7 @@ export class ReportsService implements OnModuleDestroy {
       this.firstString(source, ['source_type', 'type', 'sourceType']),
       this.firstString(source, ['url', 'source_url', 'data_source_url', 'sourceUrl']),
     ].join(' ').toLowerCase();
-    return /\b(exa|firecrawl|tavily|tavily_extract)\b/.test(haystack)
-      || (evidenceKind === 'evidence_card' && /\bweb_fetch\b/.test(haystack));
+    return /\b(exa|firecrawl|tavily|tavily_extract|web_fetch)\b/.test(haystack);
   }
 
   private normalizeToolSearchSourceItem(
@@ -4787,15 +5048,14 @@ export class ReportsService implements OnModuleDestroy {
     if (!item || typeof item !== 'object') return null;
     const source = item as Record<string, unknown>;
     const normalized = this.normalizeSourceRecord(source, index, 'tool_search');
+    const safeUrl = this.safeToolSearchUrl(normalized.url);
+    if (!safeUrl) return null;
     const inferredEngine = this.inferToolSearchEngine(normalized, source);
-    const engine = inferredEngine || (
-      evidenceKind === 'evidence_card' && /\bweb_fetch\b/i.test(JSON.stringify(source))
-        ? 'tavily_extract'
-        : undefined
-    );
+    const engine = inferredEngine || (/\bweb_fetch\b/i.test(JSON.stringify(source)) ? 'tavily_extract' : undefined);
     if (!engine) return null;
     return {
       ...normalized,
+      url: safeUrl,
       sourceGroup: 'tool_search',
       sourceOrigin: 'tool_search',
       evidenceKind,
@@ -4804,6 +5064,17 @@ export class ReportsService implements OnModuleDestroy {
       status: normalized.status || this.firstString(source, ['success']) || 'collected',
       method: normalized.method || this.toolSearchMethodLabel(engine),
     };
+  }
+
+  private safeToolSearchUrl(value: unknown): string {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      const url = new URL(raw);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? raw : '';
+    } catch {
+      return '';
+    }
   }
 
   private inferDatabaseEngine(item: Partial<ReportSourceListItem>, raw?: Record<string, unknown>): ReportSourceEngine {
