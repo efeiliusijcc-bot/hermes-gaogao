@@ -18,6 +18,7 @@ import { DailyAwarenessGenerationService } from './daily-awareness-generation.se
 import { DailyAwarenessGenerationStore } from './daily-awareness-generation.store.js';
 import { DailyAwarenessLockService } from './daily-awareness-lock.service.js';
 import { DailyAwarenessMaterialService } from './daily-awareness-material.service.js';
+import { DailyAwarenessQueryService } from './daily-awareness-query.service.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
 import { DailyAwarenessWorkerService } from './daily-awareness-worker.service.js';
 import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
@@ -93,6 +94,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     DailyAwarenessGenerationService,
     DailyAwarenessLockService,
     DailyAwarenessMaterialService,
+    DailyAwarenessQueryService,
     DailyAwarenessWorkerService,
     DeepReportSourceCollectionService,
     DraftAssistantService,

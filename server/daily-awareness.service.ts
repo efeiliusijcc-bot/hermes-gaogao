@@ -310,13 +310,13 @@ export class DailyAwarenessService implements OnModuleDestroy {
 
   async getBrief(briefId: string, user: AuthUser) {
     const brief = await this.loadBriefForUser(briefId, user);
-    const events = await this.loadEventsForBrief(brief.briefId, user, {});
+    const events = await this.loadEventsForBrief(brief.briefId, user, {}, brief.publicationScope === 'GLOBAL');
     return { brief, events };
   }
 
   async listEvents(briefId: string, query: { page?: unknown; pageSize?: unknown; category?: unknown }, user: AuthUser) {
     const brief = await this.loadBriefForUser(briefId, user);
-    return this.loadEventsForBrief(brief.briefId, user, query);
+    return this.loadEventsForBrief(brief.briefId, user, query, brief.publicationScope === 'GLOBAL');
   }
 
   async downloadBrief(briefId: string, user: AuthUser, format = 'docx') {
@@ -329,7 +329,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     }
 
     const brief = await this.loadBriefForUser(briefId, user);
-    const eventResult = await this.loadEventsForBrief(brief.briefId, user, { page: 1, pageSize: 200 });
+    const eventResult = await this.loadEventsForBrief(brief.briefId, user, { page: 1, pageSize: 200 }, brief.publicationScope === 'GLOBAL');
     const events = eventResult.items as Array<Record<string, unknown>>;
     const buffer = await this.buildBriefDocx(brief, events);
     return {
@@ -343,15 +343,15 @@ export class DailyAwarenessService implements OnModuleDestroy {
     if (!this.hasPermission(user, 'daily_awareness:import')) throw new ForbiddenException({ error: 'Insufficient daily awareness import permissions' });
     const pool = await this.getPool();
     const rows = await pool.query(
-      `SELECT e.*, b.brief_date
+      `SELECT e.*, b.brief_date, b.publication_scope
          FROM daily_brief_events e
          JOIN daily_briefs b ON b.brief_id = e.brief_id
         WHERE e.item_id = $1`,
       [this.requiredId(itemId, 'itemId')],
     );
-    const row = rows.rows[0] as unknown as (DailyAwarenessEventRow & { brief_date?: string }) | undefined;
+    const row = rows.rows[0] as unknown as (DailyAwarenessEventRow & { brief_date?: string; publication_scope?: string }) | undefined;
     if (!row) throw new NotFoundException({ error: 'Daily event not found' });
-    if (!this.isAdmin(user) && String(row.owner_id) !== user.id) {
+    if (String(row.publication_scope || 'LEGACY') !== 'GLOBAL' && !this.isAdmin(user) && String(row.owner_id) !== user.id) {
       throw new ForbiddenException({ error: 'No permission to import this daily event' });
     }
     const rawInput = {
@@ -532,19 +532,19 @@ export class DailyAwarenessService implements OnModuleDestroy {
     );
     const row = rows.rows[0] as unknown as DailyAwarenessBriefRow | undefined;
     if (!row) throw new NotFoundException({ error: 'Daily brief not found' });
-    if (!this.isAdmin(user) && String(row.owner_id) !== user.id) {
+    if (String(row.publication_scope || 'LEGACY') !== 'GLOBAL' && !this.isAdmin(user) && String(row.owner_id) !== user.id) {
       throw new ForbiddenException({ error: 'No permission to access this daily brief' });
     }
     return this.toBrief(row, this.isAdmin(user));
   }
 
-  private async loadEventsForBrief(briefId: string, user: AuthUser, query: { page?: unknown; pageSize?: unknown; category?: unknown }) {
+  private async loadEventsForBrief(briefId: string, user: AuthUser, query: { page?: unknown; pageSize?: unknown; category?: unknown }, global = false) {
     const page = this.clampNumber(query.page, 1, 1, 100000);
     const pageSize = this.clampNumber(query.pageSize, 100, 1, 200);
     const offset = (page - 1) * pageSize;
     const params: unknown[] = [briefId];
     const where = ['brief_id = $1'];
-    if (!this.isAdmin(user)) {
+    if (!global && !this.isAdmin(user)) {
       params.push(user.id);
       where.push(`owner_id = $${params.length}`);
     }
@@ -594,6 +594,11 @@ export class DailyAwarenessService implements OnModuleDestroy {
       selectedEventCount: Number(row.selected_count || 0),
       usedFallback: Boolean(generation.usedFallback),
       fallbackReason: String(generation.fallbackReason || ''),
+      publicationScope: String(row.publication_scope || 'LEGACY'),
+      qualityStatus: String(row.quality_status || ''),
+      contentMarkdown: String(row.content_markdown || contentJson.reportMarkdown || ''),
+      generatedAt: this.dateString(row.generated_at || row.updated_at),
+      generatedByType: String(row.generated_by_type || 'SYSTEM'),
       createdAt: this.dateString(row.created_at),
       updatedAt: this.dateString(row.updated_at),
     };

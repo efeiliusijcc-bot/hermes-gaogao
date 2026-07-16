@@ -68,7 +68,7 @@ export interface DailyAwarenessMaterialDiagnostics {
 
 export interface DailyAwarenessBriefRow {
   brief_id: string;
-  owner_id: string;
+  owner_id: string | null;
   brief_date: string;
   title: string | null;
   summary: string | null;
@@ -80,12 +80,17 @@ export interface DailyAwarenessBriefRow {
   created_at: string;
   updated_at: string;
   owner_username?: string | null;
+  publication_scope?: string | null;
+  quality_status?: string | null;
+  content_markdown?: string | null;
+  generated_at?: string | null;
+  generated_by_type?: string | null;
 }
 
 export interface DailyAwarenessEventRow {
   item_id: string;
   brief_id: string;
-  owner_id: string;
+  owner_id: string | null;
   rank_no: number;
   event_title: string;
   category: string | null;
