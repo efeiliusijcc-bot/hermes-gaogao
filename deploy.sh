@@ -16,7 +16,7 @@ rm -f "$ENV_FILE"
 
 : "${REMOTE_HOST:?Missing REMOTE_HOST}"
 : "${REMOTE_USER:?Missing REMOTE_USER}"
-: "${SSH_KEY:=~/.ssh/id_ed25519}"
+: "${SSH_KEY:=~/.ssh/hermes_bwg_us_204_ed25519}"
 : "${HERMES_API_KEY:?Missing HERMES_API_KEY}"
 : "${PGVECTOR_DATABASE_URL:?Missing PGVECTOR_DATABASE_URL}"
 : "${JWT_SECRET:?Missing JWT_SECRET}"

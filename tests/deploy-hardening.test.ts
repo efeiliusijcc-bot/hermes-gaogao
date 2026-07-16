@@ -2,7 +2,16 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const deployScript = await readFile(new URL('../deploy.sh', import.meta.url), 'utf8');
+const harnessInstallScript = await readFile(new URL('../scripts/install-hermes-harness-deps.sh', import.meta.url), 'utf8');
+const envExample = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 const authBootstrap = await readFile(new URL('../scripts/init-auth-users.sql', import.meta.url), 'utf8');
+
+const localDeployKey = '~/.ssh/hermes_bwg_us_204_ed25519';
+assert.ok(deployScript.includes(`SSH_KEY:=${localDeployKey}`));
+assert.ok(harnessInstallScript.includes(`SSH_KEY:=${localDeployKey}`));
+assert.ok(envExample.includes(`SSH_KEY=${localDeployKey}`));
+assert.ok(readme.includes(`SSH_KEY=${localDeployKey}`));
 
 assert.match(deployScript, /BOOTSTRAP_ADMIN_PASSWORD:\?Missing BOOTSTRAP_ADMIN_PASSWORD/);
 assert.doesNotMatch(deployScript, /\$\{[^}]+,,\}/, 'deploy script must remain compatible with macOS Bash 3.2');

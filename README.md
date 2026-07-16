@@ -72,7 +72,7 @@ Install or repair the dependency on the cloud node:
 ```bash
 REMOTE_HOST=74.121.148.204 \
 REMOTE_USER=root \
-SSH_KEY=~/.ssh/id_ed25519 \
+SSH_KEY=~/.ssh/hermes_bwg_us_204_ed25519 \
 HERMES_CONTAINER=hermes \
 bash scripts/install-hermes-harness-deps.sh
 ```

@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${REMOTE_HOST:?Missing REMOTE_HOST}"
 : "${REMOTE_USER:=root}"
-: "${SSH_KEY:=~/.ssh/id_ed25519}"
+: "${SSH_KEY:=~/.ssh/hermes_bwg_us_204_ed25519}"
 : "${HERMES_CONTAINER:=hermes}"
 
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" bash -s <<REMOTE_SCRIPT
