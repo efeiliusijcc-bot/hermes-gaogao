@@ -5,6 +5,7 @@ import {
   filterDraftHistory,
   restoredDraftStage,
 } from '../b_k3ewYvsOEc1/src/lib/draftAssistantFlow.js'
+import { createDraftAutosave } from '../b_k3ewYvsOEc1/src/lib/draftAutosave.js'
 
 const payload = buildDraftAnalyzePayload([
   '  - 美伊技术层级会谈启动',
@@ -56,5 +57,65 @@ assert.deepEqual(
 )
 assert.equal(restoredDraftStage({ latestOutline: null }), 'analysis')
 assert.equal(restoredDraftStage({ latestOutline: { outlineId: 'outline-1' } }), 'outline')
+
+const timerCallbacks: Array<() => Promise<void>> = []
+const saveStates: string[] = []
+const savedSnapshots: string[] = []
+const coalescingQueue = createDraftAutosave<string>({
+  save: async (snapshot) => { savedSnapshots.push(snapshot) },
+  onState: (state) => { saveStates.push(state) },
+  delay: 10,
+  scheduleTimer: (callback) => {
+    timerCallbacks.push(callback)
+    return timerCallbacks.length
+  },
+  cancelTimer: () => undefined,
+})
+
+coalescingQueue.schedule('first')
+coalescingQueue.schedule('latest')
+await timerCallbacks.at(-1)?.()
+await coalescingQueue.flush()
+assert.deepEqual(savedSnapshots, ['latest'])
+assert.equal(saveStates.includes('dirty'), true)
+assert.equal(saveStates.at(-1), 'saved')
+
+let releaseFirstSave: (() => void) | null = null
+const serialSaved: string[] = []
+const serialCallbacks: Array<() => Promise<void>> = []
+const serialQueue = createDraftAutosave<string>({
+  save: async (snapshot) => {
+    serialSaved.push(snapshot)
+    if (snapshot === 'one') await new Promise<void>((resolve) => { releaseFirstSave = resolve })
+  },
+  scheduleTimer: (callback) => {
+    serialCallbacks.push(callback)
+    return serialCallbacks.length
+  },
+  cancelTimer: () => undefined,
+})
+serialQueue.schedule('one')
+const firstSave = serialCallbacks.at(-1)?.()
+serialQueue.schedule('two')
+assert.deepEqual(serialSaved, ['one'])
+releaseFirstSave?.()
+await firstSave
+await serialQueue.flush()
+assert.deepEqual(serialSaved, ['one', 'two'])
+
+let shouldFail = true
+const retryStates: string[] = []
+const retryQueue = createDraftAutosave<string>({
+  save: async () => {
+    if (shouldFail) throw new Error('network down')
+  },
+  onState: (state) => { retryStates.push(state) },
+})
+retryQueue.schedule('keep me')
+await assert.rejects(() => retryQueue.flush(), /network down/)
+shouldFail = false
+await retryQueue.retry()
+assert.equal(retryStates.includes('error'), true)
+assert.equal(retryStates.at(-1), 'saved')
 
 console.log('frontend draft simplified flow tests passed')
