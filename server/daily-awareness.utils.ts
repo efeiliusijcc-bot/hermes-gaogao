@@ -64,15 +64,9 @@ export function dedupeMaterials(materials: DailyAwarenessMaterial[]): DailyAware
     if (!existing || materialWeight(material) > materialWeight(existing)) byUrl.set(url, material);
   }
 
-  const byTitle = new Map<string, DailyAwarenessMaterial>();
-  for (const material of [...byUrl.values(), ...withoutUrl]) {
-    const key = normalizeEventTitle(material.title);
-    if (!key) continue;
-    const existing = byTitle.get(key);
-    if (!existing || materialWeight(material) > materialWeight(existing)) byTitle.set(key, material);
-  }
-
-  return [...byTitle.values()].sort((a, b) => dateValue(b.publishedAt) - dateValue(a.publishedAt));
+  return [...byUrl.values(), ...withoutUrl]
+    .filter((material) => Boolean(normalizeEventTitle(material.title)))
+    .sort((a, b) => dateValue(b.publishedAt) - dateValue(a.publishedAt));
 }
 
 export function buildEventCandidates(materials: DailyAwarenessMaterial[]): DailyAwarenessCandidate[] {
@@ -91,7 +85,11 @@ export function buildEventCandidates(materials: DailyAwarenessMaterial[]): Daily
       return {
         candidateId: `candidate_${hashText(key).slice(0, 16)}`,
         title: primary.title,
-        summaryText: sorted.map((item) => item.content || item.title).filter(Boolean).join('\n').slice(0, 1200),
+        summaryText: sorted
+          .map((item) => String(item.summary || item.content || item.title).trim())
+          .filter(Boolean)
+          .join('\n')
+          .slice(0, 1200),
         sources,
         relatedMaterialIds: sorted.map((item) => item.id).filter(Boolean),
         sourceCount: sorted.length,
@@ -273,7 +271,7 @@ function materialToSource(material: DailyAwarenessMaterial): DailyAwarenessSourc
 }
 
 function materialWeight(material: DailyAwarenessMaterial): number {
-  return String(material.content || '').length + dateValue(material.publishedAt) / 10_000_000_000;
+  return String(material.summary || material.content || '').length + dateValue(material.publishedAt) / 10_000_000_000;
 }
 
 function dateValue(value: string): number {

@@ -30,7 +30,7 @@ test('normalizes event titles for duplicate comparison', () => {
   assert.equal(normalizeEventTitle('英国拟禁止16岁以下使用高风险社交媒体'), '英国拟禁止16岁以下使用高风险社交媒体');
 });
 
-test('dedupes materials by url and normalized title while preserving richer content', () => {
+test('dedupes materials by url while preserving same-title sources for event aggregation', () => {
   const materials: DailyAwarenessMaterial[] = [
     { id: '1', title: '英国拟禁止16岁以下使用高风险社交媒体', content: '短内容', url: 'https://a.example/news', publisher: 'A', publishedAt: '2026-07-04T01:00:00Z', metadata: {} },
     { id: '2', title: '英国拟禁止16岁以下使用高风险社交媒体', content: '更长的内容用于保留', url: 'https://b.example/news', publisher: 'B', publishedAt: '2026-07-04T02:00:00Z', metadata: {} },
@@ -39,8 +39,8 @@ test('dedupes materials by url and normalized title while preserving richer cont
 
   const deduped = dedupeMaterials(materials);
 
-  assert.equal(deduped.length, 1);
-  assert.equal(deduped[0].id, '2');
+  assert.equal(deduped.length, 2);
+  assert.deepEqual(deduped.map((item) => item.id).sort(), ['1', '2']);
 });
 
 test('builds candidates with merged sources and related material ids', () => {

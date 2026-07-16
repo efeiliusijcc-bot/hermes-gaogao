@@ -15,6 +15,7 @@ import { DailyAwarenessController } from './daily-awareness.controller.js';
 import { DailyAwarenessInternalController } from './daily-awareness.internal.controller.js';
 import { DailyAwarenessInboxService } from './daily-awareness-inbox.service.js';
 import { DailyAwarenessLockService } from './daily-awareness-lock.service.js';
+import { DailyAwarenessMaterialService } from './daily-awareness-material.service.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
 import { DailyAwarenessWorkerService } from './daily-awareness-worker.service.js';
 import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
@@ -87,6 +88,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     DailyAwarenessService,
     DailyAwarenessInboxService,
     DailyAwarenessLockService,
+    DailyAwarenessMaterialService,
     DailyAwarenessWorkerService,
     DeepReportSourceCollectionService,
     DraftAssistantService,

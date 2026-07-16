@@ -92,11 +92,13 @@ export interface ListDailyMaterialsInput {
   keyword?: string;
   categories?: string[];
   region?: string;
+  allowFallback?: boolean;
 }
 
 export interface VectorMaterialByDate {
   id: string;
   title: string;
+  summary: string;
   content: string;
   url: string;
   publisher: string;
@@ -119,7 +121,8 @@ export interface DailyMaterialSearchResult {
     fallbackMaterialCount: number;
     returnedMaterialCount: number;
     usedFallback: boolean;
-    fallbackReason: string;
+      fallbackReason: string;
+      businessDateFallback: boolean;
   };
 }
 
@@ -431,6 +434,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
     const window = buildDailyMaterialWindow(input.targetDate, input.lookbackHours);
     const dateExpr = this.materialDateExpression(columns);
     const titleExpr = this.materialTitleExpression(columns);
+    const summaryExpr = this.materialSummaryExpression(columns);
     const contentExpr = this.materialContentExpression(columns);
     const urlExpr = columns.url ? `n.${this.qi(columns.url)}` : `''`;
     const publisherExpr = columns.websiteName ? `n.${this.qi(columns.websiteName)}` : `''`;
@@ -443,6 +447,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       pool,
       columns,
       titleExpr,
+      summaryExpr,
       contentExpr,
       urlExpr,
       publisherExpr,
@@ -451,7 +456,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       metadataExpr,
       tagExpr,
       dateExpr,
-      startIso: window.exactStart,
+      startIso: columns.businessDate ? `${window.targetDate}T00:00:00.000Z` : window.exactStart,
       endIso: window.exactEnd,
       keyword: input.keyword,
       region: input.region,
@@ -462,13 +467,14 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
     let selectedRows = exactRows;
     let fallbackRows: Array<Record<string, unknown>> = [];
 
-    if (!exactRows.length) {
+    if (!exactRows.length && input.allowFallback !== false) {
       usedFallback = true;
       fallbackReason = '当前日期窗口无可用材料，已使用最近 7 天可用信源。';
       fallbackRows = await this.queryDailyMaterialRows({
         pool,
         columns,
         titleExpr,
+        summaryExpr,
         contentExpr,
         urlExpr,
         publisherExpr,
@@ -498,7 +504,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
         targetDate: window.targetDate,
         lookbackHours: window.lookbackHours,
         sourceTable: ACTIVE_VECTOR_CONFIG.sourceTable,
-        queryStart: window.exactStart,
+        queryStart: columns.businessDate ? `${window.targetDate}T00:00:00.000Z` : window.exactStart,
         queryEnd: window.exactEnd,
         fallbackStart: window.fallbackStart,
         fallbackEnd: window.fallbackEnd,
@@ -507,6 +513,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
         returnedMaterialCount: materials.length,
         usedFallback,
         fallbackReason,
+        businessDateFallback: !Boolean(columns.businessDate),
       },
     };
   }
@@ -732,6 +739,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       websiteName: pick('website_name', 'site_name', 'source_name'),
       publishTime: pick('publish_time', 'published_at', 'pub_time'),
       sourceTime: pick('crawl_time', 'crawled_at', 'created_at', 'updated_at', 'inserted_at', 'publish_time'),
+      businessDate: pick('business_date', 'data_date', 'report_date'),
       content: pick('content', 'body', 'text'),
       contentExcerpt: pick('content_excerpt', 'excerpt'),
       metadata: pick('metadata', 'meta', 'raw_metadata'),
@@ -829,7 +837,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
   }
 
   private materialDateExpression(columns: NewsColumns): string {
-    const column = columns.publishTime || columns.sourceTime;
+    const column = columns.businessDate || columns.publishTime || columns.sourceTime;
     return column ? `n.${this.qi(column)}::timestamptz` : '';
   }
 
@@ -845,6 +853,10 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       .filter(Boolean)
       .map((column) => `NULLIF(n.${this.qi(column)}::text, '')`);
     return fields.length ? `COALESCE(${fields.join(', ')}, '')` : `''`;
+  }
+
+  private materialSummaryExpression(columns: NewsColumns): string {
+    return columns.summary ? `COALESCE(n.${this.qi(columns.summary)}::text, '')` : `''`;
   }
 
   private materialTagExpression(columns: NewsColumns): string {
@@ -868,6 +880,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
     pool: PgPool;
     columns: NewsColumns;
     titleExpr: string;
+    summaryExpr: string;
     contentExpr: string;
     urlExpr: string;
     publisherExpr: string;
@@ -905,6 +918,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       `SELECT
           ${input.columns.id ? `n.${this.qi(input.columns.id)}::text` : 'row_number() over ()::text'} AS material_id,
           ${input.titleExpr} AS material_title,
+          ${input.summaryExpr} AS material_summary,
           ${input.contentExpr} AS material_content,
           ${input.urlExpr} AS material_url,
           ${input.publisherExpr} AS material_publisher,
@@ -923,21 +937,19 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
 
   private mapDailyMaterialRows(rows: Array<Record<string, unknown>>, hasDateExpression: boolean): VectorMaterialByDate[] {
     const seenUrls = new Set<string>();
-    const seenTitles = new Set<string>();
     const materials: VectorMaterialByDate[] = [];
     for (const row of rows) {
       const title = this.clean(String(row.material_title ?? ''), 512);
+      const summary = this.clean(String(row.material_summary ?? ''), 1200);
       const content = this.clean(String(row.material_content ?? ''), 1200);
-      if (!title || !content) continue;
+      if (!title) continue;
       const url = this.clean(String(row.material_url ?? ''), 2048);
-      const titleKey = this.materialTitleKey(title);
       if (url && seenUrls.has(url)) continue;
-      if (titleKey && seenTitles.has(titleKey)) continue;
       if (url) seenUrls.add(url);
-      if (titleKey) seenTitles.add(titleKey);
       materials.push({
         id: this.clean(String(row.material_id ?? ''), 128) || crypto.createHash('sha1').update(`${title}:${url}:${content}`).digest('hex'),
         title,
+        summary,
         content,
         url,
         publisher: this.clean(String(row.material_publisher ?? ''), 256),
