@@ -107,6 +107,8 @@ assert.match(navigationSource, /aria-current/);
 assert.match(navigationSource, /step\.statusLabel/);
 assert.match(navigationSource, /role="list"/);
 assert.match(navigationSource, /needs_attention/);
+assert.doesNotMatch(navigationSource, /\.draft-step-navigation\s*\{[^}]*position:\s*(?:sticky|fixed)/s);
+assert.doesNotMatch(navigationSource, /\.draft-step-navigation\s*\{[^}]*\btop:\s*0/s);
 
 const sourcePanelSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/EventSourcePanel.vue', import.meta.url),

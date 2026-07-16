@@ -32,9 +32,6 @@ defineProps({
 
 <style scoped>
 .draft-step-navigation {
-  position: sticky;
-  top: 0;
-  z-index: 18;
   margin-bottom: 14px;
   border: 1px solid rgba(148, 163, 184, 0.24);
   background: rgba(255, 255, 255, 0.97);
