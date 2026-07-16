@@ -76,7 +76,9 @@ const userPermissions = computed(() => Array.isArray(props.user?.permissions) ? 
 const userModules = computed(() => deriveUserModules(props.user))
 const isAdminUser = computed(() => props.user?.role === 'admin' || (Array.isArray(props.user?.roles) && props.user.roles.includes('admin')))
 const canManageUsers = computed(() => {
-  return isAdminUser.value || userPermissions.value.includes('user:manage') || userPermissions.value.includes('role:manage')
+  return userPermissions.value.includes('user:manage') ||
+    userPermissions.value.includes('role:manage') ||
+    userPermissions.value.includes('system:daily-awareness:manage')
 })
 const canManageSystemConfig = computed(() => {
   return isAdminUser.value ||
@@ -569,7 +571,7 @@ watch(() => props.authError, (error) => {
           @click="openUserManagement"
         >
           <span class="settings-menu-icon">◎</span>
-          <span>用户与角色管理</span>
+          <span>系统管理</span>
         </button>
         <button v-if="canManageSystemConfig" class="settings-dropdown-item" type="button" role="menuitem" @click="openKeySettings">
           <span class="settings-menu-icon">⌁</span>

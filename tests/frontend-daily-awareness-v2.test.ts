@@ -34,3 +34,34 @@ test('daily awareness module and application entry require exact view permission
   assert.match(appSource, /daily-awareness:view/);
   assert.match(permissionSource, /daily:\s*\['daily-awareness:view'\]/);
 });
+
+test('daily awareness management page exposes operations without scheduling controls', async () => {
+  const adminSource = await source('components/DailyAwarenessAdmin.vue').catch(() => '');
+
+  assert.match(adminSource, /运行状态/);
+  assert.match(adminSource, /版本化配置/);
+  assert.match(adminSource, /手动补生成/);
+  assert.match(adminSource, /运行记录/);
+  assert.match(adminSource, /死信/);
+  assert.match(adminSource, /confirmOverwrite/);
+  assert.doesNotMatch(adminSource, /每日生成时间|定时任务开关/);
+});
+
+test('daily awareness management API and system entry use exact manage permission', async () => {
+  const [apiSource, appSource, managementSource, headerSource] = await Promise.all([
+    source('lib/api.js'),
+    source('App.vue'),
+    source('components/UserManagement.vue'),
+    source('components/NexusHeader.vue'),
+  ]);
+
+  assert.match(apiSource, /admin\/daily-awareness\/status/);
+  assert.match(apiSource, /admin\/daily-awareness\/config/);
+  assert.match(apiSource, /admin\/daily-awareness\/runs/);
+  assert.match(apiSource, /admin\/daily-awareness\/inbox/);
+  assert.match(apiSource, /admin\/daily-awareness\/regenerate/);
+  assert.match(appSource, /system:daily-awareness:manage/);
+  assert.match(managementSource, /system:daily-awareness:manage/);
+  assert.match(managementSource, /DailyAwarenessAdmin/);
+  assert.match(headerSource, /system:daily-awareness:manage/);
+});

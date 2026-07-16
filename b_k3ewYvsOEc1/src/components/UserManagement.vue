@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import DailyAwarenessAdmin from './DailyAwarenessAdmin.vue'
 import {
   createRole,
   createUser,
@@ -38,7 +39,7 @@ const moduleOptions = [
   { key: 'report', label: '编报', icon: '编', description: '允许使用 AI 智能体深度编报，包括创建、规划和管理自己的编报任务。' },
   { key: 'qa', label: '问答', icon: '问', description: '允许使用 QA 问答，包括提问、知识库检索和问答历史。' },
   { key: 'draft', label: '拟稿', icon: '稿', description: '允许使用拟稿助手，包括事件分析、提纲生成和内容调整。' },
-  { key: 'daily', label: '每日动态感知', icon: '日', description: '允许生成和使用每日动态简报。' },
+  { key: 'daily', label: '每日动态感知', icon: '日', description: '允许查看全局共享的每日动态简报。' },
 ]
 
 const moduleLabels = Object.fromEntries(moduleOptions.map((item) => [item.key, item.label]))
@@ -88,7 +89,8 @@ const isLoggedIn = computed(() => Boolean(props.currentUser?.id))
 const currentPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
 const canManageUsers = computed(() => currentPermissions.value.includes('user:manage'))
 const canManageRoles = computed(() => currentPermissions.value.includes('role:manage'))
-const canAccessManagement = computed(() => canManageUsers.value || canManageRoles.value)
+const canManageDailyAwareness = computed(() => currentPermissions.value.includes('system:daily-awareness:manage'))
+const canAccessManagement = computed(() => canManageUsers.value || canManageRoles.value || canManageDailyAwareness.value)
 const availableRoles = computed(() => roles.value.length ? roles.value : fallbackRoles)
 const selectedRole = computed(() => availableRoles.value.find((role) => role.id === selectedRoleId.value) || availableRoles.value[0] || null)
 const selectedRoleModules = computed(() => roleModules(selectedRole.value))
@@ -109,7 +111,7 @@ watch(totalPages, (value) => {
 
 onMounted(() => {
   if (canAccessManagement.value) {
-    activeTab.value = canManageUsers.value ? 'users' : 'roles'
+    activeTab.value = canManageUsers.value ? 'users' : canManageRoles.value ? 'roles' : 'daily-awareness'
     void loadAll()
   }
 })
@@ -220,10 +222,11 @@ async function loadRoleData() {
 function switchTab(tab) {
   if (tab === 'users' && !canManageUsers.value) return
   if (tab === 'roles' && !canManageRoles.value) return
+  if (tab === 'daily-awareness' && !canManageDailyAwareness.value) return
   activeTab.value = tab
   clearMessages()
   if (tab === 'roles') void loadRoleData()
-  else void loadUsers()
+  if (tab === 'users') void loadUsers()
 }
 
 function userRoleNames(user) {
@@ -514,8 +517,8 @@ async function confirmDeleteRole(role) {
     <div class="user-management__header">
       <div>
         <div class="user-management__eyebrow">ACCESS CONTROL</div>
-        <h1>用户与角色管理</h1>
-        <p>管理系统账号、角色、功能模块和启用状态。</p>
+        <h1>系统管理</h1>
+        <p>管理账号权限与每日动态感知运行状态。</p>
       </div>
       <div class="user-management__actions">
         <button class="sci-btn" type="button" @click="emit('back')">返回工作台</button>
@@ -526,11 +529,12 @@ async function confirmDeleteRole(role) {
     </div>
 
     <div v-if="!isLoggedIn" class="user-management__empty">请先登录后再访问用户管理。</div>
-    <div v-else-if="!canAccessManagement" class="user-management__empty">无权限访问用户或角色管理。</div>
+    <div v-else-if="!canAccessManagement" class="user-management__empty">无权限访问系统管理。</div>
     <template v-else>
       <div class="user-management__tabs" role="tablist">
         <button v-if="canManageUsers" type="button" :class="{ active: activeTab === 'users' }" @click="switchTab('users')">用户管理</button>
         <button v-if="canManageRoles" type="button" :class="{ active: activeTab === 'roles' }" @click="switchTab('roles')">角色管理</button>
+        <button v-if="canManageDailyAwareness" type="button" :class="{ active: activeTab === 'daily-awareness' }" @click="switchTab('daily-awareness')">动态感知</button>
       </div>
 
       <div v-if="errorMessage" class="user-management__error">{{ errorMessage }}</div>
@@ -679,7 +683,7 @@ async function confirmDeleteRole(role) {
         </div>
       </template>
 
-      <template v-else>
+      <template v-else-if="activeTab === 'roles'">
         <div class="role-management">
           <div class="role-management__list panel">
             <div class="user-management__section-title">
@@ -837,6 +841,11 @@ async function confirmDeleteRole(role) {
           </form>
         </aside>
       </template>
+
+      <DailyAwarenessAdmin
+        v-else-if="activeTab === 'daily-awareness' && canManageDailyAwareness"
+        :current-user="currentUser"
+      />
     </template>
 
     <Teleport to="body">

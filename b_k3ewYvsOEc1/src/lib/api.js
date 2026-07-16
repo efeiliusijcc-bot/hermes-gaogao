@@ -477,6 +477,46 @@ export function downloadDailyAwarenessByDate(businessDate, format = 'docx') {
   return blobRequest(`/daily-awareness/briefs/by-date/${encodeURIComponent(businessDate)}/export?format=${encodeURIComponent(format)}`)
 }
 
+export function getDailyAwarenessAdminStatus(params = {}) {
+  return request(`/admin/daily-awareness/status${querySuffix(params)}`)
+}
+
+export function getDailyAwarenessAdminConfig() {
+  return request('/admin/daily-awareness/config')
+}
+
+export function updateDailyAwarenessAdminConfig(payload) {
+  return request('/admin/daily-awareness/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getDailyAwarenessAdminRuns(params = {}) {
+  return request(`/admin/daily-awareness/runs${querySuffix(params)}`)
+}
+
+export function getDailyAwarenessAdminRun(runId) {
+  return request(`/admin/daily-awareness/runs/${encodeURIComponent(runId)}`)
+}
+
+export function getDailyAwarenessAdminInbox(params = {}) {
+  return request(`/admin/daily-awareness/inbox${querySuffix(params)}`)
+}
+
+export function reprocessDailyAwarenessInbox(eventId) {
+  return request(`/admin/daily-awareness/inbox/${encodeURIComponent(eventId)}/reprocess`, {
+    method: 'POST',
+  })
+}
+
+export function regenerateDailyAwareness(payload) {
+  return request('/admin/daily-awareness/regenerate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getDailyBriefs(params = {}) {
   const query = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
