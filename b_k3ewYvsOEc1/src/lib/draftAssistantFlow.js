@@ -108,3 +108,7 @@ export function filterDraftHistory(events = [], query = '') {
 export function restoredDraftStage(eventResult = {}) {
   return eventResult.latestOutline?.outlineId ? 'outline' : 'analysis'
 }
+
+export function resetDraftScroll(container) {
+  if (container) container.scrollTop = 0
+}

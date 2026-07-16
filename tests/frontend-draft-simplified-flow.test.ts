@@ -3,6 +3,7 @@ import {
   buildDraftAnalyzePayload,
   buildDraftAnalysisSections,
   filterDraftHistory,
+  resetDraftScroll,
   restoredDraftStage,
 } from '../b_k3ewYvsOEc1/src/lib/draftAssistantFlow.js'
 import { createDraftAutosave } from '../b_k3ewYvsOEc1/src/lib/draftAutosave.js'
@@ -57,6 +58,10 @@ assert.deepEqual(
 )
 assert.equal(restoredDraftStage({ latestOutline: null }), 'analysis')
 assert.equal(restoredDraftStage({ latestOutline: { outlineId: 'outline-1' } }), 'outline')
+
+const draftScrollContainer = { scrollTop: 480 }
+resetDraftScroll(draftScrollContainer)
+assert.equal(draftScrollContainer.scrollTop, 0)
 
 const timerCallbacks: Array<() => Promise<void>> = []
 const saveStates: string[] = []

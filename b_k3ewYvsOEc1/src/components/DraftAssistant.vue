@@ -14,6 +14,7 @@ import {
 import {
   buildDraftAnalysisSections,
   buildDraftAnalyzePayload,
+  resetDraftScroll,
   restoredDraftStage,
 } from '../lib/draftAssistantFlow.js'
 import { createDraftAutosave } from '../lib/draftAutosave.js'
@@ -49,6 +50,7 @@ const isGeneratingOutline = ref(false)
 const isRevising = ref(false)
 const isLoadingEvents = ref(false)
 const importState = reactive({ status: 'idle', error: '', job: null })
+const mainRef = ref(null)
 
 const currentEventId = computed(() => (
   eventResult.value?.eventId
@@ -451,6 +453,10 @@ watch(() => props.currentUser, (user) => {
   if (user && !eventList.value.length) void loadEvents()
 })
 
+watch(stage, () => {
+  resetDraftScroll(mainRef.value)
+}, { flush: 'post' })
+
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   void autosave.flush().catch(() => undefined).finally(() => autosave.dispose())
@@ -458,7 +464,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="draft-assistant-main">
+  <main ref="mainRef" class="draft-assistant-main">
     <div v-if="!currentUser" class="draft-login-gate">
       <h1>请先登录</h1>
       <p>登录后可使用拟稿助手并保存当前进度。</p>
