@@ -4,6 +4,7 @@ import type {
   DailyAwarenessGenerationStatus,
   DailyAwarenessMessageCode,
   DailyAwarenessQualityStatus,
+  DailyAwarenessInboxStatus,
 } from './daily-awareness.constants.js';
 import type { DailyAwarenessCandidate, DailyAwarenessMaterial } from './daily-awareness.types.js';
 
@@ -21,6 +22,27 @@ export interface DailyDataFinishedAcceptedResponse {
   duplicate: boolean;
   eventId: string;
 }
+
+export interface DailyAwarenessInboxRecord {
+  eventId: string;
+  eventType: 'DAILY_DATA_FINISHED';
+  businessDate: string;
+  batchId: string;
+  completedAt: string;
+  totalCount?: number;
+  payload: Record<string, unknown>;
+  status: DailyAwarenessInboxStatus;
+  attemptCount: number;
+}
+
+export interface DailyAwarenessTerminalResult {
+  terminal: true;
+  generationStatus: DailyAwarenessGenerationStatus;
+}
+
+export type DailyAwarenessInboxProcessor = (
+  item: DailyAwarenessInboxRecord,
+) => Promise<DailyAwarenessTerminalResult>;
 
 export interface DailyAwarenessConfig {
   lookbackHours: number;

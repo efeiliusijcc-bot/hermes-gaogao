@@ -1,7 +1,15 @@
 import { createRequire } from 'module';
 
+export type PgQueryResult = { rows: Array<Record<string, unknown>> };
+
+export type PgClient = {
+  query: (text: string, params?: unknown[]) => Promise<PgQueryResult>;
+  release: () => void;
+};
+
 export type PgPool = {
-  query: (text: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>;
+  query: (text: string, params?: unknown[]) => Promise<PgQueryResult>;
+  connect: () => Promise<PgClient>;
   end: () => Promise<void>;
 };
 

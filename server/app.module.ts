@@ -14,7 +14,9 @@ import { CrawlerService } from './crawler.service.js';
 import { DailyAwarenessController } from './daily-awareness.controller.js';
 import { DailyAwarenessInternalController } from './daily-awareness.internal.controller.js';
 import { DailyAwarenessInboxService } from './daily-awareness-inbox.service.js';
+import { DailyAwarenessLockService } from './daily-awareness-lock.service.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
+import { DailyAwarenessWorkerService } from './daily-awareness-worker.service.js';
 import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { DraftAssistantController } from './draft-assistant.controller.js';
 import { DraftAssistantService } from './draft-assistant.service.js';
@@ -84,6 +86,8 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     ChatService,
     DailyAwarenessService,
     DailyAwarenessInboxService,
+    DailyAwarenessLockService,
+    DailyAwarenessWorkerService,
     DeepReportSourceCollectionService,
     DraftAssistantService,
   ],

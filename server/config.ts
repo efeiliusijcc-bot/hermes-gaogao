@@ -106,6 +106,28 @@ export function dailyAwarenessInternalEventKey(): string {
   return String(process.env.DAILY_AWARENESS_INTERNAL_EVENT_KEY || '').trim();
 }
 
+export function dailyAwarenessWorkerPollMs(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_WORKER_POLL_MS, 2000, 250, 300_000);
+}
+
+export function dailyAwarenessInboxLeaseSeconds(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_INBOX_LEASE_SECONDS, 300, 30, 86_400);
+}
+
+export function dailyAwarenessInboxMaxAttempts(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_INBOX_MAX_ATTEMPTS, 5, 1, 20);
+}
+
+export function dailyAwarenessRetryIntervalSeconds(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_INBOX_RETRY_SECONDS, 30, 1, 3600);
+}
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
 export function assertArtifactStorageConfig(): void {
   const mode = ARTIFACT_STORAGE_MODE;
   const transport = HERMES_ARTIFACT_TRANSPORT;
