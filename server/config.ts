@@ -102,6 +102,10 @@ export const REPORT_AGENT_MODEL =
 export const REPORT_AGENT_CLI_COMMAND = process.env.REPORT_AGENT_CLI_COMMAND || '';
 export const REPORT_AGENT_CLI_ARGS_JSON = process.env.REPORT_AGENT_CLI_ARGS_JSON || '[]';
 
+export function dailyAwarenessInternalEventKey(): string {
+  return String(process.env.DAILY_AWARENESS_INTERNAL_EVENT_KEY || '').trim();
+}
+
 export function assertArtifactStorageConfig(): void {
   const mode = ARTIFACT_STORAGE_MODE;
   const transport = HERMES_ARTIFACT_TRANSPORT;

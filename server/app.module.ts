@@ -12,6 +12,8 @@ import { ChatController } from './chat.controller.js';
 import { ChatService } from './chat.service.js';
 import { CrawlerService } from './crawler.service.js';
 import { DailyAwarenessController } from './daily-awareness.controller.js';
+import { DailyAwarenessInternalController } from './daily-awareness.internal.controller.js';
+import { DailyAwarenessInboxService } from './daily-awareness-inbox.service.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
 import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { DraftAssistantController } from './draft-assistant.controller.js';
@@ -19,6 +21,7 @@ import { DraftAssistantService } from './draft-assistant.service.js';
 import { HealthController } from './health.controller.js';
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
 import { HermesService } from './hermes.service.js';
+import { InternalEventKeyGuard } from './internal-event-key.guard.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { QaSessionSourcesService } from './qa-session-sources.service.js';
 import { RemoteFileService } from './remote-file.service.js';
@@ -52,6 +55,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     ResearchKeysController,
     VectorSourcesController,
     ChatController,
+    DailyAwarenessInternalController,
     DailyAwarenessController,
     DraftAssistantController,
   ],
@@ -66,6 +70,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     AuthGuard,
     RolesGuard,
     PermissionsGuard,
+    InternalEventKeyGuard,
     UsersService,
     UserPreferencesService,
     RolesService,
@@ -78,6 +83,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     CrawlerService,
     ChatService,
     DailyAwarenessService,
+    DailyAwarenessInboxService,
     DeepReportSourceCollectionService,
     DraftAssistantService,
   ],
