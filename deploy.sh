@@ -20,6 +20,7 @@ rm -f "$ENV_FILE"
 : "${HERMES_API_KEY:?Missing HERMES_API_KEY}"
 : "${PGVECTOR_DATABASE_URL:?Missing PGVECTOR_DATABASE_URL}"
 : "${JWT_SECRET:?Missing JWT_SECRET}"
+: "${DAILY_AWARENESS_INTERNAL_EVENT_KEY:?Missing DAILY_AWARENESS_INTERNAL_EVENT_KEY}"
 : "${AUTH_DATABASE_URL:=${PGVECTOR_DATABASE_URL%/*}/hermes_auth}"
 : "${BOOTSTRAP_ADMIN_PASSWORD:?Missing BOOTSTRAP_ADMIN_PASSWORD}"
 
@@ -87,6 +88,11 @@ write_env HERMES_API_KEY "$HERMES_API_KEY"
 write_env TAVILY_API_KEY "${TAVILY_API_KEY:-}"
 write_env JWT_SECRET "$JWT_SECRET"
 write_env AUTH_DATABASE_URL "$AUTH_DATABASE_URL"
+write_env DAILY_AWARENESS_INTERNAL_EVENT_KEY "$DAILY_AWARENESS_INTERNAL_EVENT_KEY"
+write_env DAILY_AWARENESS_WORKER_POLL_MS "${DAILY_AWARENESS_WORKER_POLL_MS:-2000}"
+write_env DAILY_AWARENESS_INBOX_LEASE_SECONDS "${DAILY_AWARENESS_INBOX_LEASE_SECONDS:-300}"
+write_env DAILY_AWARENESS_INBOX_MAX_ATTEMPTS "${DAILY_AWARENESS_INBOX_MAX_ATTEMPTS:-5}"
+write_env DAILY_AWARENESS_INBOX_RETRY_SECONDS "${DAILY_AWARENESS_INBOX_RETRY_SECONDS:-30}"
 write_env FRONTEND_ORIGINS "${FRONTEND_ORIGINS:-https://hermes-gaogao.vercel.app,http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000}"
 write_env HERMES_MODEL "${HERMES_MODEL:-hermes-agent}"
 write_env HERMES_QA_AGENT_ID "${HERMES_QA_AGENT_ID:-qa-agent}"
@@ -192,8 +198,8 @@ docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 \
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-chat-sessions.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-draft-assistant.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-plans.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-daily-awareness.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-rbac.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-daily-awareness.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-rbac.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-audit-logs.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-user-preferences.sql
 docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-edits.sql
@@ -337,6 +343,15 @@ FINAL_STARTED=true
 docker exec hermes-api getent hosts todo_postgres
 wait_container_health hermes-api
 curl -fsS http://127.0.0.1:1556/api/hermes/health
+INTERNAL_EVENT_CHECK=\$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X POST http://127.0.0.1:1556/internal/events/daily-data-finished \
+  -H 'Content-Type: application/json' \
+  -H "X-Hermes-Internal-Key: \$DAILY_AWARENESS_INTERNAL_EVENT_KEY" \
+  -d '{}')
+if [ "\$INTERNAL_EVENT_CHECK" != "400" ]; then
+  echo "Daily awareness internal event contract check failed with HTTP \$INTERNAL_EVENT_CHECK" >&2
+  exit 1
+fi
 LIVE_REPLACED=false
 trap - ERR
 
