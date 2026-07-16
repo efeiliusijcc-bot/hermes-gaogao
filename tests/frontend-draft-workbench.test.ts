@@ -137,6 +137,7 @@ assert.match(outlineEditorSource, /@focus="revisionFocused = true"/);
 assert.match(outlineEditorSource, /@blur="revisionFocused = false"/);
 assert.match(outlineEditorSource, /position:\s*fixed/);
 assert.match(outlineEditorSource, /padding-bottom:\s*220px/);
+assert.doesNotMatch(outlineEditorSource, /transition:\s*min-height/);
 assert.match(outlineEditorSource, /<AutoResizeTextarea/);
 assert.doesNotMatch(outlineEditorSource, /V\d|版本记录|恢复旧版本|版本比较/);
 assert.doesNotMatch(outlineViewSource, /emit\('edit'\)|编辑提纲|更多提纲操作/);

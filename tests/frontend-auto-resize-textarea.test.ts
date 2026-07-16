@@ -19,9 +19,11 @@ const componentSource = fs.readFileSync(
 );
 assert.match(componentSource, /onMounted\(resize\)/);
 assert.match(componentSource, /watch\([\s\S]*props\.modelValue[\s\S]*nextTick[\s\S]*resize/);
+assert.match(componentSource, /watch\([\s\S]*props\.minHeight[\s\S]*nextTick[\s\S]*resize/);
 assert.match(componentSource, /ResizeObserver/);
 assert.match(componentSource, /contentRect\.width/);
 assert.match(componentSource, /emit\('update:modelValue'/);
+assert.match(componentSource, /rows="1"/);
 assert.match(componentSource, /overflow-y:\s*hidden/);
 assert.match(componentSource, /resize:\s*none/);
 assert.doesNotMatch(componentSource, /max-height/);

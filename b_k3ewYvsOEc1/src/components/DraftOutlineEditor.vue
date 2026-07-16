@@ -319,7 +319,7 @@ function removeChild(sectionIndex, childIndex) {
 .draft-ai-revision.expanded { align-items: start; }
 .draft-ai-revision > button { display: inline-flex; align-items: center; gap: 7px; min-height: 42px; margin: 0; border: 1px solid #3c679f; background: #3c679f; color: #fff; border-radius: 7px; padding: 0 13px; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .draft-ai-revision > button:disabled { opacity: 0.52; cursor: not-allowed; }
-.draft-ai-revision :deep(textarea) { max-height: 180px; overflow-y: auto; transition: min-height 160ms ease; }
+.draft-ai-revision :deep(textarea) { max-height: 180px; overflow-y: auto; }
 .draft-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 34px; border-top: 1px solid #e1e5ea; padding-top: 18px; }
 .draft-editor-footer button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 700; }
 .draft-editor-footer .secondary { border: 1px solid #d5dbe3; background: #fff; color: #4b5563; }
