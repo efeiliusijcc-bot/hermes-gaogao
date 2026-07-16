@@ -31,15 +31,24 @@ const assistantSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftAssistant.vue', import.meta.url),
   'utf8',
 );
-assert.match(assistantSource, /import AutoResizeTextarea from/);
-assert.equal((assistantSource.match(/<AutoResizeTextarea/g) || []).length, 3);
-assert.match(assistantSource, /\.draft-edit-fields\s*\{[\s\S]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
-assert.match(assistantSource, /\.draft-edit-info-card\.argument\s*\{[\s\S]*grid-column:\s*1\s*\/\s*-1/);
-assert.match(assistantSource, /@media \(max-width:\s*900px\)[\s\S]*\.draft-edit-fields[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\)/);
-assert.match(assistantSource, /@media \(max-width:\s*900px\)[\s\S]*\.draft-edit-info-card\.argument[\s\S]*grid-column:\s*auto/);
-assert.doesNotMatch(assistantSource, /\.draft-autogrow-textarea[\s\S]*overflow-y:\s*(?:auto|scroll)/);
-assert.match(assistantSource, /@save="saveManualOutline"/);
-assert.match(assistantSource, /@confirm="confirmCurrentVersion"/);
-assert.match(assistantSource, /@refine="refineOutline"/);
+const sourceComposer = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftSourceComposer.vue', import.meta.url),
+  'utf8',
+);
+const outlineEditor = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftOutlineEditor.vue', import.meta.url),
+  'utf8',
+);
+
+assert.match(sourceComposer, /import AutoResizeTextarea from/);
+assert.equal((sourceComposer.match(/<AutoResizeTextarea/g) || []).length, 1);
+assert.match(sourceComposer, /:min-height="152"/);
+assert.match(outlineEditor, /import AutoResizeTextarea from/);
+assert.equal((outlineEditor.match(/<AutoResizeTextarea/g) || []).length, 5);
+assert.match(outlineEditor, /aria-label="AI 修改意见"/);
+assert.match(assistantSource, /<DraftSourceComposer/);
+assert.match(assistantSource, /<DraftOutlineEditor/);
+assert.match(assistantSource, /@confirm="showConfirmation"/);
+assert.match(assistantSource, /@revise="reviseOutline"/);
 
 console.log('frontend auto resize textarea tests passed');

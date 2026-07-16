@@ -1,904 +1,440 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ArrowLeft, Check, History, LoaderCircle, Pencil } from '@lucide/vue'
 import {
   analyzeDraftEvent,
+  createReportJob,
   generateDraftOutline,
   getDraftEvent,
   getDraftEvents,
-  getDraftEventOutlines,
-  getDraftOutline,
-  createReportJob,
   importDraftOutline,
   manualUpdateDraftOutline,
   refineDraftOutline,
 } from '../lib/api.js'
-import { normalizeRiskSummary, riskSummaryTitle } from '../lib/riskSummary.js'
 import {
-  deriveDraftStepStates,
-  deriveMaterialCoverage,
-  eventInputSummary,
-} from '../lib/draftWorkbench.js'
-import DraftEditorToolbar from './DraftEditorToolbar.vue'
-import DraftContextPanel from './DraftContextPanel.vue'
+  buildDraftAnalysisSections,
+  buildDraftAnalyzePayload,
+  restoredDraftStage,
+} from '../lib/draftAssistantFlow.js'
+import { createDraftAutosave } from '../lib/draftAutosave.js'
+import DraftAnalysisView from './DraftAnalysisView.vue'
 import DraftHistorySidebar from './DraftHistorySidebar.vue'
+import DraftImportState from './DraftImportState.vue'
+import DraftOutlineEditor from './DraftOutlineEditor.vue'
 import DraftOutlineView from './DraftOutlineView.vue'
-import DraftStepNavigation from './DraftStepNavigation.vue'
-import EventPreviewPanel from './EventPreviewPanel.vue'
-import EventSourcePanel from './EventSourcePanel.vue'
-import StrategyTabs from './StrategyTabs.vue'
-import AutoResizeTextarea from './common/AutoResizeTextarea.vue'
-import { useCollapsibleHistorySidebar } from '../composables/useCollapsibleHistorySidebar.js'
+import DraftSourceComposer from './DraftSourceComposer.vue'
 
 const props = defineProps({
-  currentUser: {
-    type: Object,
-    default: null,
-  },
-  initialEventId: {
-    type: String,
-    default: '',
-  },
+  currentUser: { type: Object, default: null },
+  initialEventId: { type: String, default: '' },
 })
 
 const emit = defineEmits(['back', 'request-login', 'report-job-created'])
 
-const form = reactive({
-  title: '',
-  materials: '',
-  linksText: '',
-  category: '',
-  region: '',
-})
-
-const outlinePreference = ref('')
-const refineFeedback = ref('')
-const editNote = ref('')
-const isAnalyzing = ref(false)
-const isGeneratingOutline = ref(false)
-const isRefining = ref(false)
-const isSavingManual = ref(false)
-const isLoadingEvents = ref(false)
-const errorMessage = ref('')
-const notice = ref('')
+const stage = ref('input')
+const sourceInput = ref('')
+const sourceError = ref('')
+const analysisError = ref('')
+const pageError = ref('')
 const eventResult = ref(null)
 const eventList = ref([])
-const outlineVersions = ref([])
 const selectedOutline = ref(null)
-const editMode = ref(false)
-const previewMode = ref(false)
-const confirmationMode = ref(false)
-const importStatus = ref('待确认当前提纲版本')
-const editSnapshot = ref('')
-const importedPlan = ref(null)
-const isImportingOutline = ref(false)
-const isCreatingReportJob = ref(false)
-const createdReportJob = ref(null)
-const showAllRiskVerifications = ref(false)
-const leftPanelOpen = ref(false)
-const rightPanelOpen = ref(false)
-const lastSavedAt = ref(null)
-const saveFailed = ref(false)
-const historySearchFocused = ref(false)
-const draftLifecycleStatus = ref('idle')
-const historySidebarComponent = ref(null)
-const draftPrimaryHeading = ref(null)
-const openOutlineMenu = ref(-1)
+const outlineDraft = ref(emptyOutline())
+const revisionFeedback = ref('')
+const saveStatus = ref('idle')
+const saveError = ref('')
+const historyOpen = ref(false)
+const isAnalyzing = ref(false)
+const isGeneratingOutline = ref(false)
+const isRevising = ref(false)
+const isLoadingEvents = ref(false)
+const importState = reactive({ status: 'idle', error: '', job: null })
 
-const outlineEdit = reactive({
-  reportTitle: '',
-  reportTheme: '',
-  coreArgument: '',
-  outlineItems: [],
-  writingFocus: [],
-  sourceRequirements: [],
-  uncertaintiesToVerify: [],
-})
-
-const stepDefinitions = [
-  { key: 'input', title: '事件输入' },
-  { key: 'analysis', title: '事件分析' },
-  { key: 'outline', title: '拟稿提纲' },
-  { key: 'confirm', title: '确认版本' },
-  { key: 'import', title: '导入深度编报' },
-]
-
-const cnNumbers = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二']
-
-const analysis = computed(() => eventResult.value?.analysis || eventResult.value?.event?.analysis || null)
-const attitudes = computed(() => eventResult.value?.attitudes || analysis.value?.attitudes || [])
-const currentEventId = computed(() => eventResult.value?.eventId || eventResult.value?.event?.eventId || '')
-const currentOutlineId = computed(() => selectedOutline.value?.outlineId || '')
-const canUse = computed(() => Boolean(props.currentUser))
-const displayOutline = computed(() => normalizeOutlineForDisplay(selectedOutline.value?.outline || {}))
-const hasAnalysis = computed(() => Boolean(analysis.value))
-const hasOutline = computed(() => Boolean(selectedOutline.value?.outline && displayOutline.value.outlineItems.length))
-const isVersionConfirmed = computed(() => confirmationMode.value && hasOutline.value && !editMode.value)
-const userModules = computed(() => Array.isArray(props.currentUser?.modules) ? props.currentUser.modules : [])
-const canImportDraftOutline = computed(() => userModules.value.includes('draft'))
-const isImportReady = computed(() => isVersionConfirmed.value && canImportDraftOutline.value && !importedPlan.value)
-const isReportJobReady = computed(() => Boolean(importedPlan.value?.planId) && canImportDraftOutline.value && !editMode.value)
-const importedPlanIdShort = computed(() => importedPlan.value?.planId ? shortId(importedPlan.value.planId) : '')
-const importedVersionLabel = computed(() => importedPlan.value?.outlineId === currentOutlineId.value ? selectedVersionLabel.value : (importedPlan.value?.versionLabel || '已导入版本'))
-const currentVersionTime = computed(() => selectedOutline.value?.createdAt ? formatTime(selectedOutline.value.createdAt) : '')
-const selectedVersionLabel = computed(() => selectedOutline.value ? versionLabel(selectedOutline.value) : '尚未选择版本')
-const currentEventTitle = computed(() => eventResult.value?.event?.title || form.title || '未命名事件')
-const editingVersionLabel = computed(() => selectedOutline.value ? versionLabel(selectedOutline.value) : '当前版本')
-const previewDisplayOutline = computed(() => normalizeOutlineForDisplay(editDraftToOutline()))
-const hasEditChanges = computed(() => editMode.value && editSnapshot.value !== serializeEditState())
-const editorSaveState = computed(() => {
-  if (saveFailed.value) return 'failed'
-  if (isSavingManual.value) return 'saving'
-  if (hasEditChanges.value) return 'dirty'
-  return 'saved'
-})
-const editorSaveStateLabel = computed(() => {
-  if (saveFailed.value) return '保存失败'
-  if (isSavingManual.value) return '保存中'
-  if (hasEditChanges.value) return '存在未保存修改'
-  return lastSavedAt.value ? `已保存 ${formatClock(lastSavedAt.value)}` : '已保存'
-})
-const eventDescription = computed(() => (
-  analysis.value?.basicSituation
-  || analysis.value?.oneSentenceSummary
-  || eventResult.value?.event?.summary
-  || eventResult.value?.summary
-  || '当前事件暂无补充说明。'
+const currentEventId = computed(() => (
+  eventResult.value?.eventId
+  || eventResult.value?.event?.eventId
+  || selectedOutline.value?.eventId
+  || ''
 ))
+const analysisSections = computed(() => buildDraftAnalysisSections(eventResult.value || {}))
+const canShowHistory = computed(() => stage.value !== 'input')
+const isImporting = computed(() => stage.value === 'importing' || stage.value === 'completed')
 
-const currentStepKey = computed(() => {
-  if (importedPlan.value || isImportReady.value) return 'import'
-  if ((editMode.value || confirmationMode.value || isRefining.value) && hasOutline.value) return 'confirm'
-  if (hasOutline.value) return 'outline'
-  if (hasAnalysis.value) return 'analysis'
-  return 'input'
-})
-
-const currentStepIndex = computed(() => stepDefinitions.findIndex((step) => step.key === currentStepKey.value))
-const currentStepNumber = computed(() => currentStepIndex.value + 1)
-const eventInput = computed(() => eventInputSummary(form))
-const draftStepStates = computed(() => deriveDraftStepStates({
-  currentStep: currentStepKey.value,
-  isAnalyzing: isAnalyzing.value,
-  isGeneratingOutline: isGeneratingOutline.value,
-  isRefining: isRefining.value,
-  draftStatus: draftLifecycleStatus.value,
-  hasEditChanges: hasEditChanges.value,
-  isImportingOutline: isImportingOutline.value,
-  isCreatingReportJob: isCreatingReportJob.value,
-  createdReportJob: createdReportJob.value,
-}))
-const materialCoverage = computed(() => deriveMaterialCoverage({
-  materials: form.materials,
-  validLinks: eventInput.value.links.valid,
-  importedPlan: importedPlan.value,
-  collectedSources: eventResult.value?.sources,
-  collectedSourceCount: eventResult.value?.sourceCount,
-}))
-const historyEditorMode = computed(() => editMode.value ? 'edit' : confirmationMode.value ? 'confirm' : '')
-const {
-  collapsed: historySidebarCollapsed,
-  preference: historySidebarPreference,
-  autoCollapseNoticeVisible,
-  toggle: toggleHistorySidebarPreference,
-  useAutomaticPreference: useAutomaticHistoryPreference,
-} = useCollapsibleHistorySidebar({
-  currentEventId,
-  currentStep: currentStepNumber,
-  draftStatus: draftLifecycleStatus,
-  editorMode: historyEditorMode,
-  searchFocused: historySearchFocused,
-  sidebarComponentRef: historySidebarComponent,
-  autoCollapseTargetRef: draftPrimaryHeading,
-})
-const historyNavigationMode = computed(() => (
-  historySidebarPreference.value === 'collapsed'
-  || hasOutline.value
-  || currentStepNumber.value >= 4
-))
-
-const analysisCards = computed(() => {
-  const item = analysis.value || {}
-  return [
-    { label: '一句话概括', value: item.oneSentenceSummary || item.summary || '' },
-    { label: '基本情况', value: item.basicSituation || item.background || '' },
-    { label: '主要事实', value: compactList(item.mainFacts) },
-    { label: '各方态度摘要', value: compactAttitudes(attitudes.value) },
-  ].map((entry) => ({ ...entry, value: entry.value || '暂无' }))
-})
-const riskSummary = computed(() => {
-  const item = analysis.value || {}
-  return normalizeRiskSummary(item.riskSummary ?? item.risks ?? item.riskToUs)
-})
-const riskTitle = computed(() => riskSummaryTitle({
-  ...(analysis.value || {}),
-  analysis: analysis.value || {},
-  event: eventResult.value?.event || eventResult.value || {},
-}))
-const visibleRiskVerifications = computed(() => (
-  showAllRiskVerifications.value
-    ? riskSummary.value.pendingVerifications
-    : riskSummary.value.pendingVerifications.slice(0, 5)
-))
-const riskVerificationHasMore = computed(() => riskSummary.value.pendingVerifications.length > 5)
-
-function showError(error) {
-  errorMessage.value = error instanceof Error ? error.message : String(error)
-}
-
-function clearMessages() {
-  errorMessage.value = ''
-  notice.value = ''
-}
-
-async function loadEvents() {
-  if (!canUse.value) return
-  isLoadingEvents.value = true
-  try {
-    const result = await getDraftEvents({ page: 1, pageSize: 20 })
-    eventList.value = Array.isArray(result?.items) ? result.items : []
-  } catch (error) {
-    showError(error)
-  } finally {
-    isLoadingEvents.value = false
-  }
-}
-
-async function runAnalyze() {
-  clearMessages()
-  if (!canUse.value) {
-    emit('request-login')
-    return
-  }
-  if (!form.title.trim()) {
-    errorMessage.value = '请先输入事件标题'
-    return
-  }
-  isAnalyzing.value = true
-  draftLifecycleStatus.value = 'idle'
-  showAllRiskVerifications.value = false
-  selectedOutline.value = null
-  outlineVersions.value = []
-  editMode.value = false
-  confirmationMode.value = false
-  resetImportState('待确认当前提纲版本')
-  try {
-    eventResult.value = await analyzeDraftEvent({
-      title: form.title,
-      materials: form.materials,
-      links: eventInput.value.links.valid,
-      category: form.category,
-      region: form.region,
-    })
-    notice.value = '事件分析已生成，请继续生成拟稿提纲'
-    await loadEvents()
-  } catch (error) {
-    showError(error)
-  } finally {
-    isAnalyzing.value = false
-  }
-}
-
-async function openEvent(eventId) {
-  clearMessages()
-  if (!eventId) return
-  editMode.value = false
-  confirmationMode.value = false
-  draftLifecycleStatus.value = 'idle'
-  showAllRiskVerifications.value = false
-  resetImportState('待确认当前提纲版本')
-  try {
-    eventResult.value = await getDraftEvent(eventId)
-    form.title = eventResult.value?.event?.title || form.title
-    form.category = eventResult.value?.event?.category || ''
-    form.region = eventResult.value?.event?.region || ''
-    outlineVersions.value = await getDraftEventOutlines(eventId)
-    selectedOutline.value = eventResult.value?.latestOutline || outlineVersions.value[0] || null
-    if (selectedOutline.value?.outlineId) await loadOutline(selectedOutline.value.outlineId)
-    draftLifecycleStatus.value = selectedOutline.value?.outlineId ? 'completed' : 'idle'
-  } catch (error) {
-    showError(error)
-  }
-}
-
-async function createOutline() {
-  clearMessages()
-  if (!currentEventId.value) {
-    errorMessage.value = '请先完成事件分析'
-    return
-  }
-  isGeneratingOutline.value = true
-  draftLifecycleStatus.value = 'generating'
-  editMode.value = false
-  confirmationMode.value = false
-  resetImportState('待确认当前提纲版本')
-  try {
-    selectedOutline.value = await generateDraftOutline({
-      eventId: currentEventId.value,
-      outlinePreference: outlinePreference.value,
-    })
-    await refreshOutlineVersions()
-    syncOutlineEdit()
-    notice.value = `已生成 V${selectedOutline.value.versionNo} 提纲`
-    draftLifecycleStatus.value = 'generated'
-  } catch (error) {
-    draftLifecycleStatus.value = 'failed'
-    showError(error)
-  } finally {
-    isGeneratingOutline.value = false
-  }
-}
-
-async function refineOutline() {
-  clearMessages()
-  if (!currentOutlineId.value) {
-    errorMessage.value = '请先生成或选择提纲'
-    return
-  }
-  if (!refineFeedback.value.trim()) {
-    errorMessage.value = '请填写 AI 修改反馈'
-    return
-  }
-  isRefining.value = true
-  editMode.value = false
-  confirmationMode.value = true
-  resetImportState('AI 修改后请重新确认版本')
-  try {
-    selectedOutline.value = await refineDraftOutline({
-      outlineId: currentOutlineId.value,
-      userFeedback: refineFeedback.value,
-    })
-    refineFeedback.value = ''
-    await refreshOutlineVersions()
-    syncOutlineEdit()
-    notice.value = `已生成 V${selectedOutline.value.versionNo} AI 修改版`
-  } catch (error) {
-    showError(error)
-  } finally {
-    isRefining.value = false
-  }
-}
-
-async function saveManualOutline() {
-  clearMessages()
-  if (!currentOutlineId.value) {
-    errorMessage.value = '请先生成或选择提纲'
-    return
-  }
-  isSavingManual.value = true
-  saveFailed.value = false
-  confirmationMode.value = true
-  try {
-    selectedOutline.value = await manualUpdateDraftOutline({
-      outlineId: currentOutlineId.value,
-      outline: editToOutline(),
-      editNote: editNote.value.trim().slice(0, 200),
-    })
-    editMode.value = false
-    previewMode.value = false
-    editNote.value = ''
-    await refreshOutlineVersions()
-    syncOutlineEdit()
-    editSnapshot.value = serializeEditState()
-    lastSavedAt.value = new Date()
-    resetImportState('手动修改后请重新确认版本')
-    notice.value = `已保存 V${selectedOutline.value.versionNo} 手动修改版`
-  } catch (error) {
-    saveFailed.value = true
-    showError(error)
-  } finally {
-    isSavingManual.value = false
-  }
-}
-
-async function refreshOutlineVersions() {
-  if (!currentEventId.value) return
-  outlineVersions.value = await getDraftEventOutlines(currentEventId.value)
-}
-
-async function loadOutline(outlineId) {
-  clearMessages()
-  if (editMode.value && hasEditChanges.value && !window.confirm('当前修改尚未保存，切换版本会放弃修改，确定继续吗？')) return
-  try {
-    selectedOutline.value = await getDraftOutline(outlineId)
-    syncOutlineEdit()
-    editMode.value = false
-    previewMode.value = false
-    confirmationMode.value = false
-    resetImportState('待确认当前提纲版本')
-  } catch (error) {
-    showError(error)
-  }
-}
-
-function enterEditMode() {
-  if (!selectedOutline.value) return
-  syncOutlineEdit()
-  editNote.value = ''
-  editSnapshot.value = serializeEditState()
-  lastSavedAt.value = selectedOutline.value?.createdAt ? new Date(selectedOutline.value.createdAt) : new Date()
-  saveFailed.value = false
-  editMode.value = true
-  previewMode.value = false
-  confirmationMode.value = true
-  resetImportState('编辑完成后保存为新版本')
-}
-
-function cancelEditMode() {
-  if (hasEditChanges.value && !window.confirm('当前修改尚未保存，确定放弃吗？')) return
-  editMode.value = false
-  previewMode.value = false
-  syncOutlineEdit()
-}
-
-function updateStrategyItem(key, index, value) {
-  if (!Array.isArray(outlineEdit[key]) || index < 0 || index >= outlineEdit[key].length) return
-  outlineEdit[key][index] = value
-}
-
-function duplicateStrategyItem(key, index) {
-  if (!Array.isArray(outlineEdit[key]) || index < 0 || index >= outlineEdit[key].length) return
-  outlineEdit[key].splice(index + 1, 0, itemToText(outlineEdit[key][index]))
-}
-
-function restoreStrategyItem(key, index, item) {
-  if (!Array.isArray(outlineEdit[key])) return
-  outlineEdit[key].splice(Math.max(0, Math.min(index, outlineEdit[key].length)), 0, item)
-}
-
-function closeResponsivePanels() {
-  leftPanelOpen.value = false
-  rightPanelOpen.value = false
-}
-
-function toggleHistorySidebar() {
-  const wasCollapsed = historySidebarCollapsed.value
-  toggleHistorySidebarPreference()
-  if (typeof window !== 'undefined' && window.innerWidth < 1100) {
-    leftPanelOpen.value = wasCollapsed
-  } else {
-    leftPanelOpen.value = false
-  }
-}
-
-function selectHistoryEvent(eventId) {
-  leftPanelOpen.value = false
-  void openEvent(eventId)
-}
-
-function startNewEvent() {
-  if (hasEditChanges.value && !window.confirm('当前修改尚未保存，确定新建事件吗？')) return
-  eventResult.value = null
-  selectedOutline.value = null
-  outlineVersions.value = []
-  editMode.value = false
-  confirmationMode.value = false
-  draftLifecycleStatus.value = 'idle'
-  form.title = ''
-  form.materials = ''
-  form.linksText = ''
-  form.category = ''
-  form.region = ''
-  closeResponsivePanels()
-}
-
-function handleBeforeUnload(event) {
-  if (!hasEditChanges.value) return
-  event.preventDefault()
-  event.returnValue = ''
-}
-
-function confirmCurrentVersion() {
-  if (!hasOutline.value) return
-  editMode.value = false
-  confirmationMode.value = true
-  resetImportState(canImportDraftOutline.value ? '当前版本已确认，可生成深度编报规划' : '当前账号无权导入深度编报')
-  notice.value = `已确认 ${selectedVersionLabel.value}`
-}
-
-async function importCurrentOutline() {
-  clearMessages()
-  if (!currentOutlineId.value) {
-    errorMessage.value = '请先选择提纲版本'
-    return
-  }
-  if (!canImportDraftOutline.value) {
-    errorMessage.value = '当前账号无权导入深度编报'
-    return
-  }
-  if (!isVersionConfirmed.value) {
-    errorMessage.value = '请先确认当前提纲版本'
-    return
-  }
-  isImportingOutline.value = true
-  try {
-    const result = await importDraftOutline({ outlineId: currentOutlineId.value })
-    importedPlan.value = {
-      planId: result.planId,
-      outlineId: result.outlineId,
-      eventId: result.eventId,
-      plan: result.plan || {},
-      createdAt: result.createdAt || new Date().toISOString(),
-      versionLabel: selectedVersionLabel.value,
-    }
-    importStatus.value = '已生成深度编报规划'
-    notice.value = `已生成深度编报规划：${shortId(result.planId)}`
-  } catch (error) {
-    showError(error)
-  } finally {
-    isImportingOutline.value = false
-  }
-}
-
-async function createDeepReportJob() {
-  clearMessages()
-  if (!isReportJobReady.value) return
-  isCreatingReportJob.value = true
-  try {
-    const plan = importedPlan.value.plan || {}
-    const reportTitle = plan.reportTitle || displayOutline.value.reportTitle || currentEventTitle.value
-    const knownContext = {
-      kind: 'draft_assistant_import',
-      topic: reportTitle,
-      reportType: 'K报',
-      draftAssistantMode: true,
-      eventId: importedPlan.value.eventId,
-      outlineId: importedPlan.value.outlineId,
-      planId: importedPlan.value.planId,
-      databaseSourceOptions: {
-        enabled: true,
-        lookbackDays: 30,
-        maxMetadataRows: 50,
-        maxContentRows: 8,
-      },
-      draftAssistantInstructions: [
-        '严格依据用户已确认的 Draft Assistant report_plan 生成深度编报。',
-        '不得脱离确认提纲自由发挥。',
-        '缺少来源的信息必须标注待核实。',
-      ],
-    }
-    const created = await createReportJob({
-      skill: 'write-hb',
-      payload: {
-        title: reportTitle,
-        topic: reportTitle,
-        report_type: 'K报',
-        eventId: importedPlan.value.eventId,
-        outlineId: importedPlan.value.outlineId,
-        planId: importedPlan.value.planId,
-        draftAssistantMode: true,
-        deepReportEnabled: true,
-        known_context: JSON.stringify(knownContext, null, 2),
-        focus_areas: ['主要内容', '各方态度', '涉我风险', '趋势研判'],
-        language: 'zh-CN',
-      },
-    })
-    createdReportJob.value = { ...created, payload: { topic: reportTitle, report_type: 'K报' } }
-    importStatus.value = `深度编报任务已创建：${shortId(created.jobId)}`
-    notice.value = '已创建深度编报任务，正在进入任务进度页'
-    emit('report-job-created', createdReportJob.value)
-  } catch (error) {
-    showError(error)
-  } finally {
-    isCreatingReportJob.value = false
-  }
-}
-
-function resetImportState(status = '待确认当前提纲版本') {
-  importedPlan.value = null
-  createdReportJob.value = null
-  importStatus.value = status
-}
-
-function previewEditedOutline() {
-  clearMessages()
-  try {
-    editToOutline()
-    previewMode.value = true
-  } catch (error) {
-    showError(error)
-  }
-}
-
-function continueEditing() {
-  previewMode.value = false
-}
-
-function syncOutlineEdit() {
-  const outline = normalizeOutlineForDisplay(selectedOutline.value?.outline || {})
-  outlineEdit.reportTitle = outline.reportTitle || ''
-  outlineEdit.reportTheme = outline.reportTheme || ''
-  outlineEdit.coreArgument = outline.coreArgument || ''
-  outlineEdit.outlineItems = cloneOutlineItems(outline.outlineItems)
-  outlineEdit.writingFocus = listFromValue(outline.writingFocus)
-  outlineEdit.sourceRequirements = listFromValue(outline.sourceRequirements)
-  outlineEdit.uncertaintiesToVerify = listFromValue(outline.uncertaintiesToVerify)
-}
-
-function editDraftToOutline() {
+function emptyOutline() {
   return {
-    reportTitle: outlineEdit.reportTitle,
-    reportTheme: outlineEdit.reportTheme,
-    coreArgument: outlineEdit.coreArgument,
-    outlineItems: cloneOutlineItems(outlineEdit.outlineItems).map((item) => ({
-      level: 1,
-      title: item.title,
-      summary: item.summary,
-      children: cloneOutlineItems(item.children).map((child) => ({
-        level: 2,
-        title: child.title,
-        summary: child.summary,
-      })),
-    })),
-    writingFocus: cleanStringList(outlineEdit.writingFocus),
-    sourceRequirements: cleanStringList(outlineEdit.sourceRequirements),
-    uncertaintiesToVerify: cleanStringList(outlineEdit.uncertaintiesToVerify),
+    reportTitle: '',
+    reportTheme: '',
+    coreArgument: '',
+    outlineItems: [],
+    writingFocus: [],
+    sourceRequirements: [],
+    uncertaintiesToVerify: [],
   }
 }
 
-function editToOutline() {
-  const outlineItems = cloneOutlineItems(outlineEdit.outlineItems)
-    .map((item) => ({
-      level: 1,
-      title: item.title.trim(),
-      summary: item.summary.trim(),
-      children: cloneOutlineItems(item.children).map((child) => ({
-        level: 2,
-        title: child.title.trim(),
-        summary: child.summary.trim(),
-      })),
-    }))
-    .filter((item) => item.title || item.summary || item.children.length)
+function cloneOutline(value = {}) {
+  const normalized = normalizeOutline(value)
+  return JSON.parse(JSON.stringify(normalized))
+}
 
-  if (!outlineEdit.reportTitle.trim() || !outlineEdit.reportTheme.trim() || !outlineEdit.coreArgument.trim()) {
-    throw new Error('请补全建议标题、主题立意和核心判断')
-  }
-  const invalidTop = outlineItems.find((item) => !item.title || !item.summary)
-  const invalidChild = outlineItems.flatMap((item) => item.children).find((item) => !item.title || !item.summary)
-  if (!outlineItems.length || invalidTop || invalidChild) {
-    throw new Error('请检查目录：每个一级/二级标题都需要填写标题和简短说明')
-  }
-
+function normalizeOutline(value = {}) {
+  const outlineItems = normalizeOutlineItems(value.outlineItems)
   return {
-    reportTitle: outlineEdit.reportTitle.trim(),
-    reportTheme: outlineEdit.reportTheme.trim(),
-    coreArgument: outlineEdit.coreArgument.trim(),
-    outlineItems,
-    writingFocus: cleanStringList(outlineEdit.writingFocus),
-    sourceRequirements: cleanStringList(outlineEdit.sourceRequirements),
-    uncertaintiesToVerify: cleanStringList(outlineEdit.uncertaintiesToVerify),
+    ...emptyOutline(),
+    reportTitle: String(value.reportTitle || ''),
+    reportTheme: String(value.reportTheme || ''),
+    coreArgument: String(value.coreArgument || value.coreJudgement || ''),
+    outlineItems: outlineItems.length ? outlineItems : legacyOutlineItems(value),
+    writingFocus: arrayValue(value.writingFocus || value.writingConstraints),
+    sourceRequirements: arrayValue(value.sourceRequirements),
+    uncertaintiesToVerify: arrayValue(value.uncertaintiesToVerify),
   }
-}
-
-function normalizeOutlineForDisplay(outline) {
-  const normalized = {
-    reportTitle: outline?.reportTitle || '',
-    reportTheme: outline?.reportTheme || '',
-    coreArgument: outline?.coreArgument || outline?.coreJudgement || '',
-    outlineItems: normalizeOutlineItems(outline?.outlineItems),
-    writingFocus: listFromValue(outline?.writingFocus).length
-      ? listFromValue(outline?.writingFocus)
-      : listFromValue(outline?.writingConstraints),
-    sourceRequirements: listFromValue(outline?.sourceRequirements),
-    uncertaintiesToVerify: listFromValue(outline?.uncertaintiesToVerify),
-  }
-  if (!normalized.outlineItems.length) {
-    normalized.outlineItems = legacyOutlineItems(outline)
-  }
-  return normalized
 }
 
 function normalizeOutlineItems(items) {
   if (!Array.isArray(items)) return []
-  return items
-    .map((item) => {
-      const title = String(item?.title || '').trim()
-      const summary = String(item?.summary || '').trim()
-      if (!title && !summary) return null
-      return {
-        level: 1,
-        title,
-        summary,
-        children: Array.isArray(item?.children)
-          ? item.children
-              .map((child) => ({
-                level: 2,
-                title: String(child?.title || '').trim(),
-                summary: String(child?.summary || '').trim(),
-              }))
-              .filter((child) => child.title || child.summary)
-          : [],
-      }
-    })
-    .filter(Boolean)
+  return items.map((item) => ({
+    level: 1,
+    title: String(item?.title || ''),
+    summary: String(item?.summary || ''),
+    children: Array.isArray(item?.children)
+      ? item.children.map((child) => ({
+          level: 2,
+          title: String(child?.title || ''),
+          summary: String(child?.summary || ''),
+        }))
+      : [],
+  }))
 }
 
-function legacyOutlineItems(outline) {
+function legacyOutlineItems(value) {
   const sections = [
     ['mainContentPlan', '事件概况'],
     ['attitudesPlan', '各方态度'],
     ['riskPlan', '涉我风险'],
     ['trendPlan', '趋势研判'],
   ]
-  return sections
-    .map(([key, title]) => {
-      const values = arrayOrEmpty(outline?.[key])
-      if (!values.length) return null
-      return {
-        level: 1,
-        title,
-        summary: values.map(itemToText).join('；'),
-        children: values.slice(0, 6).map((item) => ({
-          level: 2,
-          title: itemToText(item).split(/[，。；;,.]/)[0]?.slice(0, 40) || '分项内容',
-          summary: itemToText(item),
-        })),
-      }
-    })
-    .filter(Boolean)
+  return sections.map(([key, title]) => {
+    const rows = arrayValue(value[key]).map(readableText).filter(Boolean)
+    if (!rows.length) return null
+    return {
+      level: 1,
+      title,
+      summary: rows.join('；'),
+      children: rows.slice(0, 6).map((summary) => ({
+        level: 2,
+        title: summary.split(/[，。；;,.]/)[0]?.slice(0, 40) || '分项内容',
+        summary,
+      })),
+    }
+  }).filter(Boolean)
 }
 
-function cloneOutlineItems(items = []) {
-  if (!Array.isArray(items)) return []
-  return items.map((item) => ({
-    level: item.level || 1,
-    title: item.title || '',
-    summary: item.summary || '',
-    expanded: item.expanded !== false,
-    children: Array.isArray(item.children) ? cloneOutlineItems(item.children) : [],
-  }))
-}
-
-function addOutlineItem() {
-  outlineEdit.outlineItems.push({ level: 1, title: '', summary: '', expanded: true, children: [] })
-}
-
-function removeOutlineItem(index) {
-  if (!window.confirm('确定删除这个一级目录吗？')) return
-  outlineEdit.outlineItems.splice(index, 1)
-}
-
-function addChildItem(item) {
-  if (!Array.isArray(item.children)) item.children = []
-  item.expanded = true
-  item.children.push({ level: 2, title: '', summary: '' })
-}
-
-function removeChildItem(item, childIndex) {
-  if (!window.confirm('确定删除这个二级目录吗？')) return
-  item.children.splice(childIndex, 1)
-}
-
-function moveOutlineItem(index, direction) {
-  const nextIndex = index + direction
-  if (nextIndex < 0 || nextIndex >= outlineEdit.outlineItems.length) return
-  const [item] = outlineEdit.outlineItems.splice(index, 1)
-  outlineEdit.outlineItems.splice(nextIndex, 0, item)
-}
-
-function duplicateOutlineItem(index) {
-  const item = outlineEdit.outlineItems[index]
-  if (!item) return
-  outlineEdit.outlineItems.splice(index + 1, 0, cloneOutlineItems([item])[0])
-  openOutlineMenu.value = -1
-}
-
-function moveChildItem(item, childIndex, direction) {
-  if (!Array.isArray(item.children)) return
-  const nextIndex = childIndex + direction
-  if (nextIndex < 0 || nextIndex >= item.children.length) return
-  const [child] = item.children.splice(childIndex, 1)
-  item.children.splice(nextIndex, 0, child)
-}
-
-function toggleOutlineItem(item) {
-  item.expanded = item.expanded === false
-}
-
-function setAllOutlineItemsExpanded(expanded) {
-  outlineEdit.outlineItems.forEach((item) => {
-    item.expanded = expanded
-  })
-}
-
-function addStrategyItem(key) {
-  if (!Array.isArray(outlineEdit[key])) outlineEdit[key] = []
-  outlineEdit[key].push('')
-}
-
-function removeStrategyItem(key, index) {
-  if (!Array.isArray(outlineEdit[key])) return
-  outlineEdit[key].splice(index, 1)
-}
-
-function moveStrategyItem(key, index, direction) {
-  if (!Array.isArray(outlineEdit[key])) return
-  const nextIndex = index + direction
-  if (nextIndex < 0 || nextIndex >= outlineEdit[key].length) return
-  const [item] = outlineEdit[key].splice(index, 1)
-  outlineEdit[key].splice(nextIndex, 0, item)
-}
-
-function cleanStringList(value) {
-  return arrayOrEmpty(value)
-    .map((item) => itemToText(item).trim())
-    .filter(Boolean)
-}
-
-function serializeEditState() {
-  return JSON.stringify({
-    outline: editDraftToOutline(),
-    editNote: editNote.value.trim().slice(0, 200),
-  })
-}
-
-function outlineNumber(index) {
-  return cnNumbers[index] || String(index + 1)
-}
-
-function arrayOrEmpty(value) {
+function arrayValue(value) {
   return Array.isArray(value) ? value : []
 }
 
-function listFromValue(value) {
-  if (Array.isArray(value)) return value.map(itemToText).map((item) => item.trim()).filter(Boolean)
-  if (typeof value === 'string') return linesToArray(value)
-  return []
+function readableText(value) {
+  if (typeof value === 'string' || typeof value === 'number') return String(value).trim()
+  if (!value || typeof value !== 'object') return ''
+  return String(value.summary || value.text || value.content || value.title || '').trim()
 }
 
-function itemToText(item) {
-  if (typeof item === 'string') return item
-  if (item && typeof item === 'object') {
-    return item.summary || item.title || item.name || item.content || JSON.stringify(item)
-  }
-  return String(item ?? '')
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error || '操作失败')
 }
 
-function compactList(value) {
-  const items = arrayOrEmpty(value).map(itemToText).filter(Boolean)
-  return items.slice(0, 4).join('；')
+function validateOutline(value) {
+  if (!String(value.reportTitle || '').trim()) throw new Error('请填写建议标题后再保存')
+  if (!Array.isArray(value.writingFocus)) value.writingFocus = []
+  if (!Array.isArray(value.sourceRequirements)) value.sourceRequirements = []
+  if (!Array.isArray(value.uncertaintiesToVerify)) value.uncertaintiesToVerify = []
+  const invalidSection = value.outlineItems.some((item) => (
+    !String(item.title || '').trim()
+    || !String(item.summary || '').trim()
+    || item.children.some((child) => !String(child.title || '').trim() || !String(child.summary || '').trim())
+  ))
+  if (!value.outlineItems.length || invalidSection) throw new Error('请补全目录标题和说明后再保存')
 }
 
-function compactAttitudes(value) {
-  const items = arrayOrEmpty(value)
-    .map((item) => {
-      if (typeof item === 'string') return item
-      const actor = item?.actor ? `${item.actor}：` : ''
-      return `${actor}${item?.attitudeSummary || item?.summary || itemToText(item)}`
+let syncingOutline = false
+
+function syncOutlineDraft(value) {
+  syncingOutline = true
+  outlineDraft.value = cloneOutline(value)
+  saveStatus.value = 'saved'
+  saveError.value = ''
+  queueMicrotask(() => { syncingOutline = false })
+}
+
+const autosave = createDraftAutosave({
+  save: async (snapshot) => {
+    validateOutline(snapshot)
+    const saved = await manualUpdateDraftOutline({
+      outlineId: selectedOutline.value.outlineId,
+      outline: snapshot,
+      editNote: '',
     })
-    .filter(Boolean)
-  return items.slice(0, 4).join('；')
+    selectedOutline.value = saved
+  },
+  onState: (status, error) => {
+    saveStatus.value = status
+    saveError.value = error ? messageOf(error) : ''
+  },
+})
+
+watch(outlineDraft, (value) => {
+  if (syncingOutline || stage.value !== 'outline' || !selectedOutline.value?.outlineId) return
+  autosave.schedule(cloneOutline(value))
+}, { deep: true, flush: 'sync' })
+
+async function loadEvents() {
+  if (!props.currentUser) return
+  isLoadingEvents.value = true
+  try {
+    const result = await getDraftEvents({ page: 1, pageSize: 50 })
+    eventList.value = Array.isArray(result?.items) ? result.items : []
+  } catch (error) {
+    pageError.value = messageOf(error)
+  } finally {
+    isLoadingEvents.value = false
+  }
 }
 
-function arrayToLines(value) {
-  if (!Array.isArray(value)) return ''
-  return value.map(itemToText).join('\n')
+function resetImportState() {
+  importState.status = 'idle'
+  importState.error = ''
+  importState.job = null
 }
 
-function linesToArray(value) {
-  return String(value || '')
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean)
+function resetCurrentDraft() {
+  eventResult.value = null
+  selectedOutline.value = null
+  syncingOutline = true
+  outlineDraft.value = emptyOutline()
+  queueMicrotask(() => { syncingOutline = false })
+  revisionFeedback.value = ''
+  analysisError.value = ''
+  pageError.value = ''
+  saveStatus.value = 'idle'
+  saveError.value = ''
+  resetImportState()
 }
 
-function versionLabel(item) {
-  const type = item?.editType === 'ai_refine' ? 'AI修改版' : item?.editType === 'manual' ? '手动修改版' : 'AI生成版'
-  return `V${item?.versionNo || '-'} ${type}`
+async function startDraft() {
+  sourceError.value = ''
+  analysisError.value = ''
+  pageError.value = ''
+  if (!props.currentUser) {
+    emit('request-login')
+    return
+  }
+
+  let payload
+  try {
+    payload = buildDraftAnalyzePayload(sourceInput.value)
+  } catch (error) {
+    sourceError.value = messageOf(error)
+    return
+  }
+
+  resetCurrentDraft()
+  stage.value = 'analysis'
+  isAnalyzing.value = true
+  try {
+    eventResult.value = await analyzeDraftEvent(payload)
+    await loadEvents()
+  } catch (error) {
+    analysisError.value = messageOf(error)
+  } finally {
+    isAnalyzing.value = false
+  }
 }
 
-function formatTime(value) {
-  if (!value) return ''
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+async function createOutline() {
+  pageError.value = ''
+  if (!currentEventId.value) {
+    pageError.value = '请先完成事件分析'
+    return
+  }
+  isGeneratingOutline.value = true
+  try {
+    const created = await generateDraftOutline({
+      eventId: currentEventId.value,
+      outlinePreference: '',
+    })
+    selectedOutline.value = created
+    syncOutlineDraft(created.outline)
+    stage.value = 'outline'
+  } catch (error) {
+    pageError.value = messageOf(error)
+  } finally {
+    isGeneratingOutline.value = false
+  }
 }
 
-function formatClock(value) {
-  if (!value) return ''
-  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+async function flushBeforeLeaving() {
+  try {
+    await autosave.flush()
+    return saveStatus.value !== 'error'
+  } catch (error) {
+    pageError.value = `当前提纲保存失败：${messageOf(error)}`
+    return false
+  }
 }
 
-function shortId(value) {
-  const text = String(value || '')
-  return text.length > 12 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text
+async function reviseOutline() {
+  pageError.value = ''
+  if (!revisionFeedback.value.trim() || !selectedOutline.value?.outlineId) return
+  if (!(await flushBeforeLeaving())) return
+  isRevising.value = true
+  try {
+    const revised = await refineDraftOutline({
+      outlineId: selectedOutline.value.outlineId,
+      userFeedback: revisionFeedback.value.trim(),
+    })
+    selectedOutline.value = revised
+    syncOutlineDraft(revised.outline)
+    revisionFeedback.value = ''
+  } catch (error) {
+    pageError.value = messageOf(error)
+  } finally {
+    isRevising.value = false
+  }
+}
+
+async function retrySave() {
+  pageError.value = ''
+  try {
+    await autosave.retry()
+  } catch (error) {
+    pageError.value = `当前提纲保存失败：${messageOf(error)}`
+  }
+}
+
+async function showConfirmation() {
+  pageError.value = ''
+  if (!(await flushBeforeLeaving())) return
+  stage.value = 'confirm'
+}
+
+async function returnToAnalysis() {
+  pageError.value = ''
+  if (!(await flushBeforeLeaving())) return
+  stage.value = 'analysis'
+}
+
+function buildDraftReportPayload(imported, reportTitle) {
+  const knownContext = {
+    kind: 'draft_assistant_import',
+    topic: reportTitle,
+    reportType: 'K报',
+    draftAssistantMode: true,
+    eventId: imported.eventId,
+    outlineId: imported.outlineId,
+    planId: imported.planId,
+    databaseSourceOptions: {
+      enabled: true,
+      lookbackDays: 30,
+      maxMetadataRows: 50,
+      maxContentRows: 8,
+    },
+    draftAssistantInstructions: [
+      '严格依据用户已确认的拟稿提纲生成深度编报。',
+      '不得脱离确认提纲自由发挥。',
+      '缺少来源的信息必须标注待核实。',
+    ],
+  }
+  return {
+    skill: 'write-hb',
+    payload: {
+      title: reportTitle,
+      topic: reportTitle,
+      report_type: 'K报',
+      eventId: imported.eventId,
+      outlineId: imported.outlineId,
+      planId: imported.planId,
+      draftAssistantMode: true,
+      deepReportEnabled: true,
+      known_context: JSON.stringify(knownContext, null, 2),
+      focus_areas: ['主要内容', '各方态度', '涉我风险', '趋势研判'],
+      language: 'zh-CN',
+    },
+  }
+}
+
+async function importToDeepReport() {
+  pageError.value = ''
+  if (!selectedOutline.value?.outlineId) return
+  if (!(await flushBeforeLeaving())) return
+  stage.value = 'importing'
+  importState.status = 'creating'
+  importState.error = ''
+  try {
+    const imported = await importDraftOutline({ outlineId: selectedOutline.value.outlineId })
+    const reportTitle = imported.plan?.reportTitle || outlineDraft.value.reportTitle || '未命名编报'
+    const created = await createReportJob(buildDraftReportPayload(imported, reportTitle))
+    const job = { ...created, payload: { topic: reportTitle, report_type: 'K报' } }
+    importState.status = 'completed'
+    importState.job = job
+    stage.value = 'completed'
+    emit('report-job-created', job)
+  } catch (error) {
+    importState.status = 'error'
+    importState.error = messageOf(error)
+  }
+}
+
+function sourceFromEvent(result) {
+  const raw = result?.event?.rawInput || {}
+  if (String(raw.materials || '').trim()) return String(raw.materials).trim()
+  return [result?.event?.title, result?.event?.summary].filter(Boolean).join('\n\n')
+}
+
+async function openEvent(eventId) {
+  if (!eventId || stage.value === 'importing') return
+  pageError.value = ''
+  if (!(await flushBeforeLeaving())) return
+  try {
+    const result = await getDraftEvent(eventId)
+    eventResult.value = result
+    sourceInput.value = sourceFromEvent(result)
+    selectedOutline.value = result.latestOutline || null
+    revisionFeedback.value = ''
+    analysisError.value = ''
+    resetImportState()
+    if (selectedOutline.value?.outline) syncOutlineDraft(selectedOutline.value.outline)
+    else {
+      syncingOutline = true
+      outlineDraft.value = emptyOutline()
+      queueMicrotask(() => { syncingOutline = false })
+      saveStatus.value = 'idle'
+    }
+    stage.value = restoredDraftStage(result)
+    historyOpen.value = false
+  } catch (error) {
+    pageError.value = messageOf(error)
+  }
+}
+
+async function startNewEvent() {
+  if (!(await flushBeforeLeaving())) return
+  sourceInput.value = ''
+  sourceError.value = ''
+  resetCurrentDraft()
+  stage.value = 'input'
+  historyOpen.value = false
+}
+
+async function handleBack() {
+  if (!(await flushBeforeLeaving())) return
+  emit('back')
+}
+
+function handleBeforeUnload(event) {
+  if (!['dirty', 'saving'].includes(saveStatus.value)) return
+  event.preventDefault()
+  event.returnValue = ''
 }
 
 onMounted(async () => {
@@ -907,2125 +443,159 @@ onMounted(async () => {
   if (props.initialEventId) await openEvent(props.initialEventId)
 })
 
-onBeforeUnmount(() => window.removeEventListener('beforeunload', handleBeforeUnload))
-
 watch(() => props.initialEventId, (eventId) => {
   if (eventId && eventId !== currentEventId.value) void openEvent(eventId)
 })
 
+watch(() => props.currentUser, (user) => {
+  if (user && !eventList.value.length) void loadEvents()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  void autosave.flush().catch(() => undefined).finally(() => autosave.dispose())
+})
 </script>
 
 <template>
   <main class="draft-assistant-main">
     <div v-if="!currentUser" class="draft-login-gate">
-      <div>
-        <h2>请先登录</h2>
-        <p>拟稿助手会保存事件、信源和提纲版本，需要账号归属。</p>
-      </div>
-      <button class="sci-btn sci-btn-primary" type="button" @click="emit('request-login')">登录</button>
+      <h1>请先登录</h1>
+      <p>登录后可使用拟稿助手并保存当前进度。</p>
+      <button type="button" @click="emit('request-login')">登录</button>
     </div>
 
     <template v-else>
-      <DraftStepNavigation :steps="draftStepStates" />
-
-      <div v-if="errorMessage" class="draft-error">{{ errorMessage }}</div>
-      <div v-if="notice" class="draft-notice">{{ notice }}</div>
-
-      <section
-        class="draft-workspace-grid"
-        :class="{
-          'editor-active': historyNavigationMode,
-          'history-collapsed': historyNavigationMode && historySidebarCollapsed,
-        }"
-      >
-        <button v-if="leftPanelOpen || rightPanelOpen" class="draft-panel-backdrop" type="button" aria-label="关闭侧栏" @click="closeResponsivePanels"></button>
-        <DraftHistorySidebar
-          v-if="historyNavigationMode"
-          ref="historySidebarComponent"
-          :class="{ open: leftPanelOpen }"
-          :collapsed="historySidebarCollapsed"
-          :preference="historySidebarPreference"
-          :current-event-id="currentEventId"
-          :events="eventList"
-          @toggle="toggleHistorySidebar"
-          @select-event="selectHistoryEvent"
-          @create-event="startNewEvent"
-          @search-focus-change="historySearchFocused = $event"
-          @use-auto="useAutomaticHistoryPreference"
-        />
+      <header class="draft-assistant-bar">
+        <button type="button" aria-label="返回工作台" title="返回工作台" @click="handleBack">
+          <ArrowLeft :size="19" aria-hidden="true" />
+        </button>
+        <strong>拟稿助手</strong>
         <button
-          v-if="historyNavigationMode && !historySidebarCollapsed && !leftPanelOpen"
-          class="draft-mobile-history-trigger"
+          v-if="canShowHistory"
           type="button"
-          aria-label="打开历史事件"
-          title="打开历史事件"
-          @click="leftPanelOpen = true"
-        >历</button>
-        <EventSourcePanel
-          v-if="!historyNavigationMode"
-          class="draft-left"
-          :class="{ open: leftPanelOpen }"
-          :model-value="form"
-          :summary="eventInput"
-          :events="eventList"
-          :current-event-id="currentEventId"
-          :loading="isLoadingEvents"
-          @update:model-value="Object.assign(form, $event)"
-          @refresh="loadEvents"
-          @select-event="openEvent"
-          @create-event="startNewEvent"
+          aria-label="查看历史编报"
+          title="历史编报"
+          :disabled="stage === 'importing'"
+          @click="historyOpen = true"
+        >
+          <History :size="19" aria-hidden="true" />
+        </button>
+        <span v-else class="draft-bar-spacer" aria-hidden="true"></span>
+      </header>
+
+      <div class="draft-assistant-content" :class="`stage-${stage}`">
+        <div v-if="pageError" class="draft-page-error" role="alert">{{ pageError }}</div>
+
+        <DraftSourceComposer
+          v-if="stage === 'input'"
+          v-model="sourceInput"
+          :loading="isAnalyzing"
+          :error="sourceError"
+          @submit="startDraft"
         />
 
-        <div v-if="autoCollapseNoticeVisible" class="draft-history-auto-notice" role="status">
-          <span>提纲已生成，历史事件已收起，以扩大编辑区域。</span>
-          <button type="button" @click="toggleHistorySidebar">展开历史记录</button>
-        </div>
+        <DraftAnalysisView
+          v-else-if="stage === 'analysis'"
+          :source-input="sourceInput"
+          :sections="analysisSections"
+          :loading="isAnalyzing"
+          :error="analysisError"
+          :generating="isGeneratingOutline"
+          @back="stage = 'input'"
+          @retry="startDraft"
+          @generate="createOutline"
+        />
 
-        <section class="draft-main-workarea">
-          <EventPreviewPanel
-            v-if="currentStepKey === 'input'"
-            :form="form"
-            :summary="eventInput"
-            :analyzing="isAnalyzing"
-            @analyze="runAnalyze"
-          />
+        <DraftOutlineEditor
+          v-else-if="stage === 'outline'"
+          v-model="outlineDraft"
+          v-model:feedback="revisionFeedback"
+          :save-status="saveStatus"
+          :save-error="saveError"
+          :revising="isRevising"
+          @revise="reviseOutline"
+          @retry-save="retrySave"
+          @confirm="showConfirmation"
+          @back="returnToAnalysis"
+        />
 
-          <div v-else-if="currentStepKey === 'analysis'" class="draft-state-card">
-            <div class="draft-main-head">
-              <div>
-                <span class="draft-state-kicker">Step 2</span>
-                <h2>事件分析</h2>
-                <p>分析结果已压缩为提纲生成前需要确认的关键摘要。</p>
-              </div>
-              <button class="sci-btn sci-btn-primary" type="button" :disabled="isGeneratingOutline" @click="createOutline">
-                {{ isGeneratingOutline ? '生成中...' : '生成拟稿提纲' }}
-              </button>
-            </div>
-            <div class="draft-analysis-summary">
-              <article v-for="item in analysisCards" :key="item.label" class="draft-analysis-row">
-                <span>{{ item.label }}</span>
-                <p>{{ item.value }}</p>
-              </article>
-            </div>
-
-            <section class="draft-risk-section" aria-label="风险研判">
-              <div class="draft-risk-head">
-                <h3>{{ riskTitle }}</h3>
-                <span>AI 初步研判</span>
-              </div>
-
-              <div v-if="riskSummary.note === 'parse_failed'" class="draft-risk-state">
-                <strong>风险信息暂时无法结构化展示</strong>
-                <p>系统已保留原始分析结果，可重新运行分析或检查模型输出格式。</p>
-              </div>
-
-              <template v-else-if="riskSummary.items.length">
-                <div class="draft-risk-overview">
-                  <span>综合风险：{{ riskSummary.overallLevelLabel }}</span>
-                  <p>
-                    当前识别出 {{ riskSummary.items.length }} 项潜在风险，{{ riskSummary.pendingVerifications.length }} 项关键信息仍待核验。
-                  </p>
-                  <small>以下内容基于当前资料自动分析，不代表相关事实已经得到确认。</small>
-                </div>
-
-                <div class="draft-risk-list">
-                  <article v-for="item in riskSummary.items" :key="item.id" class="draft-risk-card">
-                    <div class="draft-risk-card-head">
-                      <span class="draft-risk-badge" :class="item.riskLevel">{{ item.riskLevelLabel }}</span>
-                      <div>
-                        <h4>{{ item.title || item.riskType }}</h4>
-                        <small v-if="item.title && item.riskType">{{ item.riskType }}</small>
-                      </div>
-                    </div>
-                    <div v-if="item.description" class="draft-risk-block">
-                      <strong>风险说明</strong>
-                      <p>{{ item.description }}</p>
-                    </div>
-                    <div v-if="item.basis" class="draft-risk-block muted">
-                      <strong>判断依据</strong>
-                      <p>{{ item.basis }}</p>
-                    </div>
-                    <div v-if="item.uncertainty" class="draft-risk-block muted">
-                      <strong>不确定性</strong>
-                      <p>{{ item.uncertainty }}</p>
-                    </div>
-                  </article>
-                </div>
-
-                <div v-if="riskSummary.pendingVerifications.length" class="draft-risk-verifications">
-                  <div class="draft-risk-subhead">
-                    <h4>待核验事项</h4>
-                    <button
-                      v-if="riskVerificationHasMore"
-                      class="draft-risk-more"
-                      type="button"
-                      @click="showAllRiskVerifications = !showAllRiskVerifications"
-                    >
-                      {{ showAllRiskVerifications ? '收起' : '查看全部' }}
-                    </button>
-                  </div>
-                  <ol>
-                    <li v-for="(item, index) in visibleRiskVerifications" :key="`${index}-${item}`">
-                      <span>{{ index + 1 }}</span>
-                      <b>{{ item }}</b>
-                    </li>
-                  </ol>
-                </div>
-              </template>
-
-              <div v-else class="draft-risk-state">
-                <strong>暂未识别到明确风险</strong>
-                <p v-if="riskSummary.pendingVerifications.length">暂未发现明确风险，但仍有若干事实需要进一步核实。</p>
-                <p v-else>当前资料不足以形成可靠的风险判断。建议补充官方公告、企业新闻、行业资料或相关链接后重新分析。</p>
-              </div>
-            </section>
-          </div>
-
-          <div v-else-if="editMode && selectedOutline" class="draft-state-card draft-editor-card">
-            <DraftEditorToolbar
-              :version-label="editingVersionLabel"
-              :save-state="editorSaveState"
-              :save-state-label="editorSaveStateLabel"
-              :is-saving="isSavingManual"
-              :can-confirm="!hasEditChanges && !previewMode"
-              :preview-mode="previewMode"
-              @cancel="cancelEditMode"
-              @preview="previewMode ? continueEditing() : previewEditedOutline()"
-              @save="saveManualOutline"
-              @confirm="confirmCurrentVersion"
-              @open-left="leftPanelOpen = true"
-              @open-right="rightPanelOpen = true"
-            />
-
-            <section class="draft-event-basic-info">
-              <div class="draft-event-basic-head">
-                <div>
-                  <span>当前编辑对象</span>
-                  <h2 ref="draftPrimaryHeading" tabindex="-1">{{ currentEventTitle }}</h2>
-                </div>
-                <span class="draft-event-version">{{ editingVersionLabel }}</span>
-              </div>
-              <div class="draft-event-description">
-                <strong>事件说明</strong>
-                <p>{{ eventDescription }}</p>
-              </div>
-            </section>
-
-            <template v-if="previewMode">
-              <div class="draft-preview-banner">
-                <strong>临时预览</strong>
-                <span>当前内容尚未保存。确认无误后点击“保存为新版本”，或继续编辑。</span>
-              </div>
-
-              <div class="draft-outline-meta">
-                <div class="draft-meta-row">
-                  <span>建议标题</span>
-                  <strong>{{ previewDisplayOutline.reportTitle || '暂无' }}</strong>
-                </div>
-                <div class="draft-meta-row">
-                  <span>主题立意</span>
-                  <strong>{{ previewDisplayOutline.reportTheme || '暂无' }}</strong>
-                </div>
-                <div class="draft-meta-row">
-                  <span>核心判断</span>
-                  <p>{{ previewDisplayOutline.coreArgument || '暂无' }}</p>
-                </div>
-              </div>
-
-              <div class="draft-directory">
-                <article v-for="(item, index) in previewDisplayOutline.outlineItems" :key="`preview-${index}-${item.title}`" class="draft-directory-item">
-                  <h3>{{ outlineNumber(index) }}、{{ item.title }}</h3>
-                  <p>{{ item.summary }}</p>
-                  <div v-if="item.children?.length" class="draft-directory-children">
-                    <section v-for="(child, childIndex) in item.children" :key="`preview-child-${childIndex}-${child.title}`" class="draft-directory-child">
-                      <h4>（{{ outlineNumber(childIndex) }}）{{ child.title }}</h4>
-                      <p>{{ child.summary }}</p>
-                    </section>
-                  </div>
-                </article>
-              </div>
-            </template>
-
-            <template v-else>
-              <div class="draft-edit-fields">
-                <section class="draft-edit-info-card title">
-                  <div class="draft-edit-info-head">
-                    <div class="draft-edit-info-label">
-                      <span class="draft-edit-info-icon">T</span>
-                      <h3>建议标题 <b>*</b></h3>
-                    </div>
-                    <small>{{ outlineEdit.reportTitle.length }}/80</small>
-                  </div>
-                  <AutoResizeTextarea
-                    v-model="outlineEdit.reportTitle"
-                    class="sci-input draft-autogrow-textarea"
-                    :min-height="80"
-                    :maxlength="80"
-                    placeholder="报告建议标题"
-                    aria-label="建议标题"
-                  />
-                </section>
-                <section class="draft-edit-info-card theme">
-                  <div class="draft-edit-info-head">
-                    <div class="draft-edit-info-label">
-                      <span class="draft-edit-info-icon">A</span>
-                      <h3>主题立意 <b>*</b></h3>
-                    </div>
-                    <small>{{ outlineEdit.reportTheme.length }}/120</small>
-                  </div>
-                  <AutoResizeTextarea
-                    v-model="outlineEdit.reportTheme"
-                    class="sci-input draft-autogrow-textarea"
-                    :min-height="112"
-                    :maxlength="120"
-                    placeholder="报告主题立意"
-                    aria-label="主题立意"
-                  />
-                </section>
-                <section class="draft-edit-info-card argument">
-                  <div class="draft-edit-info-head">
-                    <div class="draft-edit-info-label">
-                      <span class="draft-edit-info-icon">J</span>
-                      <h3>核心判断 <b>*</b></h3>
-                    </div>
-                    <small>{{ outlineEdit.coreArgument.length }}/180</small>
-                  </div>
-                  <AutoResizeTextarea
-                    v-model="outlineEdit.coreArgument"
-                    class="sci-input draft-autogrow-textarea"
-                    :min-height="148"
-                    :maxlength="180"
-                    placeholder="一句话说明核心判断"
-                    aria-label="核心判断"
-                  />
-                </section>
-              </div>
-
-              <div class="draft-edit-outline">
-                <div class="draft-section-head draft-edit-section-head">
-                  <div>
-                    <h3>目录结构编辑</h3>
-                    <p>拖拽把手为排序提示，可用上移 / 下移调整顺序。</p>
-                  </div>
-                  <div class="draft-section-actions">
-                    <button class="sci-btn draft-small-btn" type="button" @click="addOutlineItem">添加一级标题</button>
-                    <button class="sci-btn draft-small-btn" type="button" @click="setAllOutlineItemsExpanded(true)">全部展开</button>
-                    <button class="sci-btn draft-small-btn" type="button" @click="setAllOutlineItemsExpanded(false)">全部收起</button>
-                  </div>
-                </div>
-                <article v-for="(item, index) in outlineEdit.outlineItems" :key="index" class="draft-outline-edit-card">
-                  <div class="draft-outline-edit-head">
-                    <button class="draft-outline-handle" type="button" title="排序把手">::</button>
-                    <strong>{{ outlineNumber(index) }}、一级目录</strong>
-                    <button class="draft-collapse-btn" type="button" @click="toggleOutlineItem(item)">
-                      {{ item.expanded === false ? '展开' : '收起' }}
-                    </button>
-                    <div class="draft-outline-actions-menu">
-                      <button
-                        type="button"
-                        aria-label="更多目录操作"
-                        :aria-expanded="openOutlineMenu === index"
-                        @click.stop="openOutlineMenu = openOutlineMenu === index ? -1 : index"
-                      >•••</button>
-                      <div v-if="openOutlineMenu === index" class="draft-outline-actions-popover">
-                        <button type="button" @click="addChildItem(item); openOutlineMenu = -1">添加二级标题</button>
-                        <button type="button" :disabled="index === 0" @click="moveOutlineItem(index, -1); openOutlineMenu = -1">上移</button>
-                        <button type="button" :disabled="index === outlineEdit.outlineItems.length - 1" @click="moveOutlineItem(index, 1); openOutlineMenu = -1">下移</button>
-                        <button type="button" @click="duplicateOutlineItem(index)">复制</button>
-                        <button class="danger" type="button" @click="removeOutlineItem(index); openOutlineMenu = -1">删除</button>
-                      </div>
-                    </div>
-                  </div>
-                  <div v-if="item.expanded !== false" class="draft-outline-edit-body">
-                    <label class="draft-field">
-                      <span>一级标题 <b>*</b></span>
-                      <input v-model="item.title" class="sci-input" placeholder="一级标题" />
-                    </label>
-                    <label class="draft-field">
-                      <span>这一部分写什么 <b>*</b></span>
-                      <textarea v-model="item.summary" class="sci-input draft-compact-textarea" placeholder="简短说明这一部分的写作内容，不写正文"></textarea>
-                    </label>
-                    <div class="draft-edit-children">
-                      <div class="draft-edit-child-head">
-                        <span>二级目录</span>
-                        <small>{{ item.children.length }} 项</small>
-                      </div>
-                      <div v-for="(child, childIndex) in item.children" :key="childIndex" class="draft-edit-child">
-                        <div class="draft-edit-child-title">
-                          <b>（{{ outlineNumber(childIndex) }}）</b>
-                          <div class="draft-child-actions">
-                            <button class="sci-btn draft-small-btn" type="button" :disabled="childIndex === 0" @click="moveChildItem(item, childIndex, -1)">上移</button>
-                            <button class="sci-btn draft-small-btn" type="button" :disabled="childIndex === item.children.length - 1" @click="moveChildItem(item, childIndex, 1)">下移</button>
-                            <button class="sci-btn draft-small-btn draft-danger-btn" type="button" @click="removeChildItem(item, childIndex)">删除</button>
-                          </div>
-                        </div>
-                        <input v-model="child.title" class="sci-input" placeholder="二级标题" />
-                        <textarea v-model="child.summary" class="sci-input draft-compact-textarea" placeholder="简短说明这一部分写什么"></textarea>
-                      </div>
-                    </div>
-                  </div>
-                </article>
-                <div v-if="!outlineEdit.outlineItems.length" class="draft-empty">暂无目录，请新增一级目录。</div>
-              </div>
-
-              <StrategyTabs
-                :writing-focus="outlineEdit.writingFocus"
-                :source-requirements="outlineEdit.sourceRequirements"
-                :uncertainties-to-verify="outlineEdit.uncertaintiesToVerify"
-                @add="addStrategyItem"
-                @move="moveStrategyItem"
-                @remove="removeStrategyItem"
-                @duplicate="duplicateStrategyItem"
-                @update="updateStrategyItem"
-                @restore="restoreStrategyItem"
-              />
-
-              <section class="draft-edit-note-card">
-                <label class="draft-field">
-                  <span>修改说明</span>
-                  <textarea
-                    v-model="editNote"
-                    class="sci-input draft-compact-textarea"
-                    maxlength="200"
-                    placeholder="说明本次手动调整原因，例如：优化目录结构，补充涉我风险方向，调整来源要求。"
-                  ></textarea>
-                </label>
-                <small>{{ editNote.length }}/200</small>
-              </section>
-            </template>
-          </div>
-
-          <div v-else-if="hasOutline" class="draft-state-card draft-outline-card">
-            <div class="draft-main-head">
-              <div>
-                <span class="draft-state-kicker">{{ currentStepKey === 'confirm' ? 'Step 4' : 'Step 3' }}</span>
-                <h2 ref="draftPrimaryHeading" tabindex="-1">{{ currentStepKey === 'confirm' ? '确认提纲版本' : '拟稿提纲' }}</h2>
-                <p>{{ currentStepKey === 'confirm' ? '请确认当前版本后再导入深度编报。' : '当前版本以论文目录式结构展示。' }}</p>
-              </div>
-              <div class="draft-outline-version-chip">
-                <strong>{{ selectedVersionLabel }}</strong>
-                <span>{{ currentVersionTime || '暂无时间' }}</span>
-              </div>
-            </div>
-
-            <div class="draft-outline-meta">
-              <div class="draft-meta-row">
-                <span>建议标题</span>
-                <strong>{{ displayOutline.reportTitle || '暂无' }}</strong>
-              </div>
-              <div class="draft-meta-row">
-                <span>主题立意</span>
-                <strong>{{ displayOutline.reportTheme || '暂无' }}</strong>
-              </div>
-              <div class="draft-meta-row">
-                <span>核心判断</span>
-                <p>{{ displayOutline.coreArgument || '暂无' }}</p>
-              </div>
-            </div>
-
-            <DraftOutlineView :outline="displayOutline" @edit="enterEditMode" />
-
-            <StrategyTabs
-              :writing-focus="displayOutline.writingFocus"
-              :source-requirements="displayOutline.sourceRequirements"
-              :uncertainties-to-verify="displayOutline.uncertaintiesToVerify"
-              :editable="false"
-            />
-          </div>
-
-          <div v-else class="draft-state-card draft-empty-state">
-            <span class="draft-state-kicker">Step 2</span>
-            <h2>分析完成后生成提纲</h2>
-            <p>当前事件还没有可展示的拟稿提纲。请先完成事件分析，再生成目录式提纲。</p>
-          </div>
+        <section v-else-if="stage === 'confirm'" class="draft-confirmation" aria-labelledby="draft-confirm-title">
+          <header>
+            <p>拟稿提纲</p>
+            <h1 id="draft-confirm-title">确认提纲</h1>
+            <span>请核对以下内容。确认后将自动创建深度编报任务。</span>
+          </header>
+          <DraftOutlineView :outline="outlineDraft" />
+          <footer>
+            <button class="secondary" type="button" @click="stage = 'outline'">
+              <Pencil :size="17" aria-hidden="true" />返回修改
+            </button>
+            <button class="primary" type="button" @click="importToDeepReport">
+              <Check :size="17" aria-hidden="true" />确认并创建深度编报
+            </button>
+          </footer>
         </section>
 
-        <DraftContextPanel
-          :class="{ open: rightPanelOpen }"
-          :current-step="currentStepKey"
-          :input-summary="eventInput"
-          :coverage="materialCoverage"
-          :events="eventList"
-          :versions="outlineVersions"
-          :current-outline-id="currentOutlineId"
-          :selected-version-label="selectedVersionLabel"
-          :imported-version-label="importedVersionLabel"
-          :imported-plan-id-short="importedPlanIdShort"
-          :import-status="importStatus"
-          :display-outline="displayOutline"
-          :imported-plan="importedPlan"
-          :can-import="canImportDraftOutline"
-          :is-version-confirmed="isVersionConfirmed"
-          :is-import-ready="isImportReady"
-          :is-report-job-ready="isReportJobReady"
-          :editing="editMode"
-          :has-edit-changes="hasEditChanges"
-          :is-generating-outline="isGeneratingOutline"
-          :is-refining="isRefining"
-          :is-saving="isSavingManual"
-          :is-importing-outline="isImportingOutline"
-          :is-creating-report-job="isCreatingReportJob"
-          :outline-preference="outlinePreference"
-          :refine-feedback="refineFeedback"
-          @close="rightPanelOpen = false"
-          @open-left="leftPanelOpen = true"
-          @reanalyze="runAnalyze"
-          @generate-outline="createOutline"
-          @refine="refineOutline"
-          @edit="enterEditMode"
-          @confirm="confirmCurrentVersion"
-          @select-version="loadOutline"
-          @import-outline="importCurrentOutline"
-          @create-report="createDeepReportJob"
-          @update:outline-preference="outlinePreference = $event"
-          @update:refine-feedback="refineFeedback = $event"
+        <DraftImportState
+          v-else-if="isImporting"
+          :status="importState.status"
+          :error="importState.error"
+          @retry="importToDeepReport"
+          @back="stage = 'confirm'"
         />
-      </section>
+
+        <div v-else class="draft-route-loading" aria-live="polite">
+          <LoaderCircle :size="22" class="draft-spin" aria-hidden="true" />正在加载...
+        </div>
+      </div>
+
+      <DraftHistorySidebar
+        :open="historyOpen"
+        :current-event-id="currentEventId"
+        :events="eventList"
+        :loading="isLoadingEvents"
+        @close="historyOpen = false"
+        @select-event="openEvent"
+        @create-event="startNewEvent"
+      />
     </template>
   </main>
 </template>
 
 <style scoped>
-.draft-assistant-main {
-  flex: 1;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 22px;
-  background: #f1f5f9;
-  color: #0f172a;
-}
-
-.draft-login-gate,
-.draft-panel,
-.draft-state-card,
-.draft-stepper {
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.08);
-}
-
-.draft-state-card h2,
-.draft-panel h2,
-.draft-side-section h2 {
-  margin: 0;
-  color: #0f172a;
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-.draft-state-card > p,
-.draft-main-head p,
-.draft-import-box p {
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.draft-main-head,
-.draft-panel-head,
-.draft-side-head,
-.draft-head-actions,
-.draft-section-head,
-.draft-edit-item-head,
-.draft-edit-child-head,
-.draft-edit-child-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.draft-login-gate {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 24px;
-  border-radius: 8px;
-}
-
-.draft-login-gate h2 {
-  margin: 0 0 6px;
-  color: #0f172a;
-}
-
-.draft-login-gate p {
-  margin: 0;
-  color: #64748b;
-}
-
-.draft-stepper {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0;
-  margin-bottom: 14px;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.draft-step {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 14px 16px;
-  border-right: 1px solid rgba(148, 163, 184, 0.22);
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.draft-step:last-child {
-  border-right: 0;
-}
-
-.draft-step-index {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 26px;
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  background: #e2e8f0;
-  color: #475569;
-  font-size: 12px;
-}
-
-.draft-step.done {
-  background: #f8fafc;
-  color: #2563eb;
-}
-
-.draft-step.done .draft-step-index {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.draft-step.active {
-  background: linear-gradient(135deg, #eff6ff, #ecfeff);
-  color: #0f172a;
-}
-
-.draft-step.active .draft-step-index {
-  background: #2563eb;
-  color: #fff;
-}
-
-.draft-step.disabled {
-  color: #94a3b8;
-}
-
-.draft-workspace-grid {
-  display: grid;
-  grid-template-columns: 280px minmax(640px, 1fr) 300px;
-  gap: 16px;
-  align-items: start;
-}
-
-.draft-workspace-grid.editor-active {
-  grid-template-columns: 250px minmax(720px, 1fr) 270px;
-  align-items: stretch;
-  min-height: 0;
-  transition: grid-template-columns 210ms ease;
-}
-
-.draft-workspace-grid.editor-active.history-collapsed {
-  grid-template-columns: 64px minmax(720px, 1fr) 270px;
-}
-
-.draft-panel,
-.draft-state-card {
-  border-radius: 8px;
-}
-
-.draft-panel {
-  padding: 16px;
-}
-
-.draft-left,
-.draft-right {
-  position: sticky;
-  top: 16px;
-  max-height: calc(100vh - 150px);
-  overflow: auto;
-}
-
-.draft-panel-close,
-.draft-panel-backdrop {
-  display: none;
-}
-
-.draft-mobile-history-trigger {
-  display: none;
-}
-
-.draft-workspace-grid > .draft-history-sidebar {
-  position: sticky;
-  top: 0;
-  max-height: calc(100vh - 220px);
-  min-height: 480px;
-}
-
-.draft-history-auto-notice {
-  position: fixed;
-  left: 50%;
-  bottom: 24px;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  max-width: calc(100vw - 32px);
-  border: 1px solid #bfdbfe;
-  background: #fff;
-  color: #334155;
-  border-radius: 8px;
-  padding: 10px 12px;
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.16);
-  transform: translateX(-50%);
-  font-size: 12px;
-}
-.draft-history-auto-notice button { border: 0; background: transparent; color: #1d4ed8; cursor: pointer; font-weight: 900; white-space: nowrap; }
-.draft-history-auto-notice button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.22); outline-offset: 2px; }
-
-.draft-right {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
-}
-
-.draft-panel-head {
-  margin-bottom: 14px;
-}
-
-.draft-panel h2,
-.draft-side-section h2 {
-  font-size: 15px;
-}
-
-.draft-field {
-  display: block;
-  margin-bottom: 12px;
-}
-
-.draft-field span {
-  display: block;
-  margin-bottom: 6px;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.draft-assistant-main .sci-input {
-  border-color: rgba(148, 163, 184, 0.28);
-  background: #fff;
-  color: #0f172a;
-  border-radius: 8px;
-  font-family: 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
-  letter-spacing: 0;
-}
-
-.draft-assistant-main .sci-input::placeholder {
-  color: #94a3b8;
-}
-
-.draft-assistant-main .sci-btn {
-  border-color: rgba(37, 99, 235, 0.22);
-  background: #fff;
-  color: #1e3a8a;
-  border-radius: 8px;
-  font-family: 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
-  letter-spacing: 0;
-}
-
-.draft-assistant-main .sci-btn:hover:not(:disabled) {
-  background: #eff6ff;
-  border-color: rgba(37, 99, 235, 0.5);
-  color: #1d4ed8;
-  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.1);
-}
-
-.draft-assistant-main .sci-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.draft-assistant-main .sci-btn-primary {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #fff;
-}
-
-.draft-assistant-main .sci-btn-primary:hover:not(:disabled) {
-  background: #1d4ed8;
-  color: #fff;
-}
-
-.draft-small-btn {
-  padding: 7px 10px;
-  font-size: 11px;
-}
-
-.draft-textarea {
-  min-height: 132px;
-  resize: vertical;
-}
-
-.draft-links {
-  min-height: 82px;
-  resize: vertical;
-}
-
-.draft-compact-textarea {
-  min-height: 70px;
-  resize: vertical;
-}
-
-.draft-two,
-.draft-edit-tail {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.draft-primary {
-  width: 100%;
-  justify-content: center;
-  margin-top: 8px;
-}
-
-.draft-history {
-  margin-top: 18px;
-  border-top: 1px solid rgba(148, 163, 184, 0.25);
-  padding-top: 14px;
-}
-
-.draft-history h3,
-.draft-section-head h3 {
-  margin: 0;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.draft-history-item,
-.draft-version {
-  width: 100%;
-  display: block;
-  text-align: left;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: #f8fafc;
-  color: #0f172a;
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 8px;
-  cursor: pointer;
-}
-
-.draft-history-item:hover,
-.draft-version:hover,
-.draft-version.active {
-  border-color: rgba(37, 99, 235, 0.5);
-  background: #eff6ff;
-}
-
-.draft-history-item.selected {
-  border-color: #93c5fd;
-  border-left: 4px solid #2563eb;
-  background: #eff6ff;
-  padding-left: 8px;
-}
-
-.draft-history-item strong,
-.draft-version strong {
-  display: block;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.draft-history-item span,
-.draft-history-item small,
-.draft-version span,
-.draft-version small {
-  display: block;
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.draft-version.active {
-  border-color: rgba(37, 99, 235, 0.72);
-  background: linear-gradient(135deg, #eff6ff, #fff);
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.12);
-}
-
-.draft-version.refine strong {
-  color: #2563eb;
-}
-
-.draft-version.manual strong {
-  color: #047857;
-}
-
-.draft-main-workarea {
-  min-width: 0;
-}
-
-.editor-active .draft-main-workarea {
-  max-height: calc(100vh - 220px);
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-
-.editor-active .draft-left,
-.editor-active .draft-right {
-  top: 0;
-  max-height: calc(100vh - 220px);
-}
-
-.draft-state-card {
-  min-height: calc(100vh - 190px);
-  padding: 28px;
-}
-
-.draft-editor-card {
-  min-height: 100%;
-  border-color: #dbe3ef;
-  background: #f5f7fb;
-  padding: 18px;
-  box-shadow: none;
-}
-
-.draft-event-basic-info {
-  border: 1px solid #dbe3ef;
-  background: #fff;
-  border-radius: 14px;
-  padding: 22px 24px;
-}
-
-.draft-event-basic-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.draft-event-basic-head > div { min-width: 0; }
-.draft-event-basic-head span:first-child {
-  display: block;
-  margin-bottom: 6px;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 800;
-}
-.draft-event-basic-head h2 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 24px;
-  font-weight: 900;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-.draft-event-version {
-  flex: 0 0 auto;
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8 !important;
-  border-radius: 8px;
-  padding: 7px 10px;
-  font-size: 12px !important;
-}
-.draft-event-description {
-  margin-top: 18px;
-  border-top: 1px solid #e2e8f0;
-  padding-top: 16px;
-}
-.draft-event-description strong { display: block; margin-bottom: 6px; color: #475569; font-size: 13px; }
-.draft-event-description p { margin: 0; color: #334155; font-size: 14px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-.draft-event-nav-head { align-items: flex-start; }
-.draft-event-nav-head span { display: block; margin-top: 4px; color: #94a3b8; font-size: 11px; }
-.draft-event-search { display: block; margin-bottom: 10px; }
-.draft-event-search > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
-.draft-event-filter-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border-bottom: 1px solid #e2e8f0; }
-.draft-event-filter-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: #64748b; padding: 9px 4px; cursor: pointer; font-size: 12px; font-weight: 800; }
-.draft-event-filter-tabs button.active { border-bottom-color: #2563eb; color: #1d4ed8; }
-.draft-editor-event-list { margin-top: 10px; border-top: 0; padding-top: 0; }
-.draft-editor-event-list .draft-history-item strong { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-
-.draft-empty-state {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-}
-
-.draft-state-kicker {
-  display: inline-flex;
-  align-items: center;
-  width: fit-content;
-  margin-bottom: 10px;
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-  border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.draft-main-head {
-  align-items: flex-start;
-  margin-bottom: 22px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-}
-
-.draft-main-head h2 {
-  font-size: 22px;
-}
-
-.draft-editor-commandbar {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin: -28px -28px 22px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.98);
-  border-radius: 8px 8px 0 0;
-  padding: 18px 22px;
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
-}
-
-.draft-editor-commandbar h2 {
-  margin: 8px 0 0;
-  font-size: 22px;
-}
-
-.draft-editor-commandbar p {
-  margin: 6px 0 0;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.draft-editor-kickers,
-.draft-section-actions,
-.draft-outline-actions,
-.draft-child-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.draft-edit-mode-chip,
-.draft-edit-version-chip {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.draft-edit-mode-chip {
-  border: 1px solid #bbf7d0;
-  background: #ecfdf5;
-  color: #047857;
-}
-
-.draft-edit-version-chip {
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.draft-preview-banner,
-.draft-editing-side-note {
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1e40af;
-  border-radius: 8px;
-  padding: 11px 12px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.draft-preview-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 18px;
-}
-
-.draft-preview-banner strong {
-  flex: 0 0 auto;
-  color: #1d4ed8;
-  font-size: 13px;
-}
-
-.draft-analysis-summary {
-  display: grid;
-  gap: 12px;
-}
-
-.draft-analysis-row {
-  display: grid;
-  grid-template-columns: 130px minmax(0, 1fr);
-  gap: 18px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-  padding: 14px 0;
-}
-
-.draft-analysis-row span {
-  color: #475569;
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.draft-analysis-row p {
-  margin: 0;
-  color: #1e293b;
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.draft-risk-section {
-  margin-top: 22px;
-  border-top: 1px solid rgba(148, 163, 184, 0.22);
-  padding-top: 20px;
-}
-
-.draft-risk-head,
-.draft-risk-card-head,
-.draft-risk-subhead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.draft-risk-head {
-  margin-bottom: 14px;
-}
-
-.draft-risk-head h3,
-.draft-risk-subhead h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 900;
-  line-height: 1.45;
-}
-
-.draft-risk-head span {
-  flex: 0 0 auto;
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-  border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.draft-risk-overview,
-.draft-risk-state {
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: #f8fafc;
-  border-radius: 8px;
-  padding: 14px 16px;
-}
-
-.draft-risk-overview span,
-.draft-risk-state strong {
-  display: block;
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.draft-risk-overview p,
-.draft-risk-overview small,
-.draft-risk-state p {
-  display: block;
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.draft-risk-list {
-  display: grid;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.draft-risk-card {
-  min-width: 0;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: #fff;
-  border-radius: 8px;
-  padding: 16px;
-}
-
-.draft-risk-card-head {
-  justify-content: flex-start;
-  align-items: flex-start;
-  margin-bottom: 12px;
-}
-
-.draft-risk-card-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 900;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.draft-risk-card-head small {
-  display: block;
-  margin-top: 2px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.draft-risk-badge {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 900;
-  line-height: 1.2;
-}
-
-.draft-risk-badge.high {
-  border: 1px solid #fecaca;
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-.draft-risk-badge.medium {
-  border: 1px solid #fed7aa;
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.draft-risk-badge.low {
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.draft-risk-badge.unknown {
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
-  color: #475569;
-}
-
-.draft-risk-block {
-  margin-top: 10px;
-}
-
-.draft-risk-block strong {
-  display: block;
-  margin-bottom: 4px;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.draft-risk-block p {
-  margin: 0;
-  color: #1e293b;
-  font-size: 14px;
-  line-height: 1.8;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.draft-risk-block.muted p {
-  color: #64748b;
-  font-size: 13px;
-}
-
-.draft-risk-verifications {
-  margin-top: 14px;
-  border: 1px solid #fed7aa;
-  background: #fffaf3;
-  border-radius: 8px;
-  padding: 14px;
-}
-
-.draft-risk-subhead {
-  margin-bottom: 10px;
-}
-
-.draft-risk-subhead h4 {
-  font-size: 15px;
-}
-
-.draft-risk-more {
-  border: 0;
-  background: transparent;
-  color: #1d4ed8;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.draft-risk-verifications ol {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.draft-risk-verifications li {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-}
-
-.draft-risk-verifications li span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  background: #ffedd5;
-  color: #c2410c;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.draft-risk-verifications li b {
-  color: #334155;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-.draft-outline-version-chip {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  border: 1px solid #bbf7d0;
-  background: #ecfdf5;
-  color: #047857;
-  border-radius: 8px;
-  padding: 9px 12px;
-  font-size: 12px;
-}
-
-.draft-outline-version-chip strong {
-  color: #065f46;
-}
-
-.draft-outline-meta {
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-  margin-bottom: 22px;
-  padding-bottom: 16px;
-}
-
-.draft-meta-row {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 16px;
-  padding: 9px 0;
-}
-
-.draft-meta-row span {
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.draft-meta-row strong,
-.draft-meta-row p {
-  margin: 0;
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.75;
-}
-
-.draft-directory {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.draft-directory-item {
-  padding-bottom: 18px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-}
-
-.draft-directory-item h3 {
-  margin: 0 0 8px;
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 900;
-  line-height: 1.45;
-}
-
-.draft-directory-item > p,
-.draft-directory-child p {
-  margin: 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.85;
-}
-
-.draft-directory-children {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 14px;
-  margin-left: 34px;
-}
-
-.draft-directory-child {
-  border-left: 3px solid #dbeafe;
-  padding-left: 14px;
-}
-
-.draft-directory-child h4 {
-  margin: 0 0 6px;
-  color: #334155;
-  font-size: 15px;
-  font-weight: 900;
-  line-height: 1.5;
-}
-
-.draft-editor-card {
-  padding-bottom: 34px;
-}
-
-.draft-edit-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
-  margin-bottom: 18px;
-}
-
-.draft-edit-info-card {
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: #fff;
-  border-radius: 8px;
-  padding: 14px;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
-}
-
-.draft-edit-info-card.title {
-  border-color: #bfdbfe;
-}
-
-.draft-edit-info-card.theme {
-  border-color: #bbf7d0;
-}
-
-.draft-edit-info-card.argument {
-  border-color: #ddd6fe;
-  grid-column: 1 / -1;
-}
-
-.draft-edit-info-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.draft-edit-info-label {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.draft-edit-info-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-weight: 900;
-}
-
-.draft-edit-info-card.theme .draft-edit-info-icon {
-  background: #dcfce7;
-  color: #15803d;
-}
-
-.draft-edit-info-card.argument .draft-edit-info-icon {
-  background: #f5f3ff;
-  color: #7c3aed;
-}
-
-.draft-edit-info-head h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 900;
-}
-
-.draft-edit-info-head h3 b,
-.draft-field span b {
-  color: #dc2626;
-}
-
-.draft-edit-info-head small {
-  flex: 0 0 auto;
-  color: #94a3b8;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.draft-autogrow-textarea {
-  display: block;
-  line-height: 1.75;
-}
-
-.draft-edit-outline {
-  display: grid;
-  gap: 12px;
-}
-
-.draft-edit-outline {
-  margin: 12px 0 16px;
-}
-
-.draft-edit-section-head {
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-  padding-bottom: 10px;
-}
-
-.draft-edit-section-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.draft-outline-edit-card,
-.draft-edit-item {
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: #f8fafc;
-  border-radius: 8px;
-  padding: 14px;
-}
-
-.draft-outline-edit-card {
-  background: #fff;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.04);
-}
-
-.draft-outline-edit-head {
-  display: grid;
-  grid-template-columns: 28px auto auto minmax(260px, 1fr);
-  align-items: center;
-  gap: 10px;
-}
-
-.draft-outline-edit-head strong {
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.draft-outline-handle,
-.draft-collapse-btn {
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: #f8fafc;
-  color: #64748b;
-  border-radius: 7px;
-  font-size: 12px;
-  font-weight: 900;
-  cursor: pointer;
-}
-
-.draft-outline-handle {
-  width: 26px;
-  height: 26px;
-  letter-spacing: -2px;
-}
-
-.draft-collapse-btn {
-  width: fit-content;
-  padding: 6px 9px;
-}
-
-.draft-outline-actions {
-  justify-content: flex-end;
-}
-
-.draft-outline-actions-menu {
-  position: relative;
-  justify-self: end;
-}
-
-.draft-outline-actions-menu > button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: 0;
-  background: transparent;
-  color: #64748b;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 14px;
-}
-
-.draft-outline-actions-menu > button:hover {
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.draft-outline-actions-menu > button:focus-visible {
-  outline: 3px solid rgba(37, 99, 235, 0.2);
-  outline-offset: 2px;
-}
-
-.draft-outline-actions-popover {
-  position: absolute;
-  top: 38px;
-  right: 0;
-  z-index: 9;
-  width: 150px;
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  border-radius: 8px;
-  padding: 5px;
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.14);
-}
-
-.draft-outline-actions-popover button {
-  width: 100%;
-  border: 0;
-  background: transparent;
-  color: #334155;
-  border-radius: 6px;
-  padding: 8px 9px;
-  text-align: left;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.draft-outline-actions-popover button:hover:not(:disabled) { background: #f1f5f9; }
-.draft-outline-actions-popover button:disabled { color: #cbd5e1; cursor: not-allowed; }
-.draft-outline-actions-popover button.danger { color: #b91c1c; }
-
-.draft-outline-edit-body {
-  margin-top: 14px;
-  border-top: 1px solid rgba(148, 163, 184, 0.16);
-  padding-top: 14px;
-}
-
-.draft-danger-btn {
-  border-color: rgba(239, 68, 68, 0.24) !important;
-  color: #b91c1c !important;
-}
-
-.draft-danger-btn:hover:not(:disabled) {
-  background: #fef2f2 !important;
-  border-color: rgba(239, 68, 68, 0.48) !important;
-  color: #dc2626 !important;
-}
-
-.draft-edit-item-head {
-  margin-bottom: 10px;
-}
-
-.draft-edit-item-head strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.draft-edit-item > .sci-input {
-  margin-bottom: 10px;
-}
-
-.draft-edit-children {
-  margin-top: 12px;
-  padding-left: 14px;
-  border-left: 2px solid #dbeafe;
-}
-
-.draft-edit-child-head {
-  margin-bottom: 10px;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.draft-edit-child {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: #fff;
-  border-radius: 8px;
-  padding: 10px;
-}
-
-.draft-edit-child-title b {
-  color: #334155;
-  font-size: 13px;
-}
-
-.draft-strategy-edit-list {
-  display: grid;
-  gap: 8px;
-}
-
-.draft-strategy-edit-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
-  gap: 6px;
-  align-items: center;
-}
-
-.draft-edit-note-card {
-  display: grid;
-  gap: 6px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: #fff;
-  border-radius: 8px;
-  padding: 14px;
-  margin-top: 18px;
-}
-
-.draft-edit-note-card .draft-field {
-  margin-bottom: 0;
-}
-
-.draft-edit-note-card small {
-  justify-self: end;
-  color: #94a3b8;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.draft-editing-side-note {
-  margin: 12px 0 4px;
-}
-
-.draft-side-section {
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-  padding-bottom: 14px;
-}
-
-.draft-side-section:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-
-.draft-side-head {
-  margin-bottom: 10px;
-}
-
-.draft-side-head span {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.draft-side-head small {
-  display: block;
-  margin-top: 4px;
-  color: #94a3b8;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.draft-side-status {
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8 !important;
-  border-radius: 7px;
-  padding: 4px 7px;
-  font-size: 10px !important;
-}
-
-.draft-revision-textarea {
-  min-height: 124px;
-  resize: vertical;
-  line-height: 1.7;
-}
-
-.draft-side-hint {
-  display: block;
-  margin-top: 8px;
-  color: #b45309;
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-.draft-version-timeline {
-  display: grid;
-  gap: 8px;
-}
-
-.draft-version-timeline-item {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 9px;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  color: #334155;
-  padding: 7px 4px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.draft-version-timeline-item > div { min-width: 0; }
-.draft-version-dot {
-  position: relative;
-  width: 9px;
-  height: 9px;
-  margin-top: 4px;
-  border: 2px solid #94a3b8;
-  background: #fff;
-  border-radius: 50%;
-}
-.draft-version-timeline-item:not(:last-of-type) .draft-version-dot::after {
-  content: '';
-  position: absolute;
-  top: 10px;
-  left: 2px;
-  width: 1px;
-  height: 42px;
-  background: #e2e8f0;
-}
-.draft-version-timeline-item strong,
-.draft-version-timeline-item span,
-.draft-version-timeline-item small { display: block; }
-.draft-version-timeline-item strong { color: #334155; font-size: 12px; line-height: 1.45; }
-.draft-version-timeline-item span { margin-top: 2px; color: #94a3b8; font-size: 10px; }
-.draft-version-timeline-item small { margin-top: 3px; color: #64748b; font-size: 11px; line-height: 1.45; white-space: normal; }
-.draft-version-timeline-item.active .draft-version-dot { border-color: #2563eb; background: #2563eb; box-shadow: 0 0 0 4px #dbeafe; }
-.draft-version-timeline-item.active strong { color: #1d4ed8; }
-
-.draft-next-step-panel {
-  border: 1px solid #bfdbfe;
-  background: #f8fbff;
-  border-radius: 10px;
-  padding: 14px;
-}
-.draft-next-step-panel p { margin: 6px 0 10px; color: #64748b; font-size: 12px; line-height: 1.6; }
-
-.draft-refine-field {
-  margin-top: 14px;
-}
-
-.draft-import-status {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: #f8fafc;
-  border-radius: 8px;
-  padding: 12px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.draft-import-status.ready {
-  border-color: #bbf7d0;
-  background: #ecfdf5;
-  color: #047857;
-}
-
-.draft-import-status strong {
-  color: #0f172a;
-  font-size: 13px;
-}
-
-.draft-import-plan-card {
-  display: grid;
-  gap: 6px;
-  border: 1px solid #bbf7d0;
-  border-radius: 14px;
-  padding: 12px;
-  background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
-}
-
-.draft-import-plan-card span,
-.draft-import-plan-card small {
-  font-size: 11px;
-  color: #15803d;
-  font-weight: 700;
-}
-
-.draft-import-plan-card strong {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  color: #14532d;
-}
-
-.draft-import-plan-card b {
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.draft-import-plan-card p {
-  margin: 0;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.draft-error,
-.draft-notice {
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin-bottom: 12px;
-  font-size: 13px;
-}
-
-.draft-error {
-  border: 1px solid #fecaca;
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-.draft-notice {
-  border: 1px solid #bbf7d0;
-  background: #f0fdf4;
-  color: #047857;
-}
-
-.draft-empty {
-  border: 1px dashed rgba(148, 163, 184, 0.38);
-  border-radius: 8px;
-  padding: 12px;
-  color: #64748b;
-  font-size: 13px;
-  text-align: center;
-}
-
-@media (min-width: 1360px) and (max-width: 1599px) {
-  .draft-workspace-grid.editor-active {
-    grid-template-columns: 230px minmax(720px, 1fr) 250px;
-    gap: 14px;
-  }
-  .draft-workspace-grid.editor-active.history-collapsed {
-    grid-template-columns: 64px minmax(720px, 1fr) 250px;
-  }
-}
-
-@media (max-width: 1359px) {
-  .draft-workspace-grid.editor-active {
-    grid-template-columns: 230px minmax(720px, 1fr);
-  }
-  .draft-workspace-grid.editor-active.history-collapsed {
-    grid-template-columns: 64px minmax(720px, 1fr);
-  }
-
-  .editor-active .draft-right {
-    position: fixed;
-    z-index: 42;
-    top: 84px;
-    right: 12px;
-    bottom: 12px;
-    width: min(300px, calc(100vw - 24px));
-    max-height: none;
-    transform: translateX(calc(100% + 24px));
-    transition: transform 160ms ease;
-    box-shadow: 0 22px 48px rgba(15, 23, 42, 0.2);
-  }
-
-  .editor-active .draft-right.open { transform: translateX(0); }
-  .editor-active .draft-right .draft-panel-close { display: inline-flex; }
-  .draft-panel-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 40;
-    display: block;
-    border: 0;
-    background: rgba(15, 23, 42, 0.28);
-  }
-  .draft-panel-close {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    border: 0;
-    background: #f1f5f9;
-    color: #475569;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 18px;
-  }
-}
-
-@media (max-width: 1280px) {
-  .draft-workspace-grid:not(.editor-active) {
-    grid-template-columns: 280px minmax(0, 1fr);
-  }
-
-  .draft-workspace-grid:not(.editor-active) .draft-right {
-    position: static;
-    grid-column: 1 / -1;
-    max-height: none;
-  }
-}
-
-@media (max-width: 1099px) {
-  .draft-workspace-grid.editor-active { grid-template-columns: minmax(0, 1fr); }
-  .draft-workspace-grid.editor-active.history-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
-  .editor-active .draft-main-workarea { min-width: min(720px, 100%); }
-  .editor-active .draft-left,
-  .editor-active .draft-history-sidebar:not(.collapsed) {
-    position: fixed;
-    z-index: 42;
-    top: 84px;
-    bottom: 12px;
-    left: 12px;
-    width: min(270px, calc(100vw - 24px));
-    max-height: none;
-    transform: translateX(calc(-100% - 24px));
-    transition: transform 160ms ease;
-    box-shadow: 0 22px 48px rgba(15, 23, 42, 0.2);
-  }
-  .editor-active .draft-left.open,
-  .editor-active .draft-history-sidebar:not(.collapsed).open { transform: translateX(0); }
-  .editor-active .draft-left .draft-panel-close { display: inline-flex; }
-  .editor-active .draft-history-sidebar.collapsed {
-    position: sticky;
-    top: 0;
-    left: auto;
-    bottom: auto;
-    width: auto;
-    max-height: calc(100vh - 220px);
-    transform: none;
-    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
-  }
-  .draft-mobile-history-trigger {
-    position: fixed;
-    top: 140px;
-    left: 12px;
-    z-index: 36;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    border: 1px solid #bfdbfe;
-    background: #fff;
-    color: #1d4ed8;
-    border-radius: 8px;
-    box-shadow: 0 6px 14px rgba(37, 99, 235, 0.14);
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 900;
-  }
-  .draft-mobile-history-trigger:hover { background: #eff6ff; border-color: #60a5fa; }
-  .draft-mobile-history-trigger:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.24); outline-offset: 2px; }
-}
-
-@media (max-width: 900px) {
-  .draft-edit-fields {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .draft-edit-info-card.argument {
-    grid-column: auto;
-  }
-}
-
-@media (max-width: 860px) {
-  .draft-assistant-main {
-    padding: 12px;
-  }
-
-  .draft-login-gate,
-  .draft-main-head,
-  .draft-editor-commandbar,
-  .draft-preview-banner,
-  .draft-risk-head,
-  .draft-risk-subhead {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .draft-stepper,
-  .draft-workspace-grid:not(.editor-active),
-  .draft-two,
-  .draft-edit-tail,
-  .draft-outline-edit-head,
-  .draft-strategy-edit-row,
-  .draft-analysis-row {
-    grid-template-columns: 1fr;
-  }
-
-  .draft-workspace-grid:not(.editor-active) .draft-left,
-  .draft-workspace-grid:not(.editor-active) .draft-right {
-    position: static;
-    max-height: none;
-  }
-
-  .draft-state-card {
-    min-height: 0;
-    padding: 18px;
-  }
-
-  .draft-editor-commandbar {
-    margin: -18px -18px 18px;
-    padding: 16px;
-  }
-
-  .draft-head-actions,
-  .draft-outline-actions,
-  .draft-child-actions,
-  .draft-section-actions {
-    justify-content: flex-start;
-  }
-
-  .draft-directory-children {
-    margin-left: 14px;
-  }
-
-  .draft-event-basic-info { padding: 18px; }
-  .draft-event-basic-head { flex-direction: column; }
-  .draft-event-basic-head h2 { font-size: 21px; }
-  .draft-editor-card { padding: 12px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .draft-workspace-grid.editor-active { transition: none; }
-}
+.draft-assistant-main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; background: #fbfbfc; color: #1f2937; }
+.draft-assistant-bar { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: center; min-height: 56px; border-bottom: 1px solid #e5e7eb; background: rgba(251, 251, 252, 0.96); padding: 0 18px; backdrop-filter: blur(12px); }
+.draft-assistant-bar strong { overflow: hidden; color: #292e37; font-size: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.draft-assistant-bar button { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; background: transparent; color: #586171; border-radius: 7px; cursor: pointer; }
+.draft-assistant-bar button:hover:not(:disabled) { background: #eef0f3; color: #20252d; }
+.draft-assistant-bar button:disabled { color: #b9bec6; cursor: not-allowed; }
+.draft-assistant-bar button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.2); outline-offset: 1px; }
+.draft-bar-spacer { width: 36px; }
+.draft-assistant-content { width: 100%; min-width: 0; box-sizing: border-box; padding: 0 28px; }
+.draft-page-error { width: min(1040px, 100%); box-sizing: border-box; margin: 16px auto 0; border-left: 3px solid #d14343; background: #fff4f4; color: #9f2424; padding: 11px 13px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.draft-confirmation { width: min(920px, 100%); margin: 0 auto; padding: 24px 0 64px; }
+.draft-confirmation > header { margin-bottom: 24px; border-bottom: 1px solid #e1e5ea; padding-bottom: 17px; }
+.draft-confirmation > header p { margin: 0 0 4px; color: #64748b; font-size: 12px; font-weight: 700; }
+.draft-confirmation > header h1 { margin: 0; color: #111827; font-size: 24px; line-height: 1.4; letter-spacing: 0; }
+.draft-confirmation > header span { display: block; margin-top: 7px; color: #737d8b; font-size: 12px; line-height: 1.7; }
+.draft-confirmation > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 32px; border-top: 1px solid #e1e5ea; padding-top: 18px; }
+.draft-confirmation > footer button, .draft-login-gate button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 700; }
+.draft-confirmation .secondary { border: 1px solid #d5dbe3; background: #fff; color: #4b5563; }
+.draft-confirmation .primary, .draft-login-gate button { border: 1px solid #1f2937; background: #1f2937; color: #fff; }
+.draft-login-gate { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: calc(100vh - 120px); padding: 32px; text-align: center; }
+.draft-login-gate h1 { margin: 0; color: #172033; font-size: 24px; }
+.draft-login-gate p { margin: 10px 0 22px; color: #6b7280; font-size: 13px; }
+.draft-route-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 420px; color: #6b7280; font-size: 13px; }
+.draft-spin { animation: draft-spin 800ms linear infinite; }
+@keyframes draft-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 640px) {
+  .draft-assistant-bar { padding: 0 10px; }
+  .draft-assistant-content { padding: 0 14px; }
+  .draft-confirmation { padding-top: 18px; }
+  .draft-confirmation > footer { align-items: stretch; flex-direction: column-reverse; }
+  .draft-confirmation > footer button { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { .draft-spin { animation: none; } }
 </style>

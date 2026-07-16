@@ -106,6 +106,10 @@ const outlineViewSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftOutlineView.vue', import.meta.url),
   'utf8',
 );
+const importStateSource = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftImportState.vue', import.meta.url),
+  'utf8',
+);
 
 assert.match(sourceComposer, /<AutoResizeTextarea/);
 assert.match(sourceComposer, /开始编报/);
@@ -130,6 +134,32 @@ assert.match(outlineEditorSource, /<AutoResizeTextarea/);
 assert.doesNotMatch(outlineEditorSource, /V\d|版本记录|恢复旧版本|版本比较/);
 assert.doesNotMatch(outlineViewSource, /emit\('edit'\)|编辑提纲|更多提纲操作/);
 assert.match(outlineViewSource, /overflow-wrap:\s*anywhere/);
+assert.match(importStateSource, /正在创建深度编报任务/);
+assert.match(importStateSource, /重新尝试/);
+assert.doesNotMatch(importStateSource, /导入配置|数据库信源|回溯天数/);
+
+assert.match(assistantSource, /<DraftSourceComposer/);
+assert.match(assistantSource, /<DraftAnalysisView/);
+assert.match(assistantSource, /<DraftOutlineEditor/);
+assert.match(assistantSource, /<DraftOutlineView/);
+assert.match(assistantSource, /<DraftImportState/);
+assert.match(assistantSource, /<DraftHistorySidebar/);
+assert.doesNotMatch(assistantSource, /<DraftStepNavigation/);
+assert.doesNotMatch(assistantSource, /<DraftContextPanel/);
+assert.doesNotMatch(assistantSource, /<EventSourcePanel/);
+assert.doesNotMatch(assistantSource, /<EventPreviewPanel/);
+assert.doesNotMatch(assistantSource, /<StrategyTabs/);
+
+assert.doesNotMatch(assistantSource, /getDraftEventOutlines|getDraftOutline|outlineVersions|versionLabel/);
+assert.match(assistantSource, /buildDraftAnalyzePayload\(sourceInput\.value\)/);
+assert.match(assistantSource, /buildDraftAnalysisSections/);
+assert.match(assistantSource, /restoredDraftStage/);
+assert.match(assistantSource, /createDraftAutosave/);
+assert.match(assistantSource, /await autosave\.flush\(\)/);
+assert.match(assistantSource, /await importDraftOutline/);
+assert.match(assistantSource, /await createReportJob/);
+assert.match(assistantSource, /emit\('report-job-created'/);
+assert.doesNotMatch(assistantSource, /导入配置|确认当前提纲版本|保存为新版本|V\$\{|V\d/);
 
 assert.doesNotMatch(assistantSource, /setTimeout\([^)]*manualUpdateDraftOutline/);
 
