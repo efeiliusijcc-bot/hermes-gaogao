@@ -86,80 +86,33 @@ const assistantSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftAssistant.vue', import.meta.url),
   'utf8',
 );
+const sourceComposer = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftSourceComposer.vue', import.meta.url),
+  'utf8',
+);
+const analysisSource = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftAnalysisView.vue', import.meta.url),
+  'utf8',
+);
+const historySource = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftHistorySidebar.vue', import.meta.url),
+  'utf8',
+);
+
+assert.match(sourceComposer, /<AutoResizeTextarea/);
+assert.match(sourceComposer, /开始编报/);
+assert.doesNotMatch(sourceComposer, /事件分类|地区选择|信息完整度|最近草稿|独立链接/);
+assert.match(analysisSource, /事件概括/);
+assert.match(analysisSource, /核心主体/);
+assert.match(analysisSource, /时间与地点/);
+assert.match(analysisSource, /关键事实/);
+assert.match(analysisSource, /涉我风险/);
+assert.match(historySource, /role="dialog"/);
+assert.match(historySource, /搜索历史编报/);
+assert.match(historySource, /新建编报/);
+assert.doesNotMatch(historySource, /删除/);
+assert.doesNotMatch(historySource, /history-sidebar-tabs|最近编辑|全部事件/);
+
 assert.doesNotMatch(assistantSource, /setTimeout\([^)]*manualUpdateDraftOutline/);
-assert.match(assistantSource, /import DraftContextPanel from/);
-assert.match(assistantSource, /import DraftStepNavigation from/);
-assert.match(assistantSource, /import EventPreviewPanel from/);
-assert.match(assistantSource, /<DraftContextPanel/);
-assert.match(assistantSource, /<DraftStepNavigation/);
-assert.match(assistantSource, /<EventPreviewPanel/);
-assert.match(assistantSource, /grid-template-columns:\s*64px minmax\(720px, 1fr\)/);
-assert.doesNotMatch(assistantSource, /draft-strategy-grid/);
-assert.doesNotMatch(assistantSource, /expandedStrategyCards|sourceTypeTags|strategyVisibleItems|toggleStrategyCard/);
-assert.doesNotMatch(assistantSource, /class="draft-toolbar"/);
-assert.doesNotMatch(assistantSource, /按事件输入、事件分析、拟稿提纲、版本确认、导入编报推进拟稿流程/);
-
-const navigationSource = fs.readFileSync(
-  new URL('../b_k3ewYvsOEc1/src/components/DraftStepNavigation.vue', import.meta.url),
-  'utf8',
-);
-assert.match(navigationSource, /aria-current/);
-assert.match(navigationSource, /step\.statusLabel/);
-assert.match(navigationSource, /role="list"/);
-assert.match(navigationSource, /needs_attention/);
-assert.doesNotMatch(navigationSource, /\.draft-step-navigation\s*\{[^}]*position:\s*(?:sticky|fixed)/s);
-assert.doesNotMatch(navigationSource, /\.draft-step-navigation\s*\{[^}]*\btop:\s*0/s);
-
-const sourcePanelSource = fs.readFileSync(
-  new URL('../b_k3ewYvsOEc1/src/components/EventSourcePanel.vue', import.meta.url),
-  'utf8',
-);
-const previewPanelSource = fs.readFileSync(
-  new URL('../b_k3ewYvsOEc1/src/components/EventPreviewPanel.vue', import.meta.url),
-  'utf8',
-);
-assert.match(sourcePanelSource, /事件信息完整度/);
-assert.match(sourcePanelSource, /maxlength="60"/);
-assert.match(sourcePanelSource, /有效链接/);
-assert.match(previewPanelSource, /事件输入预览/);
-assert.match(previewPanelSource, /系统将执行/);
-assert.match(previewPanelSource, /开始事件分析/);
-assert.match(previewPanelSource, /当前资料较少/);
-
-const strategySource = fs.readFileSync(
-  new URL('../b_k3ewYvsOEc1/src/components/StrategyTabs.vue', import.meta.url),
-  'utf8',
-);
-const outlineViewSource = fs.readFileSync(
-  new URL('../b_k3ewYvsOEc1/src/components/DraftOutlineView.vue', import.meta.url),
-  'utf8',
-);
-assert.match(strategySource, /editable/);
-assert.match(strategySource, /role="tabpanel"/);
-assert.doesNotMatch(outlineViewSource, /text-overflow:\s*ellipsis/);
-assert.match(outlineViewSource, /overflow-wrap:\s*anywhere/);
-assert.match(outlineViewSource, /aria-label="更多提纲操作"/);
-assert.match(assistantSource, /aria-label="更多目录操作"/);
-assert.match(assistantSource, /duplicateOutlineItem/);
-
-const contextSource = fs.readFileSync(
-  new URL('../b_k3ewYvsOEc1/src/components/DraftContextPanel.vue', import.meta.url),
-  'utf8',
-);
-assert.match(contextSource, /currentStep === 'input'/);
-assert.match(contextSource, /currentStep === 'analysis'/);
-assert.match(contextSource, /currentStep === 'outline'/);
-assert.match(contextSource, /currentStep === 'confirm'/);
-assert.match(contextSource, /currentStep === 'import'/);
-assert.match(contextSource, /已采集资料数量/);
-assert.match(contextSource, /collectedSourceCountLabel/);
-assert.match(contextSource, /当前步骤暂不需要版本操作/);
-
-const editorToolbarSource = fs.readFileSync(
-  new URL('../b_k3ewYvsOEc1/src/components/DraftEditorToolbar.vue', import.meta.url),
-  'utf8',
-);
-assert.match(editorToolbarSource, /position:\s*sticky/);
-assert.match(editorToolbarSource, /min-height:\s*68px/);
 
 console.log('frontend draft workbench tests passed');
