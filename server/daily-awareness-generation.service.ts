@@ -1,4 +1,5 @@
-import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
+import type { AuthUser } from './auth-user.interface.js';
 import type {
   DailyAwarenessComposedBrief,
   DailyAwarenessInboxRecord,
@@ -37,6 +38,33 @@ export class DailyAwarenessGenerationService implements OnModuleDestroy {
       : { terminal: true, generationStatus: 'WAITING' };
   }
 
+  async regenerate(
+    input: { businessDate?: unknown; reason?: unknown; confirmOverwrite?: unknown },
+    actor: Pick<AuthUser, 'id'>,
+  ): Promise<{ runId: string; status: 'QUEUED' }> {
+    const businessDate = this.requiredDate(input.businessDate);
+    const reason = String(input.reason || '').trim().slice(0, 1000);
+    if (!reason || input.confirmOverwrite !== true) {
+      throw new BadRequestException({
+        error: 'Manual regeneration requires a reason and explicit overwrite confirmation',
+        code: 'DAILY_AWARENESS_INVALID_CONFIG',
+      });
+    }
+    const runId = await this.store.queueManualRun(businessDate, reason, actor.id);
+    const item: DailyAwarenessInboxRecord = {
+      eventId: `manual:${runId}`,
+      eventType: 'DAILY_DATA_FINISHED',
+      businessDate,
+      batchId: `manual:${runId}`,
+      completedAt: new Date().toISOString(),
+      payload: { manualReason: reason, requestedBy: actor.id },
+      status: 'PROCESSING',
+      attemptCount: 1,
+    };
+    this.scheduleManual(item, runId);
+    return { runId, status: 'QUEUED' };
+  }
+
   onModuleDestroy(): void {
     this.unregisterProcessor();
   }
@@ -44,15 +72,19 @@ export class DailyAwarenessGenerationService implements OnModuleDestroy {
   private async processLocked(
     item: DailyAwarenessInboxRecord,
     triggerType: DailyAwarenessTriggerType,
+    queuedRunId?: string,
+    allowOverwrite = false,
   ): Promise<DailyAwarenessTerminalResult> {
-    if (await this.store.hasSuccessfulGlobalBrief(item.businessDate)) {
+    if (!allowOverwrite && await this.store.hasSuccessfulGlobalBrief(item.businessDate)) {
       await this.store.recordIgnored(item, triggerType);
       return { terminal: true, generationStatus: 'SUCCESS' };
     }
 
     const config = await this.store.loadConfig();
     let attemptNo = 1;
-    let runId = await this.store.startRun(item, triggerType, attemptNo);
+    let runId = queuedRunId
+      ? await this.store.startQueuedRun(queuedRunId, item)
+      : await this.store.startRun(item, triggerType, attemptNo);
     let prepared;
     try {
       prepared = await this.materials.prepareForBusinessDate(item.businessDate, config);
@@ -81,9 +113,40 @@ export class DailyAwarenessGenerationService implements OnModuleDestroy {
         continue;
       }
 
-      await this.store.saveSuccess(runId, item, prepared, composed, 'SYSTEM');
+      await this.store.saveSuccess(runId, item, prepared, composed, allowOverwrite ? 'MANUAL' : 'SYSTEM');
       return { terminal: true, generationStatus: 'SUCCESS' };
     }
+  }
+
+  private scheduleManual(item: DailyAwarenessInboxRecord, runId: string): void {
+    setImmediate(() => {
+      void this.processManual(item, runId).catch((error) => {
+        void this.store.failRun(runId, error, true).catch(() => undefined);
+      });
+    });
+  }
+
+  private async processManual(item: DailyAwarenessInboxRecord, runId: string): Promise<void> {
+    const locked = await this.locks.withBusinessDateLock(
+      item.businessDate,
+      'MANUAL',
+      () => this.processLocked(item, 'MANUAL', runId, true),
+    );
+    if (!locked.acquired) {
+      throw new Error('Daily awareness generation is already running');
+    }
+  }
+
+  private requiredDate(value: unknown): string {
+    const date = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException({ error: 'businessDate must be YYYY-MM-DD', code: 'DAILY_AWARENESS_INVALID_CONFIG' });
+    }
+    const parsed = new Date(`${date}T00:00:00.000Z`);
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+      throw new BadRequestException({ error: 'businessDate must be YYYY-MM-DD', code: 'DAILY_AWARENESS_INVALID_CONFIG' });
+    }
+    return date;
   }
 
   private assertUsable(composed: DailyAwarenessComposedBrief): void {

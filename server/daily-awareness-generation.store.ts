@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { ConflictException, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { createAuthPool, type PgClient, type PgPool } from './auth-database.js';
 import { DAILY_AWARENESS_PROMPT_VERSION } from './daily-awareness.constants.js';
@@ -64,6 +64,65 @@ export class DailyAwarenessGenerationStore implements OnModuleDestroy {
            last_error_code = NULL,
            last_error_message = NULL,
            updated_at = now()`,
+        [item.businessDate, item.batchId, item.completedAt, runId],
+      );
+    });
+    return runId;
+  }
+
+  async queueManualRun(businessDate: string, reason: string, requestedBy: string): Promise<string> {
+    const runId = randomUUID();
+    await this.transaction(async (client) => {
+      const lock = await client.query(
+        `SELECT pg_try_advisory_xact_lock(
+           hashtext('daily-awareness'),
+           hashtext($1)
+         ) AS acquired`,
+        [businessDate],
+      );
+      if (lock.rows[0]?.acquired !== true) {
+        throw new ConflictException({ error: 'Daily awareness generation is already running', code: 'DAILY_AWARENESS_ALREADY_RUNNING' });
+      }
+      const active = await client.query(
+        `SELECT id FROM daily_awareness_runs
+          WHERE business_date = $1::date
+            AND status IN ('QUEUED', 'RUNNING')
+          LIMIT 1`,
+        [businessDate],
+      );
+      if (active.rows.length) {
+        throw new ConflictException({ error: 'Daily awareness generation is already running', code: 'DAILY_AWARENESS_ALREADY_RUNNING' });
+      }
+      await client.query(
+        `INSERT INTO daily_awareness_runs
+          (id, business_date, trigger_type, status, attempt_no, prompt_version, requested_by, manual_reason)
+         VALUES ($1, $2::date, 'MANUAL', 'QUEUED', 1, $3, $4, $5)`,
+        [runId, businessDate, DAILY_AWARENESS_PROMPT_VERSION, requestedBy, reason],
+      );
+      await client.query(
+        `INSERT INTO daily_awareness_day_status (business_date, data_status, generation_status, last_run_id, updated_at)
+         VALUES ($1::date, 'WAITING', 'PENDING', $2, now())
+         ON CONFLICT (business_date) DO UPDATE SET
+           generation_status = 'PENDING', last_run_id = EXCLUDED.last_run_id, updated_at = now()`,
+        [businessDate, runId],
+      );
+    });
+    return runId;
+  }
+
+  async startQueuedRun(runId: string, item: DailyAwarenessInboxRecord): Promise<string> {
+    await this.transaction(async (client) => {
+      await client.query(
+        `UPDATE daily_awareness_runs
+            SET status = 'RUNNING', started_at = now()
+          WHERE id = $1 AND status = 'QUEUED'`,
+        [runId],
+      );
+      await client.query(
+        `UPDATE daily_awareness_day_status
+            SET generation_status = 'GENERATING', batch_id = $2, data_completed_at = $3::timestamptz,
+                last_run_id = $4, last_error_code = NULL, last_error_message = NULL, updated_at = now()
+          WHERE business_date = $1::date`,
         [item.businessDate, item.batchId, item.completedAt, runId],
       );
     });

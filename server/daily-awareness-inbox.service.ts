@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import { createAuthPool, type PgPool } from './auth-database.js';
 import {
   dailyAwarenessInboxMaxAttempts,
@@ -141,6 +141,79 @@ export class DailyAwarenessInboxService implements OnModuleDestroy {
     );
   }
 
+  async list(query: { page?: unknown; pageSize?: unknown; status?: unknown }) {
+    const page = this.integer(query.page, 1, 1, 100_000);
+    const pageSize = this.integer(query.pageSize, 20, 1, 100);
+    const params: unknown[] = [];
+    const where: string[] = [];
+    const status = String(query.status || '').trim();
+    if (status) {
+      params.push(status);
+      where.push(`status = $${params.length}`);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const pool = await this.getPool();
+    const count = await pool.query(`SELECT count(*)::int AS count FROM daily_awareness_event_inbox ${whereSql}`, params);
+    params.push(pageSize, (page - 1) * pageSize);
+    const rows = await pool.query(
+      `SELECT event_id, event_type, business_date, batch_id, completed_at, total_count,
+              status, attempt_count, next_attempt_at, processed_at, last_error_code,
+              last_error_message, created_at, updated_at
+         FROM daily_awareness_event_inbox
+         ${whereSql}
+        ORDER BY created_at DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+    return { items: rows.rows.map((row) => this.adminRecord(row)), page, pageSize, total: Number(count.rows[0]?.count || 0) };
+  }
+
+  async reprocess(eventId: string, actorId: string) {
+    const pool = await this.getPool();
+    const found = await pool.query(
+      `SELECT inbox.*,
+              EXISTS (
+                SELECT 1 FROM daily_briefs brief
+                 WHERE brief.brief_date = inbox.business_date
+                   AND brief.publication_scope = 'GLOBAL'
+                   AND lower(brief.status) IN ('completed', 'success')
+              ) AS has_success
+         FROM daily_awareness_event_inbox inbox
+        WHERE inbox.event_id = $1`,
+      [eventId],
+    );
+    const row = found.rows[0];
+    if (!row) throw new NotFoundException({ error: 'Inbox event not found', code: 'DAILY_AWARENESS_INVALID_EVENT' });
+    if (row.has_success === true) {
+      throw new ConflictException({
+        error: 'A successful global brief already exists for this business date',
+        code: 'DAILY_AWARENESS_SUCCESS_ALREADY_EXISTS',
+      });
+    }
+    if (String(row.status) !== 'DEAD_LETTER') {
+      throw new BadRequestException({ error: 'Only dead-letter events can be reprocessed', code: 'DAILY_AWARENESS_INVALID_EVENT' });
+    }
+    const updated = await pool.query(
+      `UPDATE daily_awareness_event_inbox
+          SET status = 'RETRY_PENDING',
+              attempt_count = 0,
+              next_attempt_at = now(),
+              locked_at = NULL,
+              locked_by = NULL,
+              processed_at = NULL,
+              last_error_code = NULL,
+              last_error_message = NULL,
+              payload = payload || jsonb_build_object('reprocessRequested', true, 'reprocessRequestedBy', $2),
+              updated_at = now()
+        WHERE event_id = $1
+      RETURNING event_id`,
+      [eventId, actorId],
+    );
+    if (!updated.rows[0]) throw new NotFoundException({ error: 'Inbox event not found', code: 'DAILY_AWARENESS_INVALID_EVENT' });
+    this.wake();
+    return { accepted: true, eventId, status: 'RETRY_PENDING' };
+  }
+
   wake(): void {
     for (const handler of this.wakeHandlers) {
       queueMicrotask(() => {
@@ -178,6 +251,30 @@ export class DailyAwarenessInboxService implements OnModuleDestroy {
       status: String(row.status || 'PROCESSING') as DailyAwarenessInboxRecord['status'],
       attemptCount: Number(row.attempt_count || 0),
     };
+  }
+
+  private adminRecord(row: Record<string, unknown>) {
+    return {
+      eventId: String(row.event_id || ''),
+      eventType: String(row.event_type || ''),
+      businessDate: this.dateOnly(row.business_date),
+      batchId: String(row.batch_id || ''),
+      completedAt: this.dateString(row.completed_at),
+      totalCount: row.total_count === null || row.total_count === undefined ? null : Number(row.total_count),
+      status: String(row.status || ''),
+      attemptCount: Number(row.attempt_count || 0),
+      nextAttemptAt: this.dateString(row.next_attempt_at),
+      processedAt: this.dateString(row.processed_at),
+      errorCode: String(row.last_error_code || ''),
+      errorMessage: this.safeError(row.last_error_message || ''),
+      createdAt: this.dateString(row.created_at),
+      updatedAt: this.dateString(row.updated_at),
+    };
+  }
+
+  private integer(value: unknown, fallback: number, min: number, max: number): number {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
   }
 
   private dateOnly(value: unknown): string {

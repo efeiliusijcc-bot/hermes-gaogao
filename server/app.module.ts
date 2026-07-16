@@ -12,6 +12,9 @@ import { ChatController } from './chat.controller.js';
 import { ChatService } from './chat.service.js';
 import { CrawlerService } from './crawler.service.js';
 import { DailyAwarenessController } from './daily-awareness.controller.js';
+import { DailyAwarenessAdminController } from './daily-awareness-admin.controller.js';
+import { DailyAwarenessAdminService } from './daily-awareness-admin.service.js';
+import { DailyAwarenessConfigService } from './daily-awareness-config.service.js';
 import { DailyAwarenessInternalController } from './daily-awareness.internal.controller.js';
 import { DailyAwarenessInboxService } from './daily-awareness-inbox.service.js';
 import { DailyAwarenessGenerationService } from './daily-awareness-generation.service.js';
@@ -61,6 +64,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     ResearchKeysController,
     VectorSourcesController,
     ChatController,
+    DailyAwarenessAdminController,
     DailyAwarenessInternalController,
     DailyAwarenessController,
     DraftAssistantController,
@@ -90,6 +94,8 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     ChatService,
     DailyAwarenessService,
     DailyAwarenessInboxService,
+    DailyAwarenessAdminService,
+    DailyAwarenessConfigService,
     DailyAwarenessGenerationStore,
     DailyAwarenessGenerationService,
     DailyAwarenessLockService,
