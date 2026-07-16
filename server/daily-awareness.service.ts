@@ -33,6 +33,15 @@ import type {
   DailyAwarenessScoredEvent,
   DailyAwarenessSourceInfo,
 } from './daily-awareness.types.js';
+import type {
+  DailyAwarenessComposedBrief,
+  DailyAwarenessConfig,
+  DailyAwarenessPreparedMaterials,
+} from './daily-awareness.contracts.js';
+import {
+  dailyAwarenessClassificationSystemPrompt,
+  dailyAwarenessSummarySystemPrompt,
+} from './daily-awareness-prompt.js';
 import {
   buildDailyReportJson,
   buildDailyReportMarkdown,
@@ -206,6 +215,64 @@ export class DailyAwarenessService implements OnModuleDestroy {
     return { brief, events };
   }
 
+  async composeGlobalBrief(
+    date: string,
+    prepared: DailyAwarenessPreparedMaterials,
+    config: DailyAwarenessConfig,
+  ): Promise<DailyAwarenessComposedBrief> {
+    const maxItems = Math.max(1, Math.min(50, config.maxArticles || 50));
+    const selection = selectClassificationCandidates(prepared.candidates, maxItems);
+    if (!selection.items.length) throw new ServiceUnavailableException({ error: 'No usable daily awareness candidates' });
+    const batchErrors: string[] = [];
+    const scoredEvents: DailyAwarenessScoredEvent[] = [];
+    const titleOnly = prepared.qualityStatus === 'TITLE_ONLY';
+    await this.classifyBatches(selection.items, config.categoryScope, scoredEvents, batchErrors, titleOnly);
+    if (!scoredEvents.length) {
+      throw new ServiceUnavailableException({ error: 'Daily awareness model returned no usable events', batchErrors });
+    }
+    const events = rankDailyEvents(scoredEvents, maxItems);
+    const stats = categoryStats(events);
+    const summary = await this.generateSummary(date, events, stats, titleOnly);
+    const title = dailyReportTitle(date, false);
+    const reportJson = buildDailyReportJson(events);
+    const reportMarkdown = buildDailyReportMarkdown({
+      date,
+      title,
+      summary,
+      materialCount: prepared.sourceCount,
+      selectedCount: events.length,
+      categoryStats: stats,
+      events,
+      usedFallback: false,
+    });
+    return {
+      title,
+      summary,
+      reportMarkdown,
+      contentJson: {
+        briefDate: date,
+        title,
+        summary,
+        reportMarkdown,
+        reportJson,
+        categoryDistribution: Object.fromEntries(stats.map((item) => [item.category, item.count])),
+        categoryStats: stats,
+        generation: {
+          qualityStatus: prepared.qualityStatus,
+          sourceCount: prepared.sourceCount,
+          summaryCount: prepared.summaryCount,
+          titleOnlyCount: prepared.titleOnlyCount,
+          skippedCount: prepared.skippedCount,
+          selectedCount: events.length,
+          diagnostics: prepared.diagnostics,
+          batchErrors,
+        },
+      },
+      categoryStats: stats,
+      events,
+    };
+  }
+
   async listBriefs(query: { page?: unknown; pageSize?: unknown; date?: unknown }, user: AuthUser) {
     const page = this.clampNumber(query.page, 1, 1, 100000);
     const pageSize = this.clampNumber(query.pageSize, 20, 1, 100);
@@ -355,6 +422,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     categories: string[],
     output: DailyAwarenessScoredEvent[],
     batchErrors: string[],
+    titleOnly = false,
   ) {
     const batches: Array<{ index: number; items: typeof candidates }> = [];
     for (let index = 0; index < candidates.length; index += CLASSIFICATION_BATCH_SIZE) {
@@ -362,7 +430,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     }
     for (let index = 0; index < batches.length; index += CLASSIFICATION_CONCURRENCY) {
       const group = batches.slice(index, index + CLASSIFICATION_CONCURRENCY);
-      const results = await Promise.allSettled(group.map((batch) => this.classifyBatch(batch.items, categories)));
+      const results = await Promise.allSettled(group.map((batch) => this.classifyBatch(batch.items, categories, titleOnly)));
       results.forEach((result, resultIndex) => {
         const batch = group[resultIndex];
         if (result.status === 'fulfilled') output.push(...result.value);
@@ -371,7 +439,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     }
   }
 
-  private async classifyBatch(candidates: Array<{ candidateId: string; title: string; summaryText: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>, categories: string[]) {
+  private async classifyBatch(candidates: Array<{ candidateId: string; title: string; summaryText: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>, categories: string[], titleOnly = false) {
     const client = this.getLlm();
     const categoryList = (categories.length ? [...categories, '其他'] : DEFAULT_CATEGORIES).join('、');
     const completion = await client.chat.completions.create({
@@ -381,13 +449,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
       messages: [
         {
           role: 'system',
-          content: [
-            '你是每日动态简报编辑。请只输出 JSON。',
-            '你的任务不是写深度研判报告，而是从候选新闻中整理每日动态简报条目。',
-            '每条新闻只需要标题、分类、100 到 200 字简要内容、来源、重要性评分，并保留 candidateId。',
-            'importanceScore 范围为 0 到 100；riskScore 可选，无法判断时填 0。',
-            '不要默认输出四宫格事件分析、复杂来龙去脉、长篇涉我风险研判。',
-          ].join('\n'),
+          content: dailyAwarenessClassificationSystemPrompt(titleOnly),
         },
         {
           role: 'user',
@@ -446,13 +508,13 @@ export class DailyAwarenessService implements OnModuleDestroy {
     }).filter((event) => event.eventTitle);
   }
 
-  private async generateSummary(date: string, events: DailyAwarenessScoredEvent[], stats: Array<{ category: string; count: number }>) {
+  private async generateSummary(date: string, events: DailyAwarenessScoredEvent[], stats: Array<{ category: string; count: number }>, titleOnly = false) {
     const client = this.getLlm();
     const completion = await client.chat.completions.create({
       model: this.model(),
       temperature: 0.2,
       messages: [
-        { role: 'system', content: '你是每日动态简报编辑。请用中文输出一段 300 字以内的总体摘要，不要输出 JSON。' },
+        { role: 'system', content: dailyAwarenessSummarySystemPrompt(titleOnly) },
         { role: 'user', content: JSON.stringify({ date, categoryStats: stats, topNews: events.slice(0, 12) }) },
       ],
     });

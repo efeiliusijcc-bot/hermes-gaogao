@@ -6,7 +6,11 @@ import type {
   DailyAwarenessQualityStatus,
   DailyAwarenessInboxStatus,
 } from './daily-awareness.constants.js';
-import type { DailyAwarenessCandidate, DailyAwarenessMaterial } from './daily-awareness.types.js';
+import type {
+  DailyAwarenessCandidate,
+  DailyAwarenessMaterial,
+  DailyAwarenessScoredEvent,
+} from './daily-awareness.types.js';
 
 export interface DailyDataFinishedEvent {
   eventId: string;
@@ -65,6 +69,15 @@ export interface DailyAwarenessPreparedMaterials {
   skippedCount: number;
   qualityStatus: DailyAwarenessQualityStatus | null;
   diagnostics: Record<string, unknown>;
+}
+
+export interface DailyAwarenessComposedBrief {
+  title: string;
+  summary: string;
+  reportMarkdown: string;
+  contentJson: Record<string, unknown>;
+  categoryStats: Array<{ category: string; count: number }>;
+  events: DailyAwarenessScoredEvent[];
 }
 
 export interface DailyAwarenessDisplayedBrief {

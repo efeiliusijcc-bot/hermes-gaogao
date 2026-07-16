@@ -25,6 +25,7 @@ ALTER TABLE daily_briefs ADD COLUMN IF NOT EXISTS source_count INTEGER NOT NULL 
 ALTER TABLE daily_briefs ADD COLUMN IF NOT EXISTS summary_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE daily_briefs ADD COLUMN IF NOT EXISTS title_only_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE daily_briefs ADD COLUMN IF NOT EXISTS skipped_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE daily_briefs ALTER COLUMN owner_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS daily_brief_events (
     item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -44,6 +45,8 @@ CREATE TABLE IF NOT EXISTS daily_brief_events (
     risk_score NUMERIC(5,2) DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE daily_brief_events ALTER COLUMN owner_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS daily_awareness_day_status (
     business_date DATE PRIMARY KEY,
