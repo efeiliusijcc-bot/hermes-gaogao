@@ -17,6 +17,15 @@ test('daily awareness user page is a read-only current brief workspace', async (
   assert.doesNotMatch(dailySource, /最大条数|回溯小时|生成每日简报|重新生成/);
 });
 
+test('daily awareness workspace scrolls below the fixed application header', async () => {
+  const dailySource = await source('components/DailyAwareness.vue');
+
+  assert.match(
+    dailySource,
+    /\.daily-awareness-page\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s,
+  );
+});
+
 test('daily awareness frontend uses V2 current and exact-date APIs', async () => {
   const apiSource = await source('lib/api.js');
 

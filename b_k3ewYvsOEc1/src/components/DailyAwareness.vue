@@ -463,7 +463,11 @@ watch(() => props.currentUser?.id, () => {
 
 <style scoped>
 .daily-awareness-page {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 28px clamp(20px, 4vw, 64px) 72px;
   color: #172133;
   background: #f4f6f8;
