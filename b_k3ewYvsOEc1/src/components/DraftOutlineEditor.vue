@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import {
   ArrowDown,
   ArrowLeft,
@@ -34,6 +34,12 @@ const emit = defineEmits([
 ])
 
 const outlineItems = computed(() => Array.isArray(props.modelValue?.outlineItems) ? props.modelValue.outlineItems : [])
+const revisionFocused = ref(false)
+const dockExpanded = computed(() => (
+  revisionFocused.value
+  || props.revising
+  || Boolean(props.feedback.trim())
+))
 const saveDisplay = computed(() => ({
   idle: { label: '已自动保存', tone: 'saved', icon: Cloud },
   dirty: { label: '未保存', tone: 'dirty', icon: CircleAlert },
@@ -233,7 +239,11 @@ function removeChild(sectionIndex, childIndex) {
       </div>
     </div>
 
-    <section class="draft-ai-revision" aria-labelledby="draft-ai-revision-title">
+    <section
+      class="draft-ai-revision"
+      :class="{ expanded: dockExpanded }"
+      aria-labelledby="draft-ai-revision-title"
+    >
       <header>
         <WandSparkles :size="18" aria-hidden="true" />
         <div>
@@ -244,10 +254,12 @@ function removeChild(sectionIndex, childIndex) {
       <AutoResizeTextarea
         :model-value="feedback"
         :disabled="revising"
-        :min-height="92"
+        :min-height="dockExpanded ? 92 : 42"
         :maxlength="2000"
         aria-label="AI 修改意见"
         placeholder="例如：加强涉我风险分析，合并重复章节"
+        @focus="revisionFocused = true"
+        @blur="revisionFocused = false"
         @update:model-value="emit('update:feedback', $event)"
       />
       <button type="button" :disabled="revising || !feedback.trim() || saveStatus === 'error'" @click="emit('revise')">
@@ -265,7 +277,7 @@ function removeChild(sectionIndex, childIndex) {
 </template>
 
 <style scoped>
-.draft-outline-editor { width: min(1040px, 100%); margin: 0 auto; padding: 18px 0 58px; }
+.draft-outline-editor { width: min(1040px, 100%); margin: 0 auto; padding: 18px 0; padding-bottom: 220px; }
 .draft-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 .draft-editor-head p { margin: 0 0 4px; color: #64748b; font-size: 12px; font-weight: 700; }
 .draft-editor-head h1 { margin: 0; color: #111827; font-size: 24px; letter-spacing: 0; }
@@ -300,11 +312,14 @@ function removeChild(sectionIndex, childIndex) {
 .draft-add-child { margin: 12px 0 0 30px; border-style: dashed; }
 .draft-directory-empty { padding: 32px 0; color: #7b8490; text-align: center; }
 .draft-directory-empty p { margin: 0 0 12px; }
-.draft-ai-revision { margin-top: 32px; border-top: 1px solid #dfe4ea; padding-top: 22px; }
-.draft-ai-revision > header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; color: #315f9d; }
+.draft-ai-revision { position: fixed; left: 50%; bottom: 16px; z-index: 30; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; width: min(1040px, calc(100vw - 56px)); box-sizing: border-box; margin: 0; border: 1px solid #d8dee7; background: rgba(255, 255, 255, 0.97); border-radius: 8px; box-shadow: 0 10px 30px rgba(30, 41, 59, 0.14); padding: 12px; transform: translateX(-50%); backdrop-filter: blur(12px); }
+.draft-ai-revision > header { display: flex; align-items: center; gap: 8px; min-width: 116px; margin: 0; color: #315f9d; }
 .draft-ai-revision > header div { color: initial; }
-.draft-ai-revision > button { display: inline-flex; align-items: center; gap: 7px; min-height: 38px; margin-top: 10px; border: 1px solid #3c679f; background: #3c679f; color: #fff; border-radius: 7px; padding: 0 13px; cursor: pointer; font-size: 12px; font-weight: 700; }
+.draft-ai-revision > header p { display: none; }
+.draft-ai-revision.expanded { align-items: start; }
+.draft-ai-revision > button { display: inline-flex; align-items: center; gap: 7px; min-height: 42px; margin: 0; border: 1px solid #3c679f; background: #3c679f; color: #fff; border-radius: 7px; padding: 0 13px; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .draft-ai-revision > button:disabled { opacity: 0.52; cursor: not-allowed; }
+.draft-ai-revision :deep(textarea) { max-height: 180px; overflow-y: auto; transition: min-height 160ms ease; }
 .draft-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 34px; border-top: 1px solid #e1e5ea; padding-top: 18px; }
 .draft-editor-footer button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 700; }
 .draft-editor-footer .secondary { border: 1px solid #d5dbe3; background: #fff; color: #4b5563; }
@@ -315,6 +330,7 @@ function removeChild(sectionIndex, childIndex) {
 @keyframes draft-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 760px) {
+  .draft-outline-editor { padding-bottom: 300px; }
   .draft-editor-head, .draft-directory-head, .draft-editor-footer { align-items: stretch; flex-direction: column; }
   .draft-save-status { align-self: flex-start; }
   .draft-outline-fields { grid-template-columns: 1fr; }
@@ -323,6 +339,10 @@ function removeChild(sectionIndex, childIndex) {
   .draft-section-actions { grid-column: 2; justify-content: flex-start; }
   .draft-child-list, .draft-add-child { margin-left: 8px; }
   .draft-child-editor { grid-template-columns: 34px minmax(0, 1fr) 32px; }
+  .draft-ai-revision { bottom: 8px; grid-template-columns: 1fr; gap: 8px; width: calc(100vw - 16px); padding: 10px; }
+  .draft-ai-revision > header { min-width: 0; }
+  .draft-ai-revision > button { width: 100%; justify-content: center; }
+  .draft-ai-revision :deep(textarea) { max-height: 30vh; }
   .draft-editor-footer button { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
