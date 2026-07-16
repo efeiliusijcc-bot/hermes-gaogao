@@ -98,6 +98,14 @@ const historySource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftHistorySidebar.vue', import.meta.url),
   'utf8',
 );
+const outlineEditorSource = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftOutlineEditor.vue', import.meta.url),
+  'utf8',
+);
+const outlineViewSource = fs.readFileSync(
+  new URL('../b_k3ewYvsOEc1/src/components/DraftOutlineView.vue', import.meta.url),
+  'utf8',
+);
 
 assert.match(sourceComposer, /<AutoResizeTextarea/);
 assert.match(sourceComposer, /开始编报/);
@@ -112,6 +120,16 @@ assert.match(historySource, /搜索历史编报/);
 assert.match(historySource, /新建编报/);
 assert.doesNotMatch(historySource, /删除/);
 assert.doesNotMatch(historySource, /history-sidebar-tabs|最近编辑|全部事件/);
+assert.match(outlineEditorSource, /update:modelValue/);
+assert.match(outlineEditorSource, /已自动保存/);
+assert.match(outlineEditorSource, /保存中/);
+assert.match(outlineEditorSource, /保存失败/);
+assert.match(outlineEditorSource, /未保存/);
+assert.match(outlineEditorSource, /AI 修改/);
+assert.match(outlineEditorSource, /<AutoResizeTextarea/);
+assert.doesNotMatch(outlineEditorSource, /V\d|版本记录|恢复旧版本|版本比较/);
+assert.doesNotMatch(outlineViewSource, /emit\('edit'\)|编辑提纲|更多提纲操作/);
+assert.match(outlineViewSource, /overflow-wrap:\s*anywhere/);
 
 assert.doesNotMatch(assistantSource, /setTimeout\([^)]*manualUpdateDraftOutline/);
 
