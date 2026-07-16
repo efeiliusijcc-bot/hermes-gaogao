@@ -146,6 +146,7 @@ const userPermissions = computed(() => Array.isArray(authUser.value?.permissions
 const isAdminUser = computed(() => authUser.value?.role === 'admin' || (Array.isArray(authUser.value?.roles) && authUser.value.roles.includes('admin')))
 const canManageUsers = computed(() => isAdminUser.value || hasPermission('user:manage') || hasPermission('role:manage'))
 const canDeleteReports = computed(() => userPermissions.value.includes('report:delete'))
+const canViewDailyAwareness = computed(() => hasPermission('daily-awareness:view'))
 const hasAnyBusinessModule = computed(() => userModules.value.some((module) => ['report', 'qa', 'draft', 'daily'].includes(module)))
 
 const sidebarCurrentJobId = computed(() => {
@@ -233,7 +234,11 @@ function openDraftAssistant() {
 }
 
 function openDailyAwareness() {
-  if (authUser.value && !hasModule('daily')) {
+  if (!authUser.value) {
+    setAuthNotice('请先登录')
+    return
+  }
+  if (!canViewDailyAwareness.value) {
     setAuthNotice('当前账号暂无每日动态感知权限，请联系管理员分配权限。')
     return
   }
@@ -310,6 +315,10 @@ function exitReportDetailForWorkspace() {
 }
 
 function switchWorkspace(mode) {
+  if (mode === 'daily') {
+    openDailyAwareness()
+    return
+  }
   if (authUser.value && !hasModule(mode)) {
     setAuthNotice('当前账号暂无该功能权限，请联系管理员分配权限。')
     return
@@ -325,14 +334,6 @@ function switchWorkspace(mode) {
   showDailyAwareness.value = false
   showPersonalSettings.value = false
   draftInitialEventId.value = ''
-
-  if (mode === 'daily') {
-    exitReportDetailForWorkspace()
-    selectedQaSessionId.value = ''
-    homeMode.value = 'report'
-    showDailyAwareness.value = true
-    return
-  }
 
   if (mode === 'qa') {
     exitReportDetailForWorkspace()

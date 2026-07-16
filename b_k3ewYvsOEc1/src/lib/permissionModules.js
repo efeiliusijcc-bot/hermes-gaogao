@@ -26,7 +26,7 @@ const MODULE_PERMISSION_HINTS = {
   ],
   qa: ['chat:execute', 'chat:read'],
   draft: ['draft_assistant:create', 'draft_assistant:read', 'draft_assistant:update'],
-  daily: ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import'],
+  daily: ['daily-awareness:view'],
 }
 
 function uniqueStrings(values) {

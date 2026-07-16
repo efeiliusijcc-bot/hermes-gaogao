@@ -1,10 +1,10 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  downloadDailyBrief,
-  generateDailyBrief,
-  getDailyBrief,
-  getDailyBriefs,
+  downloadDailyAwarenessByDate,
+  getCurrentDailyAwareness,
+  getDailyAwarenessByDate,
+  getDailyAwarenessHistory,
   importDailyEventToDraft,
 } from '../lib/api.js'
 
@@ -17,64 +17,47 @@ const props = defineProps({
 
 const emit = defineEmits(['back', 'open-draft-event'])
 
-const categoryOptions = [
-  '欧洲政治',
-  '欧洲经济',
-  '美国政治',
-  '美国经济',
-  '国际安全',
-  '俄乌局势',
-  '中东局势',
-  '亚太安全',
-  '国际组织',
-  '科技产业',
-  '能源资源',
-  '金融市场',
-  '社会舆情',
-  '其他',
-]
+const MESSAGE_MAP = {
+  TODAY_READY: { tone: 'success', text: '今日简报已就绪。' },
+  TODAY_NO_DATA: { tone: 'neutral', text: '今日暂无可用数据，当前展示最近一期简报。' },
+  TODAY_GENERATING: { tone: 'progress', text: '今日数据已到达，简报正在后台生成，当前展示最近一期简报。' },
+  TODAY_GENERATION_FAILED: { tone: 'warning', text: '今日简报生成未成功，当前展示最近一期简报。' },
+  TODAY_WAITING: { tone: 'neutral', text: '今日数据尚未完成，当前展示最近一期简报。' },
+  NO_SUCCESSFUL_BRIEF: { tone: 'neutral', text: '暂无可展示的历史简报。' },
+}
 
-const today = new Date().toISOString().slice(0, 10)
-const filters = reactive({
-  date: today,
-  maxItems: 50,
-  categories: ['欧洲政治', '欧洲经济', '国际安全', '科技产业'],
-  region: '',
-  keyword: '',
-  lookbackHours: 24,
-})
 const loading = ref(false)
 const historyLoading = ref(false)
-const openingBriefId = ref('')
+const openingDate = ref('')
 const importingItemId = ref('')
 const exportingWord = ref(false)
 const errorMessage = ref('')
 const noticeMessage = ref('')
-const diagnostics = ref(null)
-const selectedCategory = ref('')
+const currentState = ref(null)
 const activeBrief = ref(null)
-const events = ref([])
 const historyItems = ref([])
 const showHistoryDrawer = ref(false)
-const settingsCollapsed = ref(false)
+const selectedCategory = ref('')
 const expandedEventIds = ref(new Set())
 const importedEventIds = ref(new Set())
+const viewMode = ref('current')
 
-const RECOVERY_POLL_ATTEMPTS = 6
-const RECOVERY_POLL_INTERVAL_MS = 1500
-
-const isLoggedIn = computed(() => Boolean(props.currentUser))
-const userModules = computed(() => Array.isArray(props.currentUser?.modules) ? props.currentUser.modules : [])
-const canGenerate = computed(() => isLoggedIn.value && userModules.value.includes('daily'))
-const canImportToDraft = computed(() => isLoggedIn.value && userModules.value.includes('daily') && userModules.value.includes('draft'))
-const permissionHint = computed(() => {
-  if (!isLoggedIn.value) return '请先登录后查看或生成每日简报。'
-  if (!canGenerate.value) return '当前账号暂无每日动态感知权限，请联系管理员分配权限。'
-  return ''
-})
-const categoryStats = computed(() => {
-  const fromBrief = activeBrief.value?.categories
-  if (Array.isArray(fromBrief) && fromBrief.length) return fromBrief
+const userPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
+const canView = computed(() => userPermissions.value.includes('daily-awareness:view'))
+const canImportToDraft = computed(() => canView.value && userPermissions.value.includes('draft_assistant:create'))
+const isHistoryMode = computed(() => viewMode.value === 'history')
+const businessDate = computed(() => currentState.value?.businessDate || '--')
+const displayedDate = computed(() => activeBrief.value?.businessDate || '--')
+const events = computed(() => Array.isArray(activeBrief.value?.events) ? activeBrief.value.events : [])
+const qualityStatus = computed(() => activeBrief.value?.qualityStatus || currentState.value?.qualityStatus || '')
+const banner = computed(() => MESSAGE_MAP[currentState.value?.messageCode] || MESSAGE_MAP.TODAY_WAITING)
+const title = computed(() => activeBrief.value?.title || '每日动态简报')
+const contentMarkdown = computed(() => activeBrief.value?.contentMarkdown || '')
+const categoryDistribution = computed(() => {
+  const distribution = activeBrief.value?.categoryDistribution
+  if (distribution && typeof distribution === 'object' && !Array.isArray(distribution)) {
+    return Object.entries(distribution).map(([category, count]) => ({ category, count: Number(count || 0) }))
+  }
   const counts = new Map()
   for (const event of events.value) {
     const category = event.category || '其他'
@@ -83,139 +66,51 @@ const categoryStats = computed(() => {
   return [...counts.entries()].map(([category, count]) => ({ category, count }))
 })
 const visibleEvents = computed(() => {
-  let items = enrichedEvents.value
-  if (selectedCategory.value) items = items.filter((event) => event.category === selectedCategory.value)
-  return [...items].sort((a, b) => Number(a.rank || a.rankNo || 0) - Number(b.rank || b.rankNo || 0))
+  const filtered = selectedCategory.value
+    ? events.value.filter((event) => (event.category || '其他') === selectedCategory.value)
+    : events.value
+  return [...filtered].sort((left, right) => Number(left.rankNo || 0) - Number(right.rankNo || 0))
 })
-const overview = computed(() => {
-  const content = activeBrief.value?.contentJson || {}
-  const generation = content.generation || {}
-  return {
-    date: activeBrief.value?.briefDate || filters.date,
-    materials: activeBrief.value?.candidateMaterialCount || generation.candidateMaterialCount || generation.totalMaterials || 0,
-    candidates: activeBrief.value?.candidateEventCount || generation.candidateEventCount || activeBrief.value?.totalCandidates || generation.totalCandidates || 0,
-    selected: activeBrief.value?.selectedNewsCount || activeBrief.value?.selectedEventCount || activeBrief.value?.selectedCount || generation.selectedNewsCount || generation.selectedEventCount || events.value.length,
-    categoryCount: categoryStats.value.length,
-    createdAt: activeBrief.value?.createdAt || '',
-    usedFallback: Boolean(activeBrief.value?.usedFallback || generation.usedFallback),
-    fallbackReason: activeBrief.value?.fallbackReason || generation.fallbackReason || '',
-    diagnostics: generation.diagnostics || null,
-  }
-})
-const enrichedEvents = computed(() => events.value.map((event) => normalizeEventForDisplay(event)))
-const reportTitle = computed(() => activeBrief.value?.title || `${overview.value.date} 每日动态简报`)
-const reportSummary = computed(() => activeBrief.value?.summary || fallbackSummary())
-const reportMarkdown = computed(() => {
-  return activeBrief.value?.reportMarkdown
-    || activeBrief.value?.contentJson?.reportMarkdown
-    || buildFallbackReportMarkdown()
-})
-const primaryCategories = computed(() => categoryStats.value.slice(0, 5).map((item) => item.category).join('、') || '多个领域')
 const reportStats = computed(() => [
-  { label: '候选新闻', value: overview.value.materials },
-  { label: '入选新闻', value: overview.value.selected },
-  { label: '分类数量', value: overview.value.categoryCount },
-  { label: '生成时间', value: formatTime(overview.value.createdAt) },
+  { label: '入选新闻', value: events.value.length },
+  { label: '分类数量', value: categoryDistribution.value.length },
+  { label: '简报版本', value: qualityLabel(qualityStatus.value) },
+  { label: '生成时间', value: formatTime(activeBrief.value?.generatedAt) },
 ])
-const categoryDistribution = computed(() => {
-  const distribution = activeBrief.value?.categoryDistribution || activeBrief.value?.contentJson?.categoryDistribution
-  if (distribution && typeof distribution === 'object' && !Array.isArray(distribution)) {
-    return Object.entries(distribution).map(([category, count]) => ({ category, count: Number(count || 0) }))
-  }
-  return categoryStats.value
-})
-const reportSections = computed(() => {
-  const sections = new Map()
-  for (const event of enrichedEvents.value) {
-    const category = event.category || '其他'
-    if (!sections.has(category)) sections.set(category, [])
-    sections.get(category).push(event)
-  }
-  const preferredOrder = categoryStats.value.map((item) => item.category)
-  return [...sections.entries()]
-    .map(([category, items]) => ({ category, items: [...items].sort((a, b) => Number(a.rank || a.rankNo || 0) - Number(b.rank || b.rankNo || 0)) }))
-    .sort((a, b) => {
-      const left = preferredOrder.indexOf(a.category)
-      const right = preferredOrder.indexOf(b.category)
-      return (left < 0 ? 999 : left) - (right < 0 ? 999 : right)
-    })
-})
-const emptyState = computed(() => {
-  if (errorMessage.value) {
-    return {
-      title: '生成失败',
-      message: `原因：${errorMessage.value}`,
-      suggestion: '建议：扩大回溯小时、检查信源库、减少筛选条件。',
-    }
-  }
-  if (!isLoggedIn.value) {
-    return {
-      title: '请先登录',
-      message: '登录后可查看和生成每日动态感知内容。',
-      suggestion: '',
-    }
-  }
-  if (events.value.length && !visibleEvents.value.length) {
-    return {
-      title: '当前筛选下暂无新闻',
-      message: '可切换分类查看其他入选新闻。',
-      suggestion: '',
-    }
-  }
-  return {
-    title: '未生成每日简报',
-    message: '请选择日期并点击“生成每日简报”。',
-    suggestion: '',
-  }
-})
 
-function toggleCategory(category) {
-  if (filters.categories.includes(category)) {
-    filters.categories = filters.categories.filter((item) => item !== category)
-  } else {
-    filters.categories = [...filters.categories, category]
-  }
-}
-
-function toggleSettings() {
-  settingsCollapsed.value = !settingsCollapsed.value
-}
-
-function toggleEventDetails(eventId) {
-  const next = new Set(expandedEventIds.value)
-  if (next.has(eventId)) next.delete(eventId)
-  else next.add(eventId)
-  expandedEventIds.value = next
-}
-
-function isEventExpanded(eventId) {
-  return expandedEventIds.value.has(eventId)
-}
-
-function isEventImported(eventId) {
-  return importedEventIds.value.has(eventId)
-}
-
-function markEventImported(eventId) {
-  const next = new Set(importedEventIds.value)
-  next.add(eventId)
-  importedEventIds.value = next
-}
-
-async function loadHistory() {
-  if (!isLoggedIn.value) {
-    historyItems.value = []
+async function loadWorkspace() {
+  if (!canView.value) {
+    currentState.value = null
     activeBrief.value = null
-    events.value = []
+    historyItems.value = []
     return
   }
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    const [current, history] = await Promise.all([
+      getCurrentDailyAwareness(),
+      getDailyAwarenessHistory({ page: 1, pageSize: 30 }),
+    ])
+    currentState.value = current || null
+    activeBrief.value = current?.displayedBrief || null
+    historyItems.value = Array.isArray(history?.items) ? history.items : []
+    viewMode.value = 'current'
+    selectedCategory.value = ''
+    expandedEventIds.value = new Set()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshHistory() {
+  if (!canView.value) return
   historyLoading.value = true
   try {
-    const result = await getDailyBriefs({ page: 1, pageSize: 20 })
-    historyItems.value = Array.isArray(result?.items) ? result.items : []
-    if (!activeBrief.value && historyItems.value[0]?.briefId) {
-      await openBrief(historyItems.value[0].briefId)
-    }
+    const history = await getDailyAwarenessHistory({ page: 1, pageSize: 30 })
+    historyItems.value = Array.isArray(history?.items) ? history.items : []
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -225,111 +120,51 @@ async function loadHistory() {
 
 async function openHistoryDrawer() {
   showHistoryDrawer.value = true
-  await loadHistory()
+  await refreshHistory()
 }
 
 function closeHistoryDrawer() {
   showHistoryDrawer.value = false
 }
 
-async function generateBrief() {
-  if (!canGenerate.value || loading.value) return
-  loading.value = true
-  const requestStartedAt = Date.now()
+async function openHistoryBrief(date) {
+  if (!date || openingDate.value) return
+  openingDate.value = date
   errorMessage.value = ''
   noticeMessage.value = ''
-  diagnostics.value = null
-  selectedCategory.value = ''
   try {
-    const result = await generateDailyBrief({
-      date: filters.date,
-      maxItems: Number(filters.maxItems) || 50,
-      categories: filters.categories,
-      region: filters.region,
-      keyword: filters.keyword,
-      lookbackHours: Number(filters.lookbackHours) || 24,
-    })
-    activeBrief.value = result?.brief || null
-    setEvents(Array.isArray(result?.events) ? result.events : [])
-    noticeMessage.value = result?.brief?.usedFallback
-      ? '当前日期无可用材料，已使用最近可用信源生成。'
-      : '每日动态简报已生成。'
-    await loadHistory()
-  } catch (error) {
-    const recovered = await recoverGeneratedBrief(requestStartedAt)
-    if (recovered) {
-      noticeMessage.value = '每日动态简报已生成，但网络响应超时；已自动读取最新结果。'
-      return
-    }
-    errorMessage.value = formatGenerateError(error)
-    diagnostics.value = error?.data?.diagnostics || null
-  } finally {
-    loading.value = false
-  }
-}
-
-async function recoverGeneratedBrief(requestStartedAt) {
-  for (let attempt = 0; attempt < RECOVERY_POLL_ATTEMPTS; attempt += 1) {
-    if (attempt > 0) await sleep(RECOVERY_POLL_INTERVAL_MS)
-    try {
-      const result = await getDailyBriefs({ page: 1, pageSize: 5, date: filters.date })
-      const items = Array.isArray(result?.items) ? result.items : []
-      const brief = items.find((item) => isBriefCreatedAfterRequest(item, requestStartedAt))
-      if (!brief?.briefId) continue
-      await openGeneratedBrief(brief.briefId)
-      await loadHistory()
-      return true
-    } catch {
-      // Keep polling briefly; the generate request may have completed while the proxy response failed.
-    }
-  }
-  return false
-}
-
-async function openGeneratedBrief(briefId) {
-  const result = await getDailyBrief(briefId)
-  activeBrief.value = result?.brief || null
-  setEvents(Array.isArray(result?.events?.items) ? result.events.items : Array.isArray(result?.events) ? result.events : [])
-}
-
-function isBriefCreatedAfterRequest(brief, requestStartedAt) {
-  const createdAt = new Date(brief?.createdAt || '').getTime()
-  if (!Number.isFinite(createdAt)) return false
-  return createdAt >= requestStartedAt - 30_000
-}
-
-function formatGenerateError(error) {
-  const message = error instanceof Error ? error.message : String(error)
-  if (/Unexpected token ['"]?</i.test(message) || /not valid JSON/i.test(message)) {
-    return '生成请求返回了非 JSON 内容，可能是代理超时。请稍后查看历史简报，或减少最大条数后重试。'
-  }
-  return message
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
-}
-
-async function openBrief(briefId) {
-  if (!briefId || openingBriefId.value) return
-  openingBriefId.value = briefId
-  errorMessage.value = ''
-  noticeMessage.value = ''
-  diagnostics.value = null
-  selectedCategory.value = ''
-  try {
-    const result = await getDailyBrief(briefId)
-    activeBrief.value = result?.brief || null
-    setEvents(Array.isArray(result?.events?.items) ? result.events.items : Array.isArray(result?.events) ? result.events : [])
+    activeBrief.value = await getDailyAwarenessByDate(date)
+    viewMode.value = 'history'
+    selectedCategory.value = ''
+    expandedEventIds.value = new Set()
+    closeHistoryDrawer()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
-    openingBriefId.value = ''
+    openingDate.value = ''
   }
 }
 
-function handleKeydown(event) {
-  if (event.key === 'Escape' && showHistoryDrawer.value) closeHistoryDrawer()
+function returnToCurrent() {
+  activeBrief.value = currentState.value?.displayedBrief || null
+  viewMode.value = 'current'
+  selectedCategory.value = ''
+  expandedEventIds.value = new Set()
+}
+
+function toggleEventDetails(itemId) {
+  const next = new Set(expandedEventIds.value)
+  if (next.has(itemId)) next.delete(itemId)
+  else next.add(itemId)
+  expandedEventIds.value = next
+}
+
+function isEventExpanded(itemId) {
+  return expandedEventIds.value.has(itemId)
+}
+
+function isEventImported(itemId) {
+  return importedEventIds.value.has(itemId)
 }
 
 async function importToDraft(event) {
@@ -339,7 +174,7 @@ async function importToDraft(event) {
   noticeMessage.value = ''
   try {
     const result = await importDailyEventToDraft(event.itemId)
-    markEventImported(event.itemId)
+    importedEventIds.value = new Set([...importedEventIds.value, event.itemId])
     noticeMessage.value = '已导入拟稿助手。'
     if (result?.eventId) emit('open-draft-event', { eventId: result.eventId })
   } catch (error) {
@@ -350,26 +185,25 @@ async function importToDraft(event) {
 }
 
 async function copyReport() {
-  const text = reportMarkdown.value
-  if (!text) return
+  if (!contentMarkdown.value) return
   errorMessage.value = ''
   noticeMessage.value = ''
   try {
-    await navigator.clipboard.writeText(text)
-    noticeMessage.value = '每日动态简报已复制。'
+    await navigator.clipboard.writeText(contentMarkdown.value)
+    noticeMessage.value = '简报内容已复制。'
   } catch {
     errorMessage.value = '复制失败，请检查浏览器剪贴板权限。'
   }
 }
 
 async function exportWord() {
-  if (!activeBrief.value?.briefId || exportingWord.value) return
+  if (!activeBrief.value?.businessDate || exportingWord.value) return
   exportingWord.value = true
   errorMessage.value = ''
   noticeMessage.value = ''
   try {
-    const result = await downloadDailyBrief(activeBrief.value.briefId, 'docx')
-    const filename = result.filename || `${overview.value.date}-每日动态简报.docx`
+    const result = await downloadDailyAwarenessByDate(activeBrief.value.businessDate, 'docx')
+    const filename = result.filename || `${activeBrief.value.businessDate}-每日动态简报.docx`
     const url = URL.createObjectURL(result.blob)
     const anchor = document.createElement('a')
     anchor.href = url
@@ -380,122 +214,23 @@ async function exportWord() {
     URL.revokeObjectURL(url)
     noticeMessage.value = 'Word 文件已开始下载。'
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message || '导出 Word 失败，请稍后重试。' : '导出 Word 失败，请稍后重试。'
+    errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
     exportingWord.value = false
   }
 }
 
-function setEvents(nextEvents) {
-  events.value = nextEvents
-  expandedEventIds.value = new Set()
+function qualityLabel(status) {
+  if (status === 'TITLE_ONLY') return '简要版'
+  if (status === 'PARTIAL_SUMMARY') return '部分摘要版'
+  if (status === 'NORMAL') return '标准版'
+  return '--'
 }
 
-function normalizeEventForDisplay(event) {
-  const sources = Array.isArray(event.sourceInfo) ? event.sourceInfo : []
-  const sourceTitle = sources.find((source) => sanitizeSourceText(source?.title))?.title || ''
-  const primary = primarySource(event)
-  const candidateTitle = firstText([
-    event.title,
-    event.displayTitle,
-    event.titleZh,
-    event.summaryTitle,
-    event.eventTitle,
-  ])
-  const originalTitle = firstText([event.originalTitle, event.sourceTitle, sourceTitle])
-  const displayTitle = candidateTitle || originalTitle || '未命名新闻'
-  const latestPublishedAtValue = Math.max(0, ...sources.map((source) => new Date(source?.publishedAt || '').getTime()).filter(Number.isFinite))
-  return {
-    ...event,
-    displayTitle,
-    originalTitle: originalTitle && originalTitle !== displayTitle ? originalTitle : '',
-    sourceCount: event.sourceCount || sources.length,
-    publisher: sanitizeSourceText(event.publisher) || sanitizeSourceText(primary.publisher) || '',
-    publishedAt: event.publishedAt || primary.publishedAt || '',
-    sourceUrl: event.sourceUrl || primary.url || '',
-    imported: isEventImported(event.itemId),
-    compactSummary: firstText([event.briefContent, event.basicSituation, event.backgroundContext, event.importanceJudgement]).slice(0, 220),
-    latestPublishedAtValue,
-  }
-}
-
-function firstText(values) {
-  return values.map((value) => String(value || '').trim()).find(Boolean) || ''
-}
-
-function sanitizeSourceText(value) {
-  const text = String(value || '')
-    .replace(/\u0000/g, '')
-    .replace(/^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\]+(?=[\p{L}\p{N}\u4e00-\u9fff])/u, '')
-    .replace(/(?<=[\p{L}\p{N}\u4e00-\u9fff])[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u, '')
-    .trim()
-  return /^[?\uFFFD�\s()[\]（）【】·•\-_:：|｜/\\.。]+$/u.test(text) ? '' : text
-}
-
-function primarySource(event) {
-  const sources = Array.isArray(event?.sourceInfo) ? event.sourceInfo : []
-  return sources[0] || {}
-}
-
-function sourceUrl(event) {
-  return event?.sourceUrl || primarySource(event).url || ''
-}
-
-function sourcePublisher(event) {
-  return sanitizeSourceText(event?.publisher) || sanitizeSourceText(primarySource(event).publisher) || '来源未知'
-}
-
-function sourceTime(event) {
-  return event?.publishedAt || primarySource(event).publishedAt || ''
-}
-
-function sourceTitle(source) {
-  return sanitizeSourceText(source?.title) || source?.url || '未命名来源'
-}
-
-function newsBrief(event) {
-  return event?.briefContent || event?.basicSituation || event?.compactSummary || '暂无简要内容。'
-}
-
-function fallbackSummary() {
-  if (!activeBrief.value && !events.value.length) return ''
-  const selected = overview.value.selected || events.value.length
-  return `今日共从 ${overview.value.materials} 条候选新闻中筛选出 ${selected} 条重点新闻，主要集中在${primaryCategories.value}。`
-}
-
-function buildFallbackReportMarkdown() {
-  if (!activeBrief.value && !events.value.length) return ''
-  const lines = [
-    `# ${reportTitle.value}`,
-    '',
-    '## 一、今日概览',
-    '',
-    reportSummary.value || fallbackSummary(),
-    '',
-    '## 二、分类分布',
-    '',
-  ]
-  if (categoryStats.value.length) {
-    for (const item of categoryStats.value) lines.push(`- ${item.category}：${item.count} 条`)
-  } else {
-    lines.push('- 暂无分类统计')
-  }
-  lines.push('', '## 三、重点新闻列表', '')
-  for (const item of enrichedEvents.value) {
-    lines.push(`${item.rank || item.rankNo || 0}. ${item.displayTitle}`)
-    lines.push(`   简要内容：${newsBrief(item)}`)
-    lines.push('')
-    lines.push(`   来源：${sourcePublisher(item)}，发布时间：${sourceTime(item) || '时间未知'}`)
-    lines.push('')
-  }
-  lines.push(
-    '## 四、可进一步研判方向',
-    '',
-    '- 可围绕高频分类中的重点新闻形成专题编报；',
-    '- 可选择单条新闻导入拟稿助手开展深度分析；',
-    '- 正式编报前建议复核关键时间、主体表态和来源链接。',
-  )
-  return lines.join('\n')
+function qualityClass(status) {
+  if (status === 'TITLE_ONLY') return 'brief-quality compact'
+  if (status === 'PARTIAL_SUMMARY') return 'brief-quality partial'
+  return 'brief-quality normal'
 }
 
 function formatTime(value) {
@@ -505,24 +240,29 @@ function formatTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-function historyCategoryCount(brief) {
-  const categories = Array.isArray(brief?.categories) ? brief.categories : []
-  if (categories.length) return categories.length
-  const stats = brief?.contentJson?.categoryStats
-  return Array.isArray(stats) ? stats.length : 0
+function eventTitle(event) {
+  return event?.eventTitle || event?.title || '未命名新闻'
 }
 
-function historyMaterialCount(brief) {
-  return brief?.candidateMaterialCount || brief?.contentJson?.generation?.candidateMaterialCount || brief?.contentJson?.generation?.totalMaterials || 0
+function eventSummary(event) {
+  return event?.basicSituation || event?.backgroundContext || event?.importanceJudgement || '暂无摘要。'
 }
 
-function historyUsesFallback(brief) {
-  return Boolean(brief?.usedFallback || brief?.contentJson?.generation?.usedFallback)
+function sourceList(event) {
+  return Array.isArray(event?.sourceInfo) ? event.sourceInfo : []
+}
+
+function sourceLabel(source) {
+  return source?.publisher || source?.title || source?.url || '来源未知'
+}
+
+function handleKeydown(event) {
+  if (event.key === 'Escape' && showHistoryDrawer.value) closeHistoryDrawer()
 }
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
-  void loadHistory()
+  void loadWorkspace()
 })
 
 onBeforeUnmount(() => {
@@ -530,314 +270,190 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.currentUser?.id, () => {
-  errorMessage.value = ''
-  noticeMessage.value = ''
   showHistoryDrawer.value = false
-  void loadHistory()
+  noticeMessage.value = ''
+  void loadWorkspace()
 })
 </script>
 
 <template>
   <main class="daily-awareness-page">
-    <header class="daily-awareness-header">
-      <button type="button" class="daily-back-btn" @click="emit('back')">‹</button>
-      <div>
-        <div class="daily-eyebrow">DAILY AWARENESS</div>
+    <header class="daily-header">
+      <button type="button" class="icon-button back-button" title="返回" aria-label="返回" @click="emit('back')">‹</button>
+      <div class="daily-title-block">
+        <span class="eyebrow">DAILY AWARENESS</span>
         <h1>每日动态感知</h1>
-        <p>基于现有信源库筛选每日重点新闻，生成动态简报报告。</p>
+        <p>面向全局共享的每日重点动态简报。</p>
       </div>
-      <button type="button" class="daily-history-trigger" @click="openHistoryDrawer">
-        历史简报
-        <span>{{ historyItems.length }}</span>
+      <button type="button" class="history-button" @click="openHistoryDrawer">
+        历史简报 <span>{{ historyItems.length }}</span>
       </button>
     </header>
 
-    <section class="daily-layout">
-      <aside class="daily-sidebar">
-        <section class="daily-panel">
-          <div class="daily-panel-head">
-            <div class="daily-panel-title">生成设置</div>
-            <button v-if="activeBrief" type="button" class="daily-panel-toggle" @click="toggleSettings">
-              {{ settingsCollapsed ? '展开设置' : '收起设置' }}
-            </button>
-          </div>
-
-          <div v-if="settingsCollapsed" class="daily-settings-compact">
-            <p><span>当前日期</span><strong>{{ overview.date }}</strong></p>
-            <p><span>入选新闻</span><strong>{{ overview.selected }}</strong></p>
-            <button class="daily-primary-btn compact" type="button" :disabled="!canGenerate || loading" @click="generateBrief">
-              {{ loading ? '生成中...' : '重新生成' }}
-            </button>
-          </div>
-
-          <template v-else>
-            <label>
-              <span>日期</span>
-              <input v-model="filters.date" type="date" />
-            </label>
-            <label>
-              <span>最大条数</span>
-              <input v-model.number="filters.maxItems" type="number" min="1" max="50" />
-            </label>
-            <label>
-              <span>回溯小时</span>
-              <input v-model.number="filters.lookbackHours" type="number" min="1" max="168" />
-            </label>
-            <label>
-              <span>地区</span>
-              <input v-model="filters.region" placeholder="可选，例如：欧洲、美国" />
-            </label>
-            <label>
-              <span>关键词</span>
-              <input v-model="filters.keyword" placeholder="可选，按标题和正文过滤" />
-            </label>
-            <div class="daily-category-picker">
-              <span>分类范围</span>
-              <button
-                v-for="category in categoryOptions"
-                :key="category"
-                type="button"
-                :class="{ active: filters.categories.includes(category) }"
-                @click="toggleCategory(category)"
-              >
-                {{ category }}
-              </button>
-            </div>
-            <button class="daily-primary-btn" type="button" :disabled="!canGenerate || loading" @click="generateBrief">
-              {{ loading ? '生成中...' : '生成每日简报' }}
-            </button>
-            <p v-if="permissionHint" class="daily-helper">{{ permissionHint }}</p>
-          </template>
-        </section>
-      </aside>
-
-      <section class="daily-main">
-        <div v-if="errorMessage" class="daily-message error">{{ errorMessage }}</div>
-        <div v-if="noticeMessage" class="daily-message success">{{ noticeMessage }}</div>
-        <section v-if="diagnostics" class="daily-diagnostics">
-          <div class="daily-card-kicker">查询诊断</div>
-          <div class="daily-diagnostics-grid">
-            <p><span>查询日期</span><strong>{{ diagnostics.targetDate || filters.date }}</strong></p>
-            <p><span>回溯小时</span><strong>{{ diagnostics.lookbackHours || filters.lookbackHours }}</strong></p>
-            <p><span>数据库表</span><strong>{{ diagnostics.sourceTable || '--' }}</strong></p>
-            <p><span>指定窗口材料</span><strong>{{ diagnostics.exactMaterialCount ?? 0 }}</strong></p>
-            <p><span>Fallback</span><strong>{{ diagnostics.usedFallback ? '已启用' : '未启用' }}</strong></p>
-            <p><span>返回材料</span><strong>{{ diagnostics.returnedMaterialCount ?? 0 }}</strong></p>
-          </div>
-          <small>查询窗口：{{ diagnostics.queryStart || '--' }} 至 {{ diagnostics.queryEnd || '--' }}。建议扩大回溯范围或检查 PGVector 信源库入库时间。</small>
-        </section>
-
-        <section class="daily-overview">
-          <article v-for="item in reportStats" :key="item.label">
-            <span>{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
-          </article>
-        </section>
-
-        <section v-if="activeBrief" class="daily-summary-card">
-          <div class="daily-summary-head">
-            <div class="daily-card-kicker">每日动态简报</div>
-            <h2>{{ reportTitle }}</h2>
-            <p>{{ reportSummary || '暂无概览。' }}</p>
-          </div>
-          <div class="daily-summary-actions">
-            <button type="button" class="daily-secondary-btn" @click="copyReport">复制报告</button>
-            <button type="button" class="daily-primary-inline-btn" :disabled="exportingWord" @click="exportWord">
-              {{ exportingWord ? '导出中...' : '导出 Word' }}
-            </button>
-          </div>
-          <div class="daily-distribution">
-            <span v-for="item in categoryDistribution" :key="item.category">
-              {{ item.category }} <strong>{{ item.count }}</strong>
-            </span>
-          </div>
-        </section>
-        <div v-if="overview.usedFallback" class="daily-message warning">
-          {{ overview.fallbackReason || '当前日期无可用材料，已使用最近可用信源生成。' }}
-        </div>
-
-        <section v-if="activeBrief" class="daily-report-card daily-readable-report">
-          <div class="daily-report-head">
-            <div>
-              <div class="daily-card-kicker">DAILY BRIEF REPORT</div>
-              <h3>每日动态简报正文</h3>
-            </div>
-            <button type="button" class="daily-secondary-btn" @click="copyReport">复制报告</button>
-          </div>
-          <article class="daily-report-document">
-            <h1>{{ reportTitle }}</h1>
-            <section>
-              <h2>一、今日概览</h2>
-              <p>{{ reportSummary || fallbackSummary() }}</p>
-            </section>
-            <section>
-              <h2>二、分类分布</h2>
-              <ul class="daily-report-distribution-list">
-                <li v-for="item in categoryDistribution" :key="`report-${item.category}`">
-                  <span>{{ item.category }}</span>
-                  <strong>{{ item.count }} 条</strong>
-                </li>
-              </ul>
-            </section>
-            <section>
-              <h2>三、重点新闻列表</h2>
-              <div v-for="section in reportSections" :key="section.category" class="daily-report-section">
-                <h3>{{ section.category }}</h3>
-                <ol>
-                  <li v-for="event in section.items" :key="`report-news-${event.itemId}`">
-                    <strong>{{ event.displayTitle }}</strong>
-                    <p>简要内容：{{ newsBrief(event) }}</p>
-                    <small>来源：{{ sourcePublisher(event) }}，发布时间：{{ formatTime(sourceTime(event)) }}</small>
-                  </li>
-                </ol>
-              </div>
-            </section>
-            <section>
-              <h2>四、可进一步研判方向</h2>
-              <ul>
-                <li>可围绕高频分类中的重点新闻形成专题编报。</li>
-                <li>可选择单条新闻导入拟稿助手开展深度分析。</li>
-                <li>正式编报前建议复核关键时间、主体表态和来源链接。</li>
-              </ul>
-            </section>
-          </article>
-        </section>
-
-        <section class="daily-category-bar">
-          <button type="button" :class="{ active: !selectedCategory }" @click="selectedCategory = ''">全部</button>
-          <button
-            v-for="item in categoryStats"
-            :key="item.category"
-            type="button"
-            :class="{ active: selectedCategory === item.category }"
-            @click="selectedCategory = item.category"
-          >
-            {{ item.category }} <span>{{ item.count }}</span>
-          </button>
-        </section>
-
-        <section class="daily-news-list">
-          <article
-            v-for="event in visibleEvents"
-            :key="event.itemId"
-            class="daily-news-card"
-          >
-            <div class="daily-news-head">
-              <span class="daily-rank">#{{ event.rank || event.rankNo }}</span>
-              <div>
-                <h3>{{ event.displayTitle }}</h3>
-                <small v-if="event.originalTitle" class="daily-original-title">原始标题：{{ event.originalTitle }}</small>
-                <div class="daily-event-meta">
-                  <span>分类：{{ event.category || '其他' }}</span>
-                  <span>重要性 {{ Number(event.importanceScore || 0).toFixed(0) }}</span>
-                  <span>来源：{{ sourcePublisher(event) }}</span>
-                  <span>{{ formatTime(sourceTime(event)) }}</span>
-                </div>
-              </div>
-            </div>
-            <p class="daily-news-brief">{{ newsBrief(event) }}</p>
-            <div class="daily-news-actions">
-              <button
-                type="button"
-                class="daily-import-btn"
-                :disabled="!canImportToDraft || importingItemId === event.itemId || event.imported"
-                @click="importToDraft(event)"
-              >
-                {{ event.imported ? '已导入' : importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}
-              </button>
-              <a v-if="sourceUrl(event)" class="daily-source-link" :href="sourceUrl(event)" target="_blank" rel="noreferrer">查看来源</a>
-              <button type="button" class="daily-expand-btn" @click="toggleEventDetails(event.itemId)">
-                {{ isEventExpanded(event.itemId) ? '收起详情' : '展开详情' }}
-              </button>
-            </div>
-            <div v-if="isEventExpanded(event.itemId)" class="daily-event-grid">
-              <section>
-                <h4>原始摘要</h4>
-                <p>{{ event.basicSituation || event.briefContent || '暂无。' }}</p>
-              </section>
-              <section>
-                <h4>补充背景</h4>
-                <p>{{ event.backgroundContext || '暂无。' }}</p>
-              </section>
-              <section>
-                <h4>重要性判断</h4>
-                <p>{{ event.importanceJudgement || '暂无。' }}</p>
-              </section>
-              <section>
-                <h4>可选风险提示</h4>
-                <p>{{ event.riskToUs || '暂无。' }}</p>
-              </section>
-            </div>
-            <div v-if="isEventExpanded(event.itemId)" class="daily-sources">
-              <strong>相关来源</strong>
-              <ul>
-                <li v-for="(source, index) in event.sourceInfo || []" :key="`${event.itemId}-${index}`">
-                  <span>{{ sanitizeSourceText(source.publisher) || '来源未知' }}</span>
-                  <a v-if="source.url" :href="source.url" target="_blank" rel="noreferrer">{{ sourceTitle(source) }}</a>
-                  <em v-else>{{ sourceTitle(source) }}</em>
-                  <small>{{ source.publishedAt || '' }}</small>
-                </li>
-              </ul>
-            </div>
-          </article>
-
-          <div v-if="!loading && !visibleEvents.length" class="daily-empty large">
-            <strong>{{ emptyState.title }}</strong>
-            <span>{{ emptyState.message }}</span>
-            <small v-if="emptyState.suggestion">{{ emptyState.suggestion }}</small>
-          </div>
-        </section>
-      </section>
+    <section class="date-strip" aria-label="简报日期信息">
+      <div>
+        <span>今日业务日期</span>
+        <strong>{{ businessDate }}</strong>
+      </div>
+      <div>
+        <span>当前展示</span>
+        <strong>{{ displayedDate }}</strong>
+      </div>
+      <div class="date-strip-actions">
+        <span :class="qualityClass(qualityStatus)">{{ qualityLabel(qualityStatus) }}</span>
+        <button v-if="isHistoryMode" type="button" class="text-button" @click="returnToCurrent">返回今日视图</button>
+      </div>
     </section>
 
-    <div
-      v-if="showHistoryDrawer"
-      class="daily-history-overlay"
-      role="presentation"
-      @click="closeHistoryDrawer"
-    >
-      <aside
-        class="daily-history-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="daily-history-drawer-title"
-        @click.stop
-      >
-        <header class="daily-history-drawer-head">
+    <section v-if="!isHistoryMode && currentState" :class="['status-banner', banner.tone]">
+      <span class="status-dot" aria-hidden="true"></span>
+      <p>{{ banner.text }}</p>
+    </section>
+
+    <div v-if="errorMessage" class="feedback error">{{ errorMessage }}</div>
+    <div v-if="noticeMessage" class="feedback success">{{ noticeMessage }}</div>
+
+    <section v-if="loading" class="empty-state">
+      <strong>正在读取每日简报</strong>
+      <p>请稍候。</p>
+    </section>
+
+    <template v-else-if="activeBrief">
+      <section class="overview-grid">
+        <div v-for="item in reportStats" :key="item.label">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </div>
+      </section>
+
+      <section class="brief-heading">
+        <div>
+          <span class="section-label">DAILY BRIEF</span>
+          <h2>{{ title }}</h2>
+          <p>{{ displayedDate }} · {{ activeBrief.generatedByType === 'MANUAL' ? '人工补生成' : '系统生成' }}</p>
+        </div>
+        <div class="brief-actions">
+          <button type="button" class="secondary-button" :disabled="!contentMarkdown" @click="copyReport">复制</button>
+          <button type="button" class="primary-button" :disabled="exportingWord" @click="exportWord">
+            {{ exportingWord ? '导出中...' : '导出 Word' }}
+          </button>
+        </div>
+      </section>
+
+      <section class="report-document" aria-label="简报正文">
+        <pre>{{ contentMarkdown || '暂无简报正文。' }}</pre>
+      </section>
+
+      <nav v-if="categoryDistribution.length" class="category-tabs" aria-label="新闻分类筛选">
+        <button type="button" :class="{ active: !selectedCategory }" @click="selectedCategory = ''">全部</button>
+        <button
+          v-for="item in categoryDistribution"
+          :key="item.category"
+          type="button"
+          :class="{ active: selectedCategory === item.category }"
+          @click="selectedCategory = item.category"
+        >
+          {{ item.category }} <span>{{ item.count }}</span>
+        </button>
+      </nav>
+
+      <section class="news-section">
+        <header>
           <div>
-            <h2 id="daily-history-drawer-title">历史简报</h2>
-            <p>查看已生成的每日动态简报</p>
+            <span class="section-label">SELECTED NEWS</span>
+            <h2>入选新闻</h2>
           </div>
-          <button type="button" class="daily-drawer-close" aria-label="关闭历史简报" @click="closeHistoryDrawer">×</button>
+          <strong>{{ visibleEvents.length }} 条</strong>
         </header>
 
-        <div class="daily-history-drawer-body">
-          <div v-if="historyLoading" class="daily-empty drawer-empty">正在读取历史简报...</div>
-          <div v-else-if="!historyItems.length" class="daily-empty drawer-empty">
-            <strong>暂无历史简报</strong>
-            <span>生成每日动态简报后，将在这里显示记录。</span>
+        <div v-if="!visibleEvents.length" class="empty-inline">当前分类暂无新闻。</div>
+        <article v-for="event in visibleEvents" :key="event.itemId" class="news-card">
+          <div class="news-rank">{{ String(event.rankNo || 0).padStart(2, '0') }}</div>
+          <div class="news-content">
+            <div class="news-title-row">
+              <div>
+                <span class="news-category">{{ event.category || '其他' }}</span>
+                <h3>{{ eventTitle(event) }}</h3>
+              </div>
+              <button
+                type="button"
+                class="icon-button expand-button"
+                :title="isEventExpanded(event.itemId) ? '收起详情' : '展开详情'"
+                :aria-label="isEventExpanded(event.itemId) ? '收起详情' : '展开详情'"
+                @click="toggleEventDetails(event.itemId)"
+              >
+                {{ isEventExpanded(event.itemId) ? '−' : '+' }}
+              </button>
+            </div>
+            <p class="news-summary">{{ eventSummary(event) }}</p>
+            <div class="news-meta">
+              <span>重要性 {{ Number(event.importanceScore || 0).toFixed(0) }}</span>
+              <span>风险 {{ Number(event.riskScore || 0).toFixed(0) }}</span>
+              <span>{{ sourceList(event).length }} 个来源</span>
+            </div>
+
+            <div v-if="isEventExpanded(event.itemId)" class="event-details">
+              <div v-if="event.backgroundContext"><strong>背景</strong><p>{{ event.backgroundContext }}</p></div>
+              <div v-if="event.importanceJudgement"><strong>重要性研判</strong><p>{{ event.importanceJudgement }}</p></div>
+              <div v-if="event.riskToUs"><strong>对我风险</strong><p>{{ event.riskToUs }}</p></div>
+              <div v-if="sourceList(event).length" class="source-list">
+                <strong>来源</strong>
+                <a
+                  v-for="(source, index) in sourceList(event)"
+                  :key="`${event.itemId}-source-${index}`"
+                  :href="source.url || undefined"
+                  :target="source.url ? '_blank' : undefined"
+                  rel="noreferrer"
+                >
+                  {{ sourceLabel(source) }}
+                </a>
+              </div>
+            </div>
+
+            <div v-if="canImportToDraft" class="news-actions">
+              <button
+                type="button"
+                class="secondary-button"
+                :disabled="importingItemId === event.itemId || isEventImported(event.itemId)"
+                @click="importToDraft(event)"
+              >
+                {{ isEventImported(event.itemId) ? '已导入' : importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}
+              </button>
+            </div>
           </div>
+        </article>
+      </section>
+    </template>
+
+    <section v-else class="empty-state">
+      <strong>暂无可展示简报</strong>
+      <p>{{ canView ? '可稍后刷新查看。' : '当前账号没有查看权限。' }}</p>
+    </section>
+
+    <div v-if="showHistoryDrawer" class="history-overlay" role="presentation" @click.self="closeHistoryDrawer">
+      <aside class="history-drawer" role="dialog" aria-modal="true" aria-labelledby="history-title">
+        <header>
+          <div>
+            <span class="section-label">ARCHIVE</span>
+            <h2 id="history-title">历史简报</h2>
+          </div>
+          <button type="button" class="icon-button" title="关闭" aria-label="关闭" @click="closeHistoryDrawer">×</button>
+        </header>
+        <div class="history-list">
+          <p v-if="historyLoading" class="history-empty">正在读取...</p>
+          <p v-else-if="!historyItems.length" class="history-empty">暂无历史简报。</p>
           <button
-            v-for="brief in historyItems"
-            v-else
-            :key="brief.briefId"
+            v-for="item in historyItems"
+            :key="item.briefId"
             type="button"
-            class="daily-history-card"
-            :class="{ active: activeBrief?.briefId === brief.briefId }"
-            :disabled="openingBriefId === brief.briefId"
-            @click="openBrief(brief.briefId)"
+            class="history-item"
+            :class="{ active: item.businessDate === displayedDate }"
+            :disabled="Boolean(openingDate)"
+            @click="openHistoryBrief(item.businessDate)"
           >
-            <div class="daily-history-card-top">
-              <strong>{{ brief.title || `${brief.briefDate} 每日动态简报` }}</strong>
-              <span v-if="historyUsesFallback(brief)" class="daily-fallback-chip">使用最近信源</span>
-            </div>
-            <small>{{ brief.selectedNewsCount || brief.selectedCount || 0 }} 条新闻 · {{ formatTime(brief.createdAt) }}</small>
-            <div class="daily-history-card-meta">
-              <span>候选材料：{{ historyMaterialCount(brief) }} 条</span>
-              <span>入选新闻：{{ brief.selectedNewsCount || brief.selectedCount || 0 }} 条</span>
-              <span>主要分类：{{ historyCategoryCount(brief) }} 类</span>
-            </div>
-            <em>{{ openingBriefId === brief.briefId ? '读取中...' : '查看' }}</em>
+            <span>{{ item.businessDate }}</span>
+            <strong>{{ item.title || `${item.businessDate} 每日动态简报` }}</strong>
+            <small>{{ qualityLabel(item.qualityStatus) }} · {{ formatTime(item.generatedAt) }}</small>
           </button>
         </div>
       </aside>
@@ -847,1030 +463,399 @@ watch(() => props.currentUser?.id, () => {
 
 <style scoped>
 .daily-awareness-page {
-  flex: 1;
-  min-height: 0;
-  height: calc(100vh - 76px);
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  padding: 24px;
-  background: #f3f6fb;
-  color: #0f172a;
+  min-height: 100vh;
+  padding: 28px clamp(20px, 4vw, 64px) 72px;
+  color: #172133;
+  background: #f4f6f8;
+  box-sizing: border-box;
 }
 
-.daily-awareness-header {
-  display: flex;
+.daily-header {
+  max-width: 1320px;
+  margin: 0 auto;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 18px;
   align-items: center;
-  gap: 14px;
-  max-width: 1440px;
-  margin: 0 auto 18px;
 }
 
-.daily-back-btn {
-  width: 38px;
-  height: 38px;
-  border: 1px solid #dbe4f0;
-  border-radius: 10px;
-  background: #ffffff;
-  color: #0f172a;
-  font-size: 28px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.daily-eyebrow {
-  color: #2563eb;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-}
-
-.daily-awareness-header h1 {
-  margin: 2px 0 4px;
-  font-size: 24px;
+.daily-title-block h1,
+.brief-heading h2,
+.news-section h2,
+.history-drawer h2 {
+  margin: 0;
   letter-spacing: 0;
 }
 
-.daily-awareness-header p {
-  margin: 0;
-  color: #64748b;
-  font-size: 13px;
+.daily-title-block h1 {
+  margin-top: 3px;
+  font-size: 28px;
+  line-height: 1.25;
 }
 
-.daily-history-trigger {
-  margin-left: auto;
-  min-height: 38px;
-  border: 1px solid #bfdbfe;
-  border-radius: 10px;
-  background: #ffffff;
-  color: #1d4ed8;
-  padding: 0 13px;
-  font-size: 13px;
-  font-weight: 800;
-  cursor: pointer;
+.daily-title-block p,
+.brief-heading p {
+  margin: 6px 0 0;
+  color: #667085;
+  font-size: 14px;
 }
 
-.daily-history-trigger span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 22px;
-  margin-left: 8px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1e40af;
+.eyebrow,
+.section-label {
+  color: #28724f;
   font-size: 11px;
-}
-
-.daily-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
-  gap: 18px;
-  max-width: 1440px;
-  margin: 0 auto;
-  min-height: 0;
-  padding-bottom: 32px;
-}
-
-.daily-sidebar,
-.daily-main {
-  display: grid;
-  gap: 14px;
-  align-content: start;
-  min-height: 0;
-}
-
-.daily-sidebar {
-  position: sticky;
-  top: 18px;
-  max-height: calc(100vh - 124px);
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  padding-right: 2px;
-}
-
-.daily-panel,
-.daily-summary-card,
-.daily-report-card,
-.daily-news-card {
-  border: 1px solid #dbe4f0;
-  border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.06);
-}
-
-.daily-panel {
-  padding: 16px;
-}
-
-.daily-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.daily-panel-title {
-  color: #1e3a8a;
-  font-size: 14px;
   font-weight: 800;
+  letter-spacing: 0;
 }
 
-.daily-panel-toggle {
-  border: 1px solid #dbe4f0;
-  border-radius: 999px;
-  background: #f8fafc;
-  color: #1d4ed8;
-  padding: 5px 9px;
-  font-size: 12px;
-  font-weight: 800;
+button {
+  font: inherit;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+  border: 1px solid #d8dee7;
+  border-radius: 6px;
+  display: inline-grid;
+  place-items: center;
+  color: #344054;
+  background: #fff;
   cursor: pointer;
 }
 
-.daily-settings-compact {
-  display: grid;
-  gap: 10px;
+.back-button {
+  font-size: 28px;
+  line-height: 1;
 }
 
-.daily-settings-compact p {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #f8fafc;
-  padding: 10px;
-}
-
-.daily-settings-compact span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.daily-settings-compact strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.daily-panel label {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 10px;
-  color: #334155;
-  font-size: 12px;
+.history-button,
+.primary-button,
+.secondary-button,
+.text-button {
+  min-height: 38px;
+  border-radius: 6px;
+  padding: 0 14px;
+  border: 1px solid #cfd6df;
+  cursor: pointer;
   font-weight: 700;
 }
 
-.daily-panel input {
-  height: 38px;
-  border: 1px solid #cbd5e1;
-  border-radius: 9px;
-  padding: 0 10px;
-  outline: none;
+.history-button,
+.secondary-button,
+.text-button {
+  color: #344054;
+  background: #fff;
 }
 
-.daily-panel input:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+.history-button span {
+  margin-left: 8px;
+  color: #28724f;
 }
 
-.daily-category-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin: 12px 0;
+.primary-button {
+  border-color: #1f6b48;
+  color: #fff;
+  background: #1f6b48;
 }
 
-.daily-category-picker > span {
-  width: 100%;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.daily-category-picker button,
-.daily-category-bar button {
-  border: 1px solid #dbe4f0;
-  border-radius: 999px;
-  background: #f8fafc;
-  color: #475569;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.daily-category-picker button {
-  padding: 6px 9px;
-}
-
-.daily-category-picker button.active,
-.daily-category-bar button.active {
-  border-color: #2563eb;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.daily-primary-btn,
-.daily-import-btn,
-.daily-primary-inline-btn,
-.daily-secondary-btn {
-  border: 1px solid #2563eb;
-  border-radius: 9px;
-  background: #2563eb;
-  color: #ffffff;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.daily-primary-btn {
-  width: 100%;
-  height: 42px;
-}
-
-.daily-primary-btn.compact {
-  height: 38px;
-}
-
-.daily-primary-btn:disabled,
-.daily-import-btn:disabled,
-.daily-primary-inline-btn:disabled {
+button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.daily-primary-inline-btn {
-  min-height: 34px;
-  padding: 0 12px;
-  font-size: 12px;
-  cursor: pointer;
+.date-strip,
+.status-banner,
+.feedback,
+.overview-grid,
+.brief-heading,
+.report-document,
+.category-tabs,
+.news-section,
+.empty-state {
+  max-width: 1320px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
-.daily-secondary-btn {
-  align-self: start;
-  border-color: #dbe4f0;
-  background: #ffffff;
-  color: #1d4ed8;
-  padding: 8px 11px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.daily-helper,
-.daily-empty {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.daily-message {
-  border-radius: 10px;
-  padding: 11px 13px;
-  font-size: 13px;
-}
-
-.daily-message.error {
-  border: 1px solid #fecaca;
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-.daily-message.success {
-  border: 1px solid #bbf7d0;
-  background: #f0fdf4;
-  color: #15803d;
-}
-
-.daily-message.warning {
-  border: 1px solid #fde68a;
-  background: #fffdf2;
-  color: #92400e;
-  padding: 9px 12px;
-}
-
-.daily-diagnostics {
-  border: 1px solid #fed7aa;
-  border-radius: 12px;
-  background: #fff7ed;
-  padding: 14px;
-  color: #7c2d12;
-}
-
-.daily-diagnostics-grid {
+.date-strip {
+  margin-top: 24px;
+  min-height: 68px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: 10px 0;
-}
-
-.daily-diagnostics p {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-  border: 1px solid rgba(251, 146, 60, 0.24);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.62);
-  padding: 8px;
-}
-
-.daily-diagnostics span,
-.daily-diagnostics small {
-  color: #9a3412;
-  font-size: 12px;
-}
-
-.daily-diagnostics strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: #431407;
-  font-size: 13px;
-}
-
-.daily-overview {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.daily-overview article {
-  border: 1px solid #dbe4f0;
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 14px;
-}
-
-.daily-overview span,
-.daily-card-kicker {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.daily-overview strong {
-  display: block;
-  margin-top: 7px;
-  font-size: 22px;
-}
-
-.daily-summary-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px 18px;
-  padding: 16px;
-}
-
-.daily-summary-head {
-  min-width: 0;
-}
-
-.daily-summary-card h2 {
-  margin: 4px 0 8px;
-  font-size: 18px;
-}
-
-.daily-summary-card p {
-  margin: 0;
-  color: #475569;
-  line-height: 1.7;
-}
-
-.daily-summary-card small {
-  flex-shrink: 0;
-  color: #64748b;
-}
-
-.daily-summary-actions {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.daily-summary-grid {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: 1.2fr 0.8fr 1fr;
-  gap: 10px;
-}
-
-.daily-summary-grid article {
-  border: 1px solid #edf2f7;
-  border-radius: 10px;
-  background: #f8fafc;
-  padding: 11px;
-}
-
-.daily-summary-grid span {
-  display: block;
-  margin-bottom: 6px;
-  color: #1e3a8a;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.daily-summary-grid p {
-  margin: 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.daily-theme-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-.daily-theme-list b {
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  padding: 5px 8px;
-  font-size: 12px;
-}
-
-.daily-summary-raw {
-  grid-column: 1 / -1;
-  border-top: 1px solid #edf2f7;
-  padding-top: 10px;
-}
-
-.daily-summary-raw p {
-  margin: 0;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.daily-summary-raw button {
-  margin-top: 8px;
-  border: 0;
-  background: transparent;
-  color: #1d4ed8;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.daily-distribution {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  border-top: 1px solid #edf2f7;
-  padding-top: 12px;
-}
-
-.daily-distribution span {
-  display: inline-flex;
+  grid-template-columns: minmax(170px, 1fr) minmax(170px, 1fr) auto;
+  gap: 24px;
   align-items: center;
-  gap: 6px;
-  border: 1px solid #dbe4f0;
-  border-radius: 999px;
-  background: #f8fafc;
-  color: #475569;
-  padding: 6px 9px;
-  font-size: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid #d8dee7;
+  border-bottom: 1px solid #d8dee7;
+  background: #fff;
+  box-sizing: border-box;
 }
 
-.daily-distribution strong {
-  color: #1d4ed8;
-}
-
-.daily-report-card {
-  padding: 16px;
-}
-
-.daily-readable-report {
-  display: grid;
-  gap: 16px;
-}
-
-.daily-report-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.daily-report-head h3 {
-  margin: 4px 0 0;
-  font-size: 16px;
-}
-
-.daily-report-document {
-  display: grid;
-  gap: 18px;
-  border: 1px solid #edf2f7;
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 22px;
-}
-
-.daily-report-document h1 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 22px;
-  line-height: 1.45;
-}
-
-.daily-report-document h2 {
-  margin: 0 0 10px;
-  color: #1e3a8a;
-  font-size: 17px;
-  line-height: 1.45;
-}
-
-.daily-report-document h3 {
-  margin: 4px 0 10px;
-  color: #0f172a;
-  font-size: 15px;
-}
-
-.daily-report-document p {
-  margin: 0;
-  color: #334155;
-  font-size: 14px;
-  line-height: 1.85;
-}
-
-.daily-report-document ul,
-.daily-report-document ol {
-  margin: 0;
-  padding-left: 22px;
-}
-
-.daily-report-document li {
-  color: #334155;
-  line-height: 1.75;
-}
-
-.daily-report-distribution-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 18px;
-  list-style: none;
-  padding-left: 0 !important;
-}
-
-.daily-report-distribution-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid #edf2f7;
-  padding-bottom: 7px;
-}
-
-.daily-report-distribution-list strong {
-  color: #1d4ed8;
-  white-space: nowrap;
-}
-
-.daily-report-section {
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.daily-report-section li {
-  margin-bottom: 14px;
-}
-
-.daily-report-section strong {
-  color: #0f172a;
-}
-
-.daily-report-section small {
-  display: block;
-  margin-top: 5px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.daily-category-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.daily-category-bar button {
-  padding: 8px 11px;
-}
-
-.daily-category-bar span {
-  margin-left: 4px;
-  color: #64748b;
-}
-
-.daily-news-list {
-  display: grid;
-  gap: 10px;
-}
-
-.daily-news-card {
-  padding: 14px;
-}
-
-.daily-news-head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: flex-start;
-}
-
-.daily-rank {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 42px;
-  height: 32px;
-  border-radius: 9px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-weight: 900;
-}
-
-.daily-news-head h3 {
-  margin: 0 0 6px;
-  font-size: 16px;
-  line-height: 1.45;
-}
-
-.daily-original-title {
-  display: block;
-  margin: -2px 0 6px;
-  color: #94a3b8;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.daily-event-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.daily-event-meta span {
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
-  padding: 5px 8px;
-  font-size: 12px;
-}
-
-.daily-import-btn {
-  min-height: 32px;
-  padding: 0 10px;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.daily-news-brief {
-  margin: 8px 0 0 52px;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.daily-news-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0 0 52px;
-}
-
-.daily-source-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  border: 1px solid #dbe4f0;
-  border-radius: 9px;
-  background: #ffffff;
-  color: #1d4ed8;
-  padding: 0 10px;
-  font-size: 12px;
-  font-weight: 800;
-  text-decoration: none;
-}
-
-.daily-expand-btn {
-  justify-self: start;
-  border: 1px solid #dbe4f0;
-  border-radius: 9px;
-  background: #ffffff;
-  color: #1d4ed8;
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.daily-event-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.daily-event-grid section {
-  border: 1px solid #edf2f7;
-  border-radius: 10px;
-  background: #f8fafc;
-  padding: 12px;
-}
-
-.daily-event-grid h4,
-.daily-sources strong {
-  margin: 0 0 7px;
-  color: #1e3a8a;
-  font-size: 13px;
-}
-
-.daily-event-grid p {
-  margin: 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.daily-sources {
-  margin-top: 13px;
-}
-
-.daily-sources ul {
-  display: grid;
-  gap: 7px;
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.daily-sources li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  border-top: 1px solid #edf2f7;
-  padding-top: 8px;
-  color: #475569;
-  font-size: 12px;
-}
-
-.daily-sources a {
-  color: #1d4ed8;
-  text-decoration: none;
-}
-
-.daily-sources small {
-  color: #94a3b8;
-}
-
-.daily-empty.large {
-  display: grid;
-  gap: 6px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 42px;
-  text-align: center;
-}
-
-.daily-empty.large strong {
-  color: #0f172a;
-  font-size: 16px;
-}
-
-.daily-empty.large span,
-.daily-empty.large small {
-  color: #64748b;
-}
-
-.daily-history-overlay {
-  position: fixed;
-  top: 76px;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 80;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(15, 23, 42, 0.22);
-  backdrop-filter: blur(3px);
-}
-
-.daily-history-drawer {
-  width: min(440px, calc(100vw - 28px));
-  height: 100%;
+.date-strip > div:not(.date-strip-actions) {
   display: flex;
   flex-direction: column;
-  border-left: 1px solid #dbe4f0;
-  background: #f8fafc;
-  box-shadow: -20px 0 44px rgba(15, 23, 42, 0.16);
+  gap: 4px;
 }
 
-.daily-history-drawer-head {
+.date-strip span,
+.overview-grid span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.date-strip strong {
+  font-size: 17px;
+}
+
+.date-strip-actions,
+.brief-actions {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  border-bottom: 1px solid #dbe4f0;
-  background: #ffffff;
-  padding: 18px;
-}
-
-.daily-history-drawer-head h2 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  letter-spacing: 0;
-}
-
-.daily-history-drawer-head p {
-  margin: 0;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.daily-drawer-close {
-  width: 34px;
-  height: 34px;
-  border: 1px solid #dbe4f0;
-  border-radius: 9px;
-  background: #ffffff;
-  color: #334155;
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.daily-history-drawer-body {
-  min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  padding: 14px;
-}
-
-.daily-history-card {
-  width: 100%;
-  display: grid;
-  gap: 8px;
-  margin-bottom: 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 13px;
-  text-align: left;
-  cursor: pointer;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
-}
-
-.daily-history-card.active {
-  border-color: #2563eb;
-  background: #eff6ff;
-  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.13);
-}
-
-.daily-history-card:disabled {
-  cursor: wait;
-  opacity: 0.72;
-}
-
-.daily-history-card-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: flex-end;
   gap: 10px;
 }
 
-.daily-history-card strong {
-  min-width: 0;
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.45;
-}
-
-.daily-history-card small {
-  color: #64748b;
+.brief-quality {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 999px;
   font-size: 12px;
+  font-weight: 800;
 }
 
-.daily-history-card-meta {
+.brief-quality.normal { color: #166534; background: #dcfce7; }
+.brief-quality.partial { color: #92400e; background: #fef3c7; }
+.brief-quality.compact { color: #9a3412; background: #ffedd5; }
+
+.status-banner {
+  margin-top: 16px;
+  min-height: 44px;
+  padding: 10px 14px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #d7dde5;
+  border-radius: 6px;
+  background: #fff;
+  box-sizing: border-box;
 }
 
-.daily-history-card-meta span {
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
-  padding: 5px 8px;
-  font-size: 12px;
+.status-banner p { margin: 0; font-size: 14px; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: #667085; flex: 0 0 auto; }
+.status-banner.success .status-dot { background: #16835d; }
+.status-banner.progress .status-dot { background: #2563eb; }
+.status-banner.warning .status-dot { background: #d97706; }
+
+.feedback {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 14px;
 }
 
-.daily-history-card em {
-  justify-self: end;
-  color: #1d4ed8;
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 800;
-}
+.feedback.error { color: #991b1b; background: #fee2e2; }
+.feedback.success { color: #166534; background: #dcfce7; }
 
-.daily-fallback-chip {
-  flex-shrink: 0;
-  border: 1px solid #fde68a;
-  border-radius: 999px;
-  background: #fffbeb;
-  color: #92400e;
-  padding: 4px 7px;
-  font-size: 11px;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.drawer-empty {
+.overview-grid {
+  margin-top: 20px;
   display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid #d8dee7;
+  background: #fff;
+}
+
+.overview-grid > div {
+  min-height: 76px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  border-right: 1px solid #e4e8ee;
+  box-sizing: border-box;
+}
+
+.overview-grid > div:last-child { border-right: 0; }
+.overview-grid strong { font-size: 17px; overflow-wrap: anywhere; }
+
+.brief-heading {
+  margin-top: 30px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+}
+
+.brief-heading h2 { margin-top: 5px; font-size: 24px; }
+
+.report-document {
+  margin-top: 14px;
+  padding: clamp(22px, 4vw, 48px);
+  border: 1px solid #d8dee7;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.report-document pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.9;
+  color: #27364a;
+}
+
+.category-tabs {
+  margin-top: 18px;
+  display: flex;
   gap: 6px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 28px 18px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.category-tabs button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #d4dae3;
+  border-radius: 5px;
+  color: #475467;
+  background: #fff;
+  cursor: pointer;
+}
+
+.category-tabs button.active {
+  border-color: #1f6b48;
+  color: #fff;
+  background: #1f6b48;
+}
+
+.category-tabs span { margin-left: 5px; opacity: 0.76; }
+
+.news-section { margin-top: 28px; }
+.news-section > header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+.news-section h2 { margin-top: 4px; font-size: 21px; }
+.news-section > header > strong { color: #667085; font-size: 14px; }
+
+.news-card {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 8px;
+  padding: 18px;
+  border: 1px solid #dbe1e8;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.news-rank {
+  width: 42px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  color: #1f6b48;
+  background: #e4f2eb;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.news-title-row { display: flex; justify-content: space-between; gap: 18px; }
+.news-title-row h3 { margin: 5px 0 0; font-size: 17px; line-height: 1.45; letter-spacing: 0; overflow-wrap: anywhere; }
+.news-category { color: #28724f; font-size: 12px; font-weight: 800; }
+.expand-button { flex: 0 0 auto; width: 32px; height: 32px; font-size: 20px; }
+.news-summary { margin: 12px 0 0; color: #475467; line-height: 1.75; font-size: 14px; }
+.news-meta { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px 16px; color: #667085; font-size: 12px; }
+
+.event-details {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e4e7ec;
+  display: grid;
+  gap: 12px;
+}
+
+.event-details strong { font-size: 13px; }
+.event-details p { margin: 4px 0 0; color: #475467; line-height: 1.7; font-size: 14px; }
+.source-list { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.source-list strong { width: 100%; }
+.source-list a { color: #175cd3; font-size: 13px; text-decoration: none; overflow-wrap: anywhere; }
+.news-actions { margin-top: 14px; }
+
+.empty-state,
+.empty-inline {
+  color: #667085;
   text-align: center;
 }
 
-.drawer-empty strong {
-  color: #0f172a;
-  font-size: 15px;
+.empty-state { margin-top: 24px; padding: 72px 24px; border: 1px dashed #cbd3dd; background: #fff; }
+.empty-state strong { color: #344054; font-size: 17px; }
+.empty-state p { margin: 8px 0 0; }
+.empty-inline { padding: 28px; background: #fff; border: 1px solid #dbe1e8; }
+
+.history-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(16, 24, 40, 0.36);
 }
 
-@media (max-width: 980px) {
-  .daily-awareness-page {
-    height: calc(100vh - 76px);
-    padding: 18px;
-  }
-
-  .daily-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .daily-sidebar {
-    position: static;
-    max-height: none;
-    overflow: visible;
-    padding-right: 0;
-  }
-
-  .daily-overview,
-  .daily-summary-grid,
-  .daily-event-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .daily-news-head {
-    grid-template-columns: 1fr;
-  }
-
-  .daily-news-brief,
-  .daily-news-actions {
-    margin-left: 0;
-  }
-
-  .daily-summary-card {
-    display: grid;
-  }
-
-  .daily-report-distribution-list {
-    grid-template-columns: 1fr;
-  }
+.history-drawer {
+  width: min(440px, 94vw);
+  height: 100%;
+  padding: 24px;
+  background: #f8fafb;
+  box-sizing: border-box;
+  overflow-y: auto;
 }
 
-@media (max-width: 640px) {
-  .daily-awareness-header {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
+.history-drawer > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.history-drawer h2 { margin-top: 4px; font-size: 22px; }
+.history-list { display: grid; gap: 8px; }
 
-  .daily-history-trigger {
-    width: 100%;
-    margin-left: 52px;
-  }
+.history-item {
+  width: 100%;
+  min-height: 104px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  border: 1px solid #dbe1e8;
+  border-radius: 6px;
+  color: #344054;
+  background: #fff;
+  cursor: pointer;
+}
 
-  .daily-history-overlay {
-    top: 76px;
-  }
+.history-item.active { border-color: #1f6b48; box-shadow: inset 3px 0 #1f6b48; }
+.history-item span { color: #28724f; font-size: 12px; font-weight: 800; }
+.history-item strong { line-height: 1.4; overflow-wrap: anywhere; }
+.history-item small { color: #667085; }
+.history-empty { color: #667085; text-align: center; padding: 40px 0; }
 
-  .daily-history-drawer {
-    width: 100%;
-    border-left: 0;
-  }
+@media (max-width: 760px) {
+  .daily-awareness-page { padding: 18px 14px 48px; }
+  .daily-header { grid-template-columns: 40px minmax(0, 1fr); gap: 12px; }
+  .history-button { grid-column: 2; justify-self: start; }
+  .daily-title-block h1 { font-size: 23px; }
+  .date-strip { grid-template-columns: 1fr 1fr; gap: 14px; }
+  .date-strip-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .overview-grid { grid-template-columns: 1fr 1fr; }
+  .overview-grid > div:nth-child(2) { border-right: 0; }
+  .overview-grid > div:nth-child(-n + 2) { border-bottom: 1px solid #e4e8ee; }
+  .brief-heading { align-items: flex-start; flex-direction: column; }
+  .brief-actions { width: 100%; justify-content: flex-start; }
+  .news-card { grid-template-columns: 1fr; }
+  .news-rank { width: 38px; }
+  .report-document { padding: 22px 18px; }
 }
 </style>

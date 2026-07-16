@@ -461,6 +461,22 @@ export function generateDailyBrief(payload) {
   })
 }
 
+export function getCurrentDailyAwareness(params = {}) {
+  return request(`/daily-awareness/current${querySuffix(params)}`)
+}
+
+export function getDailyAwarenessHistory(params = {}) {
+  return request(`/daily-awareness/history${querySuffix(params)}`)
+}
+
+export function getDailyAwarenessByDate(businessDate) {
+  return request(`/daily-awareness/briefs/by-date/${encodeURIComponent(businessDate)}`)
+}
+
+export function downloadDailyAwarenessByDate(businessDate, format = 'docx') {
+  return blobRequest(`/daily-awareness/briefs/by-date/${encodeURIComponent(businessDate)}/export?format=${encodeURIComponent(format)}`)
+}
+
 export function getDailyBriefs(params = {}) {
   const query = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
