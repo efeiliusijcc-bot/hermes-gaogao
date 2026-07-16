@@ -1,10 +1,11 @@
-import { Body, Controller, Get, HttpException, HttpStatus, Inject, Optional, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpException, HttpStatus, Inject, Optional, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
 import { CurrentUser } from './current-user.decorator.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
 import { DailyAwarenessQueryService } from './daily-awareness-query.service.js';
+import { DailyAwarenessGenerationService } from './daily-awareness-generation.service.js';
 import type { DailyAwarenessGenerateInput } from './daily-awareness.types.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { RequirePermissions } from './require-permissions.decorator.js';
@@ -15,6 +16,7 @@ export class DailyAwarenessController {
   constructor(
     @Inject(DailyAwarenessService) private readonly dailyAwareness: DailyAwarenessService,
     @Optional() @Inject(DailyAwarenessQueryService) private readonly queryService?: DailyAwarenessQueryService,
+    @Optional() @Inject(DailyAwarenessGenerationService) private readonly generationService?: DailyAwarenessGenerationService,
   ) {}
 
   @Get('current')
@@ -56,13 +58,21 @@ export class DailyAwarenessController {
   }
 
   @Post('generate')
-  @RequirePermissions('daily_awareness:create')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermissions('system:daily-awareness:manage')
   generate(@Body() body: DailyAwarenessGenerateInput, @CurrentUser() user: AuthUser) {
+    if (this.generationService) {
+      return this.generationService.regenerate({
+        businessDate: body?.date,
+        reason: 'Legacy generate endpoint compatibility request',
+        confirmOverwrite: true,
+      }, user);
+    }
     return this.dailyAwareness.generate(body || {}, user);
   }
 
   @Get('briefs')
-  @RequirePermissions('daily_awareness:read')
+  @RequirePermissions('daily-awareness:view')
   listBriefs(
     @Query('page') page: string,
     @Query('pageSize') pageSize: string,
@@ -73,13 +83,13 @@ export class DailyAwarenessController {
   }
 
   @Get('briefs/:briefId')
-  @RequirePermissions('daily_awareness:read')
+  @RequirePermissions('daily-awareness:view')
   getBrief(@Param('briefId') briefId: string, @CurrentUser() user: AuthUser) {
     return this.dailyAwareness.getBrief(briefId, user);
   }
 
   @Get('briefs/:briefId/download')
-  @RequirePermissions('daily_awareness:read')
+  @RequirePermissions('daily-awareness:view')
   async downloadBrief(
     @Param('briefId') briefId: string,
     @CurrentUser() user: AuthUser,
@@ -94,7 +104,7 @@ export class DailyAwarenessController {
   }
 
   @Get('briefs/:briefId/events')
-  @RequirePermissions('daily_awareness:read')
+  @RequirePermissions('daily-awareness:view')
   listEvents(
     @Param('briefId') briefId: string,
     @Query('page') page: string,
@@ -106,7 +116,7 @@ export class DailyAwarenessController {
   }
 
   @Post('events/:itemId/import-draft')
-  @RequirePermissions('daily_awareness:import')
+  @RequirePermissions('daily-awareness:view', 'draft_assistant:create')
   importDraft(@Param('itemId') itemId: string, @CurrentUser() user: AuthUser) {
     return this.dailyAwareness.importEventToDraft(itemId, user);
   }

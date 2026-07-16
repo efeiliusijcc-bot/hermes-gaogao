@@ -340,7 +340,9 @@ export class DailyAwarenessService implements OnModuleDestroy {
   }
 
   async importEventToDraft(itemId: string, user: AuthUser) {
-    if (!this.hasPermission(user, 'daily_awareness:import')) throw new ForbiddenException({ error: 'Insufficient daily awareness import permissions' });
+    if (!this.hasPermission(user, 'daily-awareness:view') || !this.hasPermission(user, 'draft_assistant:create')) {
+      throw new ForbiddenException({ error: 'Insufficient daily awareness import permissions' });
+    }
     const pool = await this.getPool();
     const rows = await pool.query(
       `SELECT e.*, b.brief_date, b.publication_scope
@@ -871,6 +873,6 @@ export class DailyAwarenessService implements OnModuleDestroy {
   }
 
   private hasPermission(user: AuthUser, permission: string): boolean {
-    return this.isAdmin(user) || user.permissions?.includes(permission) === true;
+    return user.permissions?.includes(permission) === true;
   }
 }

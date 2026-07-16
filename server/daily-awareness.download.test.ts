@@ -11,7 +11,7 @@ const user = {
   email: null,
   role: 'operator',
   roles: ['operator'],
-  permissions: ['daily_awareness:read'],
+  permissions: ['daily-awareness:view'],
 } as AuthUser;
 
 test('daily awareness download controller returns docx headers and buffer', async () => {

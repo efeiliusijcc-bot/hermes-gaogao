@@ -28,12 +28,13 @@ function testPermissionModuleMappings() {
   sameMembers(draftPermissions, ['draft_assistant:create', 'draft_assistant:read', 'draft_assistant:update']);
 
   const dailyPermissions = permissionsFromModules(['daily']);
-  sameMembers(dailyPermissions, ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import']);
+  sameMembers(dailyPermissions, ['daily-awareness:view']);
 
   sameMembers(modulesFromPermissions(['report:read']), []);
   sameMembers(modulesFromPermissions(['chat:execute']), []);
   sameMembers(modulesFromPermissions(['draft_assistant:read']), []);
   sameMembers(modulesFromPermissions(['daily_awareness:create']), []);
+  sameMembers(modulesFromPermissions(['daily-awareness:view']), ['daily']);
   sameMembers(modulesFromPermissions(permissionsFromModules(['daily'])), ['daily']);
   sameMembers(modulesFromPermissions(permissionsFromModules(['draft'])), ['draft']);
   sameMembers(modulesFromPermissions(permissionsFromModules(['report', 'draft'])), ['report', 'draft']);
@@ -58,7 +59,9 @@ async function testRolesServiceAcceptsModulesAndProtectsAdmin() {
         const permissions = params?.[0] as string[];
         return {
           rows: permissions.map((permission) => {
-            const [resource, action] = permission.split(':');
+            const separator = permission.lastIndexOf(':');
+            const resource = separator > 0 ? permission.slice(0, separator) : permission;
+            const action = separator > 0 ? permission.slice(separator + 1) : '';
             const id = `perm-${permission}`;
             permissionIds.set(permission, id);
             return { id, resource, action };
@@ -110,12 +113,12 @@ async function testRolesServiceAcceptsModulesAndProtectsAdmin() {
 
   const dailyOnly = await service.createRole({ name: 'daily_only', description: '仅每日动态', modules: ['daily'] });
   sameMembers(dailyOnly.modules, ['daily']);
-  sameMembers(dailyOnly.permissions, ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import']);
+  sameMembers(dailyOnly.permissions, ['daily-awareness:view']);
 
   const reportDaily = await service.createRole({ name: 'report_daily', description: '编报和每日动态', modules: ['report', 'daily'] });
   sameMembers(reportDaily.modules, ['report', 'daily']);
   assert.ok(reportDaily.permissions.includes('report:create'));
-  assert.ok(reportDaily.permissions.includes('daily_awareness:create'));
+  assert.ok(reportDaily.permissions.includes('daily-awareness:view'));
   assert.ok(!reportDaily.permissions.includes('chat:execute'));
   assert.ok(!reportDaily.permissions.includes('draft_assistant:create'));
   assert.ok(!reportDaily.permissions.includes('user:manage'));
@@ -140,7 +143,8 @@ async function testRolesServiceAcceptsModulesAndProtectsAdmin() {
   assert.ok(updatedAdmin.permissions.includes('report:create'));
   assert.ok(updatedAdmin.permissions.includes('chat:execute'));
   assert.ok(updatedAdmin.permissions.includes('draft_assistant:create'));
-  assert.ok(updatedAdmin.permissions.includes('daily_awareness:create'));
+  assert.ok(updatedAdmin.permissions.includes('daily-awareness:view'));
+  assert.ok(updatedAdmin.permissions.includes('system:daily-awareness:manage'));
 }
 
 async function testUsersAndAuthExposeModules() {
@@ -189,9 +193,7 @@ async function testUsersAndAuthExposeModules() {
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'user-1') {
         return { rows: [
-          { role_name: 'test3', resource: 'daily_awareness', action: 'create' },
-          { role_name: 'test3', resource: 'daily_awareness', action: 'import' },
-          { role_name: 'test3', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'test3', resource: 'daily-awareness', action: 'view' },
         ] };
       }
       if (text.includes('FROM user_roles') && params?.[0] === 'user-2') {
@@ -208,14 +210,10 @@ async function testUsersAndAuthExposeModules() {
           { role_name: 'report_only', resource: 'template', action: 'delete' },
           { role_name: 'report_only', resource: 'template', action: 'read' },
           { role_name: 'report_only', resource: 'template', action: 'update' },
-          { role_name: 'daily_only', resource: 'daily_awareness', action: 'create' },
-          { role_name: 'daily_only', resource: 'daily_awareness', action: 'import' },
-          { role_name: 'daily_only', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'daily_only', resource: 'daily-awareness', action: 'view' },
           { role_name: 'qa_only', resource: 'chat', action: 'execute' },
           { role_name: 'qa_only', resource: 'chat', action: 'read' },
-          { role_name: 'daily_duplicate', resource: 'daily_awareness', action: 'create' },
-          { role_name: 'daily_duplicate', resource: 'daily_awareness', action: 'import' },
-          { role_name: 'daily_duplicate', resource: 'daily_awareness', action: 'read' },
+          { role_name: 'daily_duplicate', resource: 'daily-awareness', action: 'view' },
         ] };
       }
       return { rows: [] };
@@ -232,7 +230,7 @@ async function testUsersAndAuthExposeModules() {
   auth.getPool = async () => pool;
   const login = await auth.login('editor', 'password123');
   sameMembers(login.user.roles, ['test3']);
-  sameMembers(login.user.permissions, ['daily_awareness:create', 'daily_awareness:import', 'daily_awareness:read']);
+  sameMembers(login.user.permissions, ['daily-awareness:view']);
   sameMembers(login.user.modules, ['daily']);
   assert.equal(login.user.isSuperAdmin, false);
   assert.equal(login.user.role, 'viewer');

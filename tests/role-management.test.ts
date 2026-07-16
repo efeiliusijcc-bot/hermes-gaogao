@@ -100,7 +100,9 @@ async function testRolesServiceCrud() {
         const permissions = (params?.[0] || []) as string[];
         return {
           rows: permissions.map((permission) => {
-            const [resource, action] = permission.split(':');
+            const separator = permission.lastIndexOf(':');
+            const resource = separator > 0 ? permission.slice(0, separator) : permission;
+            const action = separator > 0 ? permission.slice(separator + 1) : '';
             return { id: `perm-${permission}`, resource, action };
           }),
         };
@@ -159,7 +161,7 @@ async function testRolesServiceCrud() {
 
   const updated = await service.updateRole('role-editor', { description: '新的描述', modules: ['daily'] });
   assert.equal(updated.description, '新的描述');
-  assert.deepEqual(updated.permissions.sort(), ['daily_awareness:create', 'daily_awareness:import', 'daily_awareness:read'].sort());
+  assert.deepEqual(updated.permissions, ['daily-awareness:view']);
 
   await assert.rejects(() => service.deleteRole('role-system'), /System roles cannot be deleted/);
   await assert.rejects(() => service.deleteRole('role-operator'), /System roles cannot be deleted/);

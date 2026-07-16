@@ -20,10 +20,6 @@ export class PermissionsGuard implements CanActivate {
     if (!user) {
       throw new ForbiddenException({ error: 'User context is required' });
     }
-    if (user.role === 'admin' || user.roles?.includes('admin')) {
-      return true;
-    }
-
     const permissions = new Set(user.permissions || []);
     if (requiredPermissions.every((permission) => permissions.has(permission))) {
       return true;

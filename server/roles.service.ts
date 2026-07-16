@@ -196,7 +196,9 @@ export class RolesService implements OnModuleDestroy {
     if (!permissions.length) return [];
     const pool = await this.getPool();
     const pairs = permissions.map((permission) => {
-      const [resource, action] = permission.split(':');
+      const separator = permission.lastIndexOf(':');
+      const resource = separator > 0 ? permission.slice(0, separator) : permission;
+      const action = separator > 0 ? permission.slice(separator + 1) : '';
       return { resource, action, permission };
     });
     const result = await pool.query(

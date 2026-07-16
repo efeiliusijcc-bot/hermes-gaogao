@@ -56,6 +56,8 @@ VALUES
   ('daily_awareness', 'create', 'Create daily awareness briefs'),
   ('daily_awareness', 'read', 'Read daily awareness briefs'),
   ('daily_awareness', 'import', 'Import daily awareness events'),
+  ('daily-awareness', 'view', 'View shared daily awareness briefs and exports'),
+  ('system:daily-awareness', 'manage', 'Manage daily awareness configuration, runs, and regeneration'),
   ('preference', 'read', 'Read own user preferences'),
   ('preference', 'update', 'Update own user preferences'),
   ('template', 'create', 'Create own report templates and prompt snippets'),
@@ -79,6 +81,17 @@ USING roles r
 WHERE rp.role_id = r.id
   AND r.name IN ('operator', 'viewer');
 
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT old_assignment.role_id, new_permission.id
+FROM role_permissions old_assignment
+JOIN permissions old_permission ON old_permission.id = old_assignment.permission_id
+JOIN permissions new_permission
+  ON new_permission.resource = 'daily-awareness'
+ AND new_permission.action = 'view'
+WHERE old_permission.resource = 'daily_awareness'
+  AND old_permission.action = 'read'
+ON CONFLICT DO NOTHING;
+
 WITH admin_permissions(permission_key) AS (
   VALUES
     ('report:create'),
@@ -92,6 +105,8 @@ WITH admin_permissions(permission_key) AS (
     ('daily_awareness:create'),
     ('daily_awareness:read'),
     ('daily_awareness:import'),
+    ('daily-awareness:view'),
+    ('system:daily-awareness:manage'),
     ('preference:read'),
     ('preference:update'),
     ('template:create'),

@@ -43,9 +43,9 @@ export const PERMISSION_MODULES: PermissionModuleDefinition[] = [
   {
     key: 'daily',
     label: '每日动态感知',
-    description: '允许生成和查看每日动态简报。',
-    permissions: ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import'],
-    corePermissions: ['daily_awareness:read', 'daily_awareness:create'],
+    description: '允许查看、复制和导出全局每日动态简报。',
+    permissions: ['daily-awareness:view'],
+    corePermissions: ['daily-awareness:view'],
   },
 ];
 
@@ -60,6 +60,7 @@ export const SYSTEM_ADMIN_PERMISSIONS = [
   'vector_source:update',
   'report:delete',
   'crawler:delete',
+  'system:daily-awareness:manage',
 ];
 
 export const SYSTEM_ROLE_PERMISSIONS: Record<'admin' | 'operator' | 'viewer', string[]> = {
@@ -82,6 +83,8 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<'admin' | 'operator' | 'viewer', st
     'daily_awareness:create',
     'daily_awareness:read',
     'daily_awareness:import',
+    'daily-awareness:view',
+    'system:daily-awareness:manage',
     'preference:read',
     'preference:update',
     'template:create',

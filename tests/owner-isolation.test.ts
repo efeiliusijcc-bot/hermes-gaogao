@@ -316,8 +316,8 @@ function createDailyPool(): Pool {
 async function testDailyOwnerIsolation() {
   const service = new DailyAwarenessService({} as never) as DailyAwarenessService & { getPool: () => Promise<Pool> };
   service.getPool = async () => createDailyPool();
-  const userA = authUser('user-a', 'operator', ['daily_awareness:read'], ['daily']);
-  const admin = authUser('admin-1', 'admin', ['daily_awareness:read'], ['daily']);
+  const userA = authUser('user-a', 'operator', ['daily-awareness:view'], ['daily']);
+  const admin = authUser('admin-1', 'admin', ['daily-awareness:view', 'system:daily-awareness:manage'], ['daily']);
 
   assert.deepEqual((await service.listBriefs({}, userA)).items.map((item) => item.briefId), ['brief-a']);
   assert.equal((await service.listBriefs({}, admin)).items.length, 3);
@@ -341,7 +341,7 @@ async function testMissingModulePermissionReturns403() {
     report: authUser('user-a', 'operator', ['report:create', 'report:read'], ['report']),
     qa: authUser('user-a', 'operator', ['chat:execute', 'chat:read'], ['qa']),
     draft: authUser('user-a', 'operator', ['draft_assistant:create', 'draft_assistant:read'], ['draft']),
-    daily: authUser('user-a', 'operator', ['daily_awareness:create', 'daily_awareness:read', 'daily_awareness:import'], ['daily']),
+    daily: authUser('user-a', 'operator', ['daily-awareness:view', 'system:daily-awareness:manage', 'draft_assistant:create'], ['daily']),
   };
 
   @Module({
@@ -417,7 +417,7 @@ async function testMissingModulePermissionReturns403() {
 
     const dailyBody = JSON.stringify({ date: '2026-07-06' });
     await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer noModule' }, body: dailyBody }), 403);
-    await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer daily' }, body: dailyBody }), 201);
+    await assertStatus(await fetch(`${baseUrl}/api/daily-awareness/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer daily' }, body: dailyBody }), 202);
 
   } finally {
     await app.close();

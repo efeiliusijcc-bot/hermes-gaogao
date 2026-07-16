@@ -177,12 +177,12 @@ function testModuleControllersDeclarePermissions() {
   const dailyGuards = Reflect.getMetadata(GUARDS_METADATA, DailyAwarenessController) || [];
   assert.ok(dailyGuards.includes(AuthGuard), 'DailyAwarenessController should use AuthGuard');
   assert.ok(dailyGuards.includes(PermissionsGuard), 'DailyAwarenessController should use PermissionsGuard');
-  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.generate), ['daily_awareness:create']);
-  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.listBriefs), ['daily_awareness:read']);
-  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.getBrief), ['daily_awareness:read']);
-  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.downloadBrief), ['daily_awareness:read']);
-  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.listEvents), ['daily_awareness:read']);
-  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.importDraft), ['daily_awareness:import']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.generate), ['system:daily-awareness:manage']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.listBriefs), ['daily-awareness:view']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.getBrief), ['daily-awareness:view']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.downloadBrief), ['daily-awareness:view']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.listEvents), ['daily-awareness:view']);
+  assert.deepEqual(Reflect.getMetadata(AUTH_PERMISSIONS_KEY, DailyAwarenessController.prototype.importDraft), ['daily-awareness:view', 'draft_assistant:create']);
 }
 
 async function testReportPlansHttpAuthorization() {
@@ -474,14 +474,12 @@ async function testAuthServiceReturnsRbacAccess() {
   assert.ok(!operatorLogin.user.permissions.includes('report:delete'));
 
   operatorRoleRows = [
-    { role_name: 'daily_role', resource: 'daily_awareness', action: 'create' },
-    { role_name: 'daily_role', resource: 'daily_awareness', action: 'import' },
-    { role_name: 'daily_role', resource: 'daily_awareness', action: 'read' },
+    { role_name: 'daily_role', resource: 'daily-awareness', action: 'view' },
   ];
   const refreshedOperator = await service.verifyAccessToken(operatorLogin.access_token);
   assert.deepEqual(refreshedOperator.roles, ['daily_role']);
   assert.deepEqual(refreshedOperator.modules, ['daily']);
-  assert.ok(refreshedOperator.permissions.includes('daily_awareness:create'));
+  assert.ok(refreshedOperator.permissions.includes('daily-awareness:view'));
   assert.ok(!refreshedOperator.permissions.includes('report:create'));
   assert.ok(queries.some((query) => query.text.includes('FROM user_roles')));
 }
