@@ -1,0 +1,78 @@
+export const DAILY_AWARENESS_INBOX_STATUSES = [
+  'RECEIVED',
+  'PROCESSING',
+  'RETRY_PENDING',
+  'PROCESSED',
+  'DEAD_LETTER',
+] as const;
+
+export const DAILY_AWARENESS_DATA_STATUSES = ['WAITING', 'READY', 'NO_DATA'] as const;
+
+export const DAILY_AWARENESS_GENERATION_STATUSES = [
+  'WAITING',
+  'PENDING',
+  'GENERATING',
+  'SUCCESS',
+  'GENERATION_FAILED',
+  'NOT_REQUIRED',
+] as const;
+
+export const DAILY_AWARENESS_QUALITY_STATUSES = [
+  'NORMAL',
+  'PARTIAL_SUMMARY',
+  'TITLE_ONLY',
+] as const;
+
+export const DAILY_AWARENESS_TRIGGER_TYPES = [
+  'EVENT',
+  'AUTO_RETRY',
+  'MANUAL',
+  'INBOX_REPROCESS',
+] as const;
+
+export const DAILY_AWARENESS_RUN_STATUSES = [
+  'QUEUED',
+  'RUNNING',
+  'SUCCESS',
+  'NO_DATA',
+  'FAILED',
+  'IGNORED_DUPLICATE',
+] as const;
+
+export const DAILY_AWARENESS_GENERATED_BY_TYPES = ['SYSTEM', 'MANUAL'] as const;
+
+export const DAILY_AWARENESS_MESSAGE_CODES = [
+  'TODAY_READY',
+  'TODAY_NO_DATA',
+  'TODAY_GENERATING',
+  'TODAY_GENERATION_FAILED',
+  'TODAY_WAITING',
+  'NO_SUCCESSFUL_BRIEF',
+] as const;
+
+export const DAILY_AWARENESS_ERROR_CODES = [
+  'DAILY_AWARENESS_FORBIDDEN',
+  'DAILY_AWARENESS_NO_BRIEF',
+  'DAILY_AWARENESS_ALREADY_RUNNING',
+  'DAILY_AWARENESS_NO_DATA',
+  'DAILY_AWARENESS_MODEL_UNAVAILABLE',
+  'DAILY_AWARENESS_INVALID_CONFIG',
+  'DAILY_AWARENESS_INVALID_EVENT',
+  'DAILY_AWARENESS_INTERNAL_KEY_MISSING',
+  'DAILY_AWARENESS_INTERNAL_KEY_INVALID',
+  'DAILY_AWARENESS_INBOX_DEAD_LETTER',
+  'DAILY_AWARENESS_SUCCESS_ALREADY_EXISTS',
+] as const;
+
+export const DAILY_AWARENESS_PROMPT_VERSION = 'daily-awareness-v2.0';
+export const DAILY_DATA_FINISHED_EVENT_TYPE = 'DAILY_DATA_FINISHED';
+
+export type DailyAwarenessInboxStatus = typeof DAILY_AWARENESS_INBOX_STATUSES[number];
+export type DailyAwarenessDataStatus = typeof DAILY_AWARENESS_DATA_STATUSES[number];
+export type DailyAwarenessGenerationStatus = typeof DAILY_AWARENESS_GENERATION_STATUSES[number];
+export type DailyAwarenessQualityStatus = typeof DAILY_AWARENESS_QUALITY_STATUSES[number];
+export type DailyAwarenessTriggerType = typeof DAILY_AWARENESS_TRIGGER_TYPES[number];
+export type DailyAwarenessRunStatus = typeof DAILY_AWARENESS_RUN_STATUSES[number];
+export type DailyAwarenessGeneratedByType = typeof DAILY_AWARENESS_GENERATED_BY_TYPES[number];
+export type DailyAwarenessMessageCode = typeof DAILY_AWARENESS_MESSAGE_CODES[number];
+export type DailyAwarenessErrorCode = typeof DAILY_AWARENESS_ERROR_CODES[number];

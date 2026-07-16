@@ -1,6 +1,7 @@
 export interface DailyAwarenessMaterial {
   id: string;
   title: string;
+  summary?: string;
   content: string;
   url: string;
   publisher: string;
