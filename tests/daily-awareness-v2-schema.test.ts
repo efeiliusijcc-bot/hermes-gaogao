@@ -32,3 +32,12 @@ test('daily awareness migration is additive and idempotent', async () => {
   assert.match(sql, /row_number\(\).*PARTITION BY (?:\w+\.)?brief_date/is);
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE\s+daily_briefs|DELETE\s+FROM\s+daily_briefs/i);
 });
+
+test('daily awareness migration stores previous-day source traceability', async () => {
+  const sql = await readFile(new URL('../scripts/init-daily-awareness.sql', import.meta.url), 'utf8');
+  assert.match(sql, /daily_awareness_runs ADD COLUMN IF NOT EXISTS source_business_date DATE/i);
+  assert.match(sql, /daily_awareness_runs ADD COLUMN IF NOT EXISTS source_table VARCHAR/i);
+  assert.match(sql, /daily_awareness_runs ADD COLUMN IF NOT EXISTS data_wait_deadline TIMESTAMPTZ/i);
+  assert.match(sql, /daily_briefs ADD COLUMN IF NOT EXISTS source_business_date DATE/i);
+  assert.match(sql, /daily_briefs ADD COLUMN IF NOT EXISTS source_table VARCHAR/i);
+});

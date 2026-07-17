@@ -3,6 +3,7 @@ import type { DailyAwarenessConfig, DailyAwarenessPreparedMaterials } from './da
 import type { DailyAwarenessMaterial } from './daily-awareness.types.js';
 import { buildEventCandidates, dedupeMaterials } from './daily-awareness.utils.js';
 import { DailyAwarenessMysqlService } from './daily-awareness-mysql.service.js';
+import { previousBusinessDate } from './daily-awareness-date.js';
 
 export function prepareDailyAwarenessMaterials(
   input: DailyAwarenessMaterial[],
@@ -57,8 +58,9 @@ export class DailyAwarenessMaterialService {
   async prepareForBusinessDate(
     businessDate: string,
     config: DailyAwarenessConfig,
+    sourceBusinessDate = previousBusinessDate(businessDate),
   ): Promise<DailyAwarenessPreparedMaterials> {
-    const rows = await this.mysql.listForBusinessDate(businessDate, config.categoryScope);
+    const rows = await this.mysql.listForBusinessDate(sourceBusinessDate, config.categoryScope);
     const materials: DailyAwarenessMaterial[] = rows.map((row) => ({
       id: row.id,
       title: row.title,
@@ -73,7 +75,9 @@ export class DailyAwarenessMaterialService {
     }));
     return prepareDailyAwarenessMaterials(materials, config.summaryMaxChars, {
       source: 'mysql',
-      sourceTable: `data_${businessDate.replaceAll('-', '')}`,
+      businessDate,
+      sourceBusinessDate,
+      sourceTable: `data_${sourceBusinessDate.replaceAll('-', '')}`,
       categoryScope: config.categoryScope,
     });
   }
