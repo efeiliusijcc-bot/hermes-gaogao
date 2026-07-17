@@ -29,11 +29,12 @@ const runsTotal = ref(0)
 const inboxItems = ref([])
 const inboxTotal = ref(0)
 const activeView = ref('overview')
+const dailyAwarenessCategories = ['涉政', '危安', '涉华', '其他']
 
 const configForm = reactive({
   lookbackHours: 24,
   maxArticles: 50,
-  categoryScopeText: '',
+  categoryScope: [...dailyAwarenessCategories],
   maxRetryCount: 3,
   retryIntervalSeconds: 30,
   summaryMaxChars: 1200,
@@ -115,13 +116,17 @@ async function loadInbox() {
 
 async function saveConfig() {
   if (savingConfig.value) return
+  if (!configForm.categoryScope.length) {
+    errorMessage.value = '请至少选择一个数据分类。'
+    return
+  }
   savingConfig.value = true
   clearMessages()
   try {
     const result = await updateDailyAwarenessAdminConfig({
       lookbackHours: Number(configForm.lookbackHours),
       maxArticles: Number(configForm.maxArticles),
-      categoryScope: configForm.categoryScopeText.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+      categoryScope: [...configForm.categoryScope],
       maxRetryCount: Number(configForm.maxRetryCount),
       retryIntervalSeconds: Number(configForm.retryIntervalSeconds),
       summaryMaxChars: Number(configForm.summaryMaxChars),
@@ -185,7 +190,9 @@ function applyConfig(value) {
   if (!value) return
   configForm.lookbackHours = Number(value.lookbackHours || 24)
   configForm.maxArticles = Number(value.maxArticles || 50)
-  configForm.categoryScopeText = Array.isArray(value.categoryScope) ? value.categoryScope.join('，') : ''
+  configForm.categoryScope = Array.isArray(value.categoryScope) && value.categoryScope.length
+    ? value.categoryScope.filter((item) => dailyAwarenessCategories.includes(item))
+    : [...dailyAwarenessCategories]
   configForm.maxRetryCount = Number(value.maxRetryCount ?? 3)
   configForm.retryIntervalSeconds = Number(value.retryIntervalSeconds || 30)
   configForm.summaryMaxChars = Number(value.summaryMaxChars || 1200)
@@ -286,7 +293,13 @@ function today() {
             <label><span>模型重试次数</span><input v-model.number="configForm.maxRetryCount" type="number" min="0" max="10" required /></label>
             <label><span>重试间隔（秒）</span><input v-model.number="configForm.retryIntervalSeconds" type="number" min="1" max="3600" required /></label>
             <label><span>摘要长度上限</span><input v-model.number="configForm.summaryMaxChars" type="number" min="100" max="10000" required /></label>
-            <label class="wide"><span>分类范围（逗号分隔）</span><input v-model="configForm.categoryScopeText" type="text" /></label>
+            <fieldset class="category-scope wide">
+              <legend>数据分类</legend>
+              <label v-for="category in dailyAwarenessCategories" :key="category" class="category-option">
+                <input v-model="configForm.categoryScope" type="checkbox" :value="category" />
+                <span>{{ category }}</span>
+              </label>
+            </fieldset>
             <div class="form-actions"><button class="admin-button primary" type="submit" :disabled="savingConfig">{{ savingConfig ? '保存中...' : '保存配置' }}</button></div>
           </form>
         </section>
@@ -360,6 +373,10 @@ function today() {
 .config-form input, .manual-form input, .manual-form textarea, .filter-bar input, .filter-bar select { min-height: 38px; padding: 8px 10px; border: 1px solid #ccd4df; border-radius: 5px; color: #172033; background: #fff; box-sizing: border-box; font: inherit; }
 .manual-form textarea { min-height: 82px; resize: vertical; }
 .config-form .wide, .manual-form .wide { grid-column: span 2; }
+.category-scope { display: flex; flex-wrap: wrap; gap: 10px 18px; min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid #ccd4df; }
+.category-scope legend { padding: 0 4px; color: #667085; font-size: 12px; }
+.category-option { flex-direction: row !important; align-items: center; gap: 6px !important; }
+.category-option input { width: 18px; min-height: 18px; }
 .overwrite-check { grid-column: 1 / -1; flex-direction: row !important; align-items: center; padding: 10px; border: 1px solid #f0c36a; background: #fff9e8; }
 .overwrite-check input { width: 18px; min-height: 18px; }
 .overwrite-check span { color: #7a4d00 !important; }

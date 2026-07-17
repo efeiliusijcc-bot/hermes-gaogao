@@ -19,7 +19,7 @@ test('config update rejects a stale version and invalid ranges', async () => {
     () => service.update({
       lookbackHours: 24,
       maxArticles: 50,
-      categoryScope: [],
+      categoryScope: ['其他'],
       maxRetryCount: 3,
       retryIntervalSeconds: 30,
       summaryMaxChars: 1200,
@@ -40,6 +40,46 @@ test('config update rejects a stale version and invalid ranges', async () => {
     }, 'admin-1'),
     (error) => responseCode(error) === 'DAILY_AWARENESS_INVALID_CONFIG',
   );
+});
+
+test('config validation accepts only fixed daily awareness categories and rejects an empty new selection', async () => {
+  const service = new DailyAwarenessConfigService() as DailyAwarenessConfigService & {
+    getPool: () => Promise<{ query: () => Promise<{ rows: Array<Record<string, unknown>> }> }>;
+  };
+  service.getPool = async () => ({ query: async () => ({ rows: [] }) });
+
+  await assert.rejects(
+    () => service.update({
+      lookbackHours: 24,
+      maxArticles: 50,
+      categoryScope: [],
+      maxRetryCount: 3,
+      retryIntervalSeconds: 30,
+      summaryMaxChars: 1200,
+      version: 1,
+    }, 'admin-1'),
+    (error) => responseCode(error) === 'DAILY_AWARENESS_INVALID_CONFIG',
+  );
+  await assert.rejects(
+    () => service.update({
+      lookbackHours: 24,
+      maxArticles: 50,
+      categoryScope: ['未知分类'],
+      maxRetryCount: 3,
+      retryIntervalSeconds: 30,
+      summaryMaxChars: 1200,
+      version: 1,
+    }, 'admin-1'),
+    (error) => responseCode(error) === 'DAILY_AWARENESS_INVALID_CONFIG',
+  );
+});
+
+test('legacy empty category scope reads as all four MySQL categories', async () => {
+  const service = new DailyAwarenessConfigService() as DailyAwarenessConfigService & {
+    getPool: () => Promise<{ query: () => Promise<{ rows: Array<Record<string, unknown>> }> }>;
+  };
+  service.getPool = async () => ({ query: async () => ({ rows: [{ category_scope: [], version: 2 }] }) });
+  assert.deepEqual((await service.get()).categoryScope, ['涉政', '危安', '涉华', '其他']);
 });
 
 test('Inbox reprocess refuses to overwrite a successful global brief', async () => {

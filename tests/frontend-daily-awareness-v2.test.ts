@@ -56,6 +56,14 @@ test('daily awareness management page exposes operations without scheduling cont
   assert.doesNotMatch(adminSource, /每日生成时间|定时任务开关/);
 });
 
+test('daily awareness management page exposes fixed category checkboxes instead of comma text input', async () => {
+  const adminSource = await source('components/DailyAwarenessAdmin.vue');
+  for (const category of ['涉政', '危安', '涉华', '其他']) assert.match(adminSource, new RegExp(category));
+  assert.match(adminSource, /type="checkbox"/);
+  assert.match(adminSource, /categoryScope/);
+  assert.doesNotMatch(adminSource, /categoryScopeText|逗号分隔/);
+});
+
 test('daily awareness management API and system entry use exact manage permission', async () => {
   const [apiSource, appSource, managementSource, headerSource] = await Promise.all([
     source('lib/api.js'),
