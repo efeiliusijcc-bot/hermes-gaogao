@@ -62,7 +62,7 @@ export function buildDraftAnalyzePayload(sourceInput) {
 export function buildDraftAnalysisSections(eventResult = {}) {
   const analysis = eventResult.analysis || eventResult.event?.analysis || {}
   const event = eventResult.event || {}
-  const timeline = firstReadable(analysis.timeAndPlace, analysis.timelineSummary, event.timeline)
+  const timeline = firstReadable(analysis.timeAndPlace, analysis.timelineSummary, analysis.timeline, event.timeline)
   const location = firstReadable(analysis.location, event.region)
   const timeAndPlace = [timeline, location]
     .filter((value, index, items) => value !== '暂无明确内容' && items.indexOf(value) === index)
@@ -77,7 +77,7 @@ export function buildDraftAnalysisSections(eventResult = {}) {
     {
       key: 'actors',
       title: '核心主体',
-      content: firstReadable(analysis.coreActors, analysis.actors, event.actors),
+      content: firstReadable(analysis.keyActors, analysis.coreActors, analysis.actors, event.actors),
     },
     {
       key: 'timeAndPlace',

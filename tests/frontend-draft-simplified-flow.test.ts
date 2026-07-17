@@ -49,6 +49,22 @@ assert.match(sections.find((item) => item.key === 'actors')?.content || '', /甲
 assert.match(sections.find((item) => item.key === 'timeAndPlace')?.content || '', /维也纳/)
 assert.match(sections.find((item) => item.key === 'risk')?.content || '', /外溢风险/)
 
+const liveAnalysisSections = buildDraftAnalysisSections({
+  eventId: 'event-live-response',
+  analysis: {
+    oneSentenceSummary: '美伊技术层级会谈已经启动',
+    keyActors: [{ name: '美国' }, { name: '伊朗' }],
+    timeline: [{ time: '2026-06-21', event: '双方举行首轮技术层级会谈' }],
+    mainFacts: ['双方同意继续磋商'],
+    riskSummary: { summary: '需持续关注地区风险' },
+  },
+})
+
+assert.match(liveAnalysisSections.find((item) => item.key === 'actors')?.content || '', /美国/)
+assert.match(liveAnalysisSections.find((item) => item.key === 'actors')?.content || '', /伊朗/)
+assert.match(liveAnalysisSections.find((item) => item.key === 'timeAndPlace')?.content || '', /2026-06-21/)
+assert.match(liveAnalysisSections.find((item) => item.key === 'timeAndPlace')?.content || '', /首轮技术层级会谈/)
+
 assert.deepEqual(
   filterDraftHistory([
     { title: '美伊会谈', summary: '外交进程' },
