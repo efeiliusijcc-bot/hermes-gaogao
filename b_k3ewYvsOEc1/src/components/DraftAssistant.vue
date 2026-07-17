@@ -523,7 +523,7 @@ onBeforeUnmount(() => {
             <span>请核对以下内容。确认后将自动创建深度编报任务。</span>
           </header>
           <DraftOutlineView :outline="outlineDraft" />
-          <footer>
+          <footer class="draft-confirm-actions">
             <button class="secondary" type="button" @click="stage = 'outline'">
               <Pencil :size="17" aria-hidden="true" />返回修改
             </button>
@@ -570,13 +570,13 @@ onBeforeUnmount(() => {
 .draft-bar-spacer { width: 36px; }
 .draft-assistant-content { width: 100%; min-width: 0; box-sizing: border-box; padding: 0 28px; }
 .draft-page-error { width: min(1040px, 100%); box-sizing: border-box; margin: 16px auto 0; border-left: 3px solid #d14343; background: #fff4f4; color: #9f2424; padding: 11px 13px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.draft-confirmation { width: min(920px, 100%); margin: 0 auto; padding: 24px 0 64px; }
+.draft-confirmation { width: min(920px, 100%); margin: 0 auto; padding: 24px 0 160px; }
 .draft-confirmation > header { margin-bottom: 24px; border-bottom: 1px solid #e1e5ea; padding-bottom: 17px; }
 .draft-confirmation > header p { margin: 0 0 4px; color: #64748b; font-size: 12px; font-weight: 700; }
 .draft-confirmation > header h1 { margin: 0; color: #111827; font-size: 24px; line-height: 1.4; letter-spacing: 0; }
 .draft-confirmation > header span { display: block; margin-top: 7px; color: #737d8b; font-size: 12px; line-height: 1.7; }
-.draft-confirmation > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 32px; border-top: 1px solid #e1e5ea; padding-top: 18px; }
-.draft-confirmation > footer button, .draft-login-gate button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 700; }
+.draft-confirm-actions { position: fixed; left: 50%; bottom: 16px; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: min(920px, calc(100vw - 56px)); box-sizing: border-box; margin: 0; border: 1px solid #d8dee7; background: rgba(255, 255, 255, 0.97); border-radius: 8px; box-shadow: 0 10px 30px rgba(30, 41, 59, 0.14); padding: 12px; transform: translateX(-50%); backdrop-filter: blur(12px); }
+.draft-confirm-actions button, .draft-login-gate button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 700; }
 .draft-confirmation .secondary { border: 1px solid #d5dbe3; background: #fff; color: #4b5563; }
 .draft-confirmation .primary, .draft-login-gate button { border: 1px solid #1f2937; background: #1f2937; color: #fff; }
 .draft-login-gate { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: calc(100vh - 120px); padding: 32px; text-align: center; }
@@ -589,9 +589,9 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   .draft-assistant-bar { padding: 0 10px; }
   .draft-assistant-content { padding: 0 14px; }
-  .draft-confirmation { padding-top: 18px; }
-  .draft-confirmation > footer { align-items: stretch; flex-direction: column-reverse; }
-  .draft-confirmation > footer button { width: 100%; }
+  .draft-confirmation { padding: 18px 0 190px; }
+  .draft-confirm-actions { bottom: 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: calc(100vw - 16px); padding: 10px; }
+  .draft-confirm-actions button { width: 100%; min-width: 0; padding: 0 8px; line-height: 1.4; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) { .draft-spin { animation: none; } }
 </style>

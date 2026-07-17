@@ -1,4 +1,4 @@
-# Design QA: Draft Outline Unified Floating Actions
+# Design QA: Draft Assistant Floating Actions
 
 ## Reference
 
@@ -28,5 +28,15 @@
 - Feedback input focus/value expands the dock.
 - Back, revise, and confirm controls retain their existing accessible names.
 - Final browser console check returned no errors or warnings.
+
+## Confirmation Page Verification
+
+- Reference: production confirmation-page screenshot supplied through browser comments at `1238 x 994`.
+- Desktop dock: `position: fixed`, `920px` wide, `66px` high, with back at `x=172` and confirm at `x=904`.
+- Desktop dock stayed at `y=912` after scrolling; the final outline section ended `77.9px` above the dock at maximum scroll.
+- Mobile viewport: `390 x 844`; both buttons remained in one row at `172px` wide each.
+- Mobile dock stayed fixed while scrolling; the final outline section ended `119.9px` above it at maximum scroll.
+- No desktop or mobile horizontal overflow.
+- Final confirmation-page browser console check returned no errors or warnings.
 
 final result: passed

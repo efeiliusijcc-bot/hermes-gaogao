@@ -113,6 +113,9 @@ const importStateSource = fs.readFileSync(
 const outlineDockStart = outlineEditorSource.indexOf('<section\n      class="draft-ai-revision"');
 const outlineDockEnd = outlineEditorSource.indexOf('</section>', outlineDockStart);
 const outlineDockSource = outlineEditorSource.slice(outlineDockStart, outlineDockEnd);
+const confirmStageStart = assistantSource.indexOf("stage === 'confirm'");
+const confirmStageEnd = assistantSource.indexOf('<DraftImportState', confirmStageStart);
+const confirmStageSource = assistantSource.slice(confirmStageStart, confirmStageEnd);
 
 assert.match(sourceComposer, /<AutoResizeTextarea/);
 assert.match(sourceComposer, /开始编报/);
@@ -166,6 +169,15 @@ assert.match(assistantSource, /<DraftOutlineEditor/);
 assert.match(assistantSource, /<DraftOutlineView/);
 assert.match(assistantSource, /<DraftImportState/);
 assert.match(assistantSource, /<DraftHistorySidebar/);
+assert.ok(confirmStageStart >= 0 && confirmStageEnd > confirmStageStart);
+assert.match(confirmStageSource, /<footer class="draft-confirm-actions">/);
+assert.ok(confirmStageSource.indexOf('返回修改') < confirmStageSource.indexOf('确认并创建深度编报'));
+assert.equal((confirmStageSource.match(/返回修改/g) || []).length, 1);
+assert.equal((confirmStageSource.match(/确认并创建深度编报/g) || []).length, 1);
+assert.match(assistantSource, /\.draft-confirm-actions\s*\{[^}]*position:\s*fixed/);
+assert.match(assistantSource, /width:\s*min\(920px,\s*calc\(100vw - 56px\)\)/);
+assert.match(assistantSource, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+assert.match(assistantSource, /\.draft-confirmation\s*\{[^}]*padding:\s*24px 0 160px/);
 assert.doesNotMatch(assistantSource, /返回工作台/);
 assert.doesNotMatch(assistantSource, /canShowHistory/);
 assert.doesNotMatch(assistantSource, /handleBack/);
