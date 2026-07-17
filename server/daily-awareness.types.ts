@@ -8,6 +8,8 @@ export interface DailyAwarenessMaterial {
   publishedAt: string;
   fetchedAt?: string;
   metadata: Record<string, unknown>;
+  designatedTag?: string;
+  tag?: string;
 }
 
 export interface DailyAwarenessSourceInfo {
@@ -24,6 +26,8 @@ export interface DailyAwarenessCandidate {
   sources: DailyAwarenessSourceInfo[];
   relatedMaterialIds: string[];
   sourceCount: number;
+  category: string;
+  tag: string;
 }
 
 export interface DailyAwarenessScoredEvent {

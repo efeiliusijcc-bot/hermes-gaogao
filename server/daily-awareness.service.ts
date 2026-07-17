@@ -45,6 +45,8 @@ import {
 import {
   buildDailyReportJson,
   buildDailyReportMarkdown,
+  buildDailyAwarenessScoringPayload,
+  applyDailyAwarenessScores,
   buildEventCandidates,
   categoryStats,
   clampScore,
@@ -221,11 +223,11 @@ export class DailyAwarenessService implements OnModuleDestroy {
     config: DailyAwarenessConfig,
   ): Promise<DailyAwarenessComposedBrief> {
     const maxItems = Math.max(1, Math.min(50, config.maxArticles || 50));
-    const selection = selectClassificationCandidates(prepared.candidates, maxItems);
+    const selection = { items: prepared.candidates, limit: prepared.candidates.length };
     if (!selection.items.length) throw new ServiceUnavailableException({ error: 'No usable daily awareness candidates' });
     const batchErrors: string[] = [];
     const scoredEvents: DailyAwarenessScoredEvent[] = [];
-    const titleOnly = prepared.qualityStatus === 'TITLE_ONLY';
+    const titleOnly = true;
     await this.classifyBatches(selection.items, config.categoryScope, scoredEvents, batchErrors, titleOnly);
     if (!scoredEvents.length) {
       throw new ServiceUnavailableException({ error: 'Daily awareness model returned no usable events', batchErrors });
@@ -420,7 +422,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
   }
 
   private async classifyBatches(
-    candidates: Array<{ candidateId: string; title: string; summaryText: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>,
+    candidates: Array<{ candidateId: string; title: string; summaryText: string; category: string; tag: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>,
     categories: string[],
     output: DailyAwarenessScoredEvent[],
     batchErrors: string[],
@@ -441,7 +443,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
     }
   }
 
-  private async classifyBatch(candidates: Array<{ candidateId: string; title: string; summaryText: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>, categories: string[], titleOnly = false) {
+  private async classifyBatch(candidates: Array<{ candidateId: string; title: string; summaryText: string; category: string; tag: string; sources: DailyAwarenessSourceInfo[]; relatedMaterialIds: string[] }>, categories: string[], titleOnly = false) {
     const client = this.getLlm();
     const categoryList = (categories.length ? [...categories, '其他'] : DEFAULT_CATEGORIES).join('、');
     const completion = await client.chat.completions.create({
@@ -457,57 +459,16 @@ export class DailyAwarenessService implements OnModuleDestroy {
           role: 'user',
           content: JSON.stringify({
             categories: categoryList,
-            outputSchema: {
-              topNews: [{
-                candidateId: '',
-                title: '',
-                category: '',
-                region: '',
-                briefContent: '',
-                importanceScore: 0,
-                publisher: '',
-                publishedAt: '',
-                sourceUrl: '',
-              }],
-            },
-            candidates,
+            outputSchema: { scores: [{ candidateId: '', importanceScore: 0, riskScore: 0 }] },
+            candidates: buildDailyAwarenessScoringPayload(candidates),
           }),
         },
       ],
     });
     const content = completion.choices[0]?.message?.content || '{}';
-    const parsed = extractJsonObject(content) as { topNews?: unknown[]; events?: unknown[] };
-    const byCandidate = new Map(candidates.map((item) => [item.candidateId, item]));
-    const items = Array.isArray(parsed.topNews) ? parsed.topNews : Array.isArray(parsed.events) ? parsed.events : [];
-    return items.map((item) => {
-      const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-      const candidateId = this.text(raw.candidateId, 128);
-      const candidate = byCandidate.get(candidateId);
-      const sourceInfo = this.normalizeSources(Array.isArray(raw.sourceInfo) ? raw.sourceInfo : candidate?.sources || []);
-      if (!sourceInfo.length && (raw.publisher || raw.publishedAt || raw.sourceUrl)) {
-        sourceInfo.push({
-          title: this.text(raw.title || raw.eventTitle || candidate?.title, 512),
-          publisher: this.text(raw.publisher, 256),
-          publishedAt: this.text(raw.publishedAt, 128),
-          url: this.text(raw.sourceUrl || raw.url, 2048),
-        });
-      }
-      const briefContent = this.text(raw.briefContent || raw.basicSituation || candidate?.summaryText, 4000);
-      return {
-        candidateId,
-        eventTitle: this.text(raw.title || raw.eventTitle, 512) || candidate?.title || '未命名新闻',
-        category: this.text(raw.category, 128) || '其他',
-        region: this.text(raw.region, 128),
-        basicSituation: briefContent,
-        backgroundContext: this.text(raw.backgroundContext, 4000),
-        importanceJudgement: this.text(raw.importanceJudgement, 3000),
-        riskToUs: this.text(raw.riskToUs, 3000),
-        importanceScore: clampScore(raw.importanceScore),
-        riskScore: clampScore(raw.riskScore),
-        sourceInfo,
-        relatedMaterialIds: candidate?.relatedMaterialIds || [],
-      };
-    }).filter((event) => event.eventTitle);
+    const parsed = extractJsonObject(content) as { scores?: unknown[]; topNews?: unknown[]; events?: unknown[] };
+    const items = Array.isArray(parsed.scores) ? parsed.scores : Array.isArray(parsed.topNews) ? parsed.topNews : Array.isArray(parsed.events) ? parsed.events : [];
+    return applyDailyAwarenessScores(candidates, items.map((item) => item && typeof item === 'object' ? item as Record<string, unknown> : {}));
   }
 
   private async generateSummary(date: string, events: DailyAwarenessScoredEvent[], stats: Array<{ category: string; count: number }>, titleOnly = false) {

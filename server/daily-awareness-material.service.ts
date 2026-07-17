@@ -1,15 +1,14 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { DailyAwarenessConfig, DailyAwarenessPreparedMaterials } from './daily-awareness.contracts.js';
 import type { DailyAwarenessMaterial } from './daily-awareness.types.js';
 import { buildEventCandidates, dedupeMaterials } from './daily-awareness.utils.js';
-import { VectorSourceService } from './vector-source.service.js';
+import { DailyAwarenessMysqlService } from './daily-awareness-mysql.service.js';
 
 export function prepareDailyAwarenessMaterials(
   input: DailyAwarenessMaterial[],
-  summaryMaxChars: number,
+  _summaryMaxChars: number,
   diagnostics: Record<string, unknown> = {},
 ): DailyAwarenessPreparedMaterials {
-  const maxChars = Math.max(100, Math.min(10_000, Math.floor(Number(summaryMaxChars) || 1200)));
   const usable: DailyAwarenessMaterial[] = [];
   let skippedCount = 0;
 
@@ -19,12 +18,12 @@ export function prepareDailyAwarenessMaterials(
       skippedCount += 1;
       continue;
     }
-    const summary = String(material.summary || '').trim().slice(0, maxChars);
+    const summary = String(material.summary || '').trim();
     usable.push({
       ...material,
       title,
       summary,
-      content: String(material.content || '').trim().slice(0, maxChars),
+      content: String(material.content || '').trim(),
     });
   }
 
@@ -53,19 +52,29 @@ export function prepareDailyAwarenessMaterials(
 
 @Injectable()
 export class DailyAwarenessMaterialService {
-  constructor(@Inject(VectorSourceService) private readonly vectorSources: VectorSourceService) {}
+  constructor(private readonly mysql: DailyAwarenessMysqlService) {}
 
   async prepareForBusinessDate(
     businessDate: string,
     config: DailyAwarenessConfig,
   ): Promise<DailyAwarenessPreparedMaterials> {
-    const result = await this.vectorSources.listDailyMaterials({
-      targetDate: businessDate,
-      lookbackHours: config.lookbackHours,
-      limit: config.maxArticles,
-      categories: config.categoryScope,
-      allowFallback: false,
+    const rows = await this.mysql.listForBusinessDate(businessDate, config.categoryScope);
+    const materials: DailyAwarenessMaterial[] = rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      summary: row.summary,
+      content: row.summary,
+      url: row.url,
+      publisher: row.publisher,
+      publishedAt: row.publishedAt,
+      metadata: { dataType: row.dataType, designatedTag: row.designatedTag, tag: row.tag },
+      designatedTag: row.designatedTag,
+      tag: row.tag,
+    }));
+    return prepareDailyAwarenessMaterials(materials, config.summaryMaxChars, {
+      source: 'mysql',
+      sourceTable: `data_${businessDate.replaceAll('-', '')}`,
+      categoryScope: config.categoryScope,
     });
-    return prepareDailyAwarenessMaterials(result.materials, config.summaryMaxChars, result.diagnostics);
   }
 }
