@@ -43,7 +43,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => resizeObserver?.disconnect())
 
-watch(() => props.modelValue, async () => {
+watch([() => props.modelValue, () => props.minHeight], async () => {
   await nextTick()
   resize()
 })
@@ -56,6 +56,7 @@ defineExpose({ resize })
     ref="textarea"
     v-bind="$attrs"
     class="auto-resize-textarea"
+    rows="1"
     :value="modelValue"
     :style="{ minHeight: `${minHeight}px` }"
     :placeholder="placeholder"
