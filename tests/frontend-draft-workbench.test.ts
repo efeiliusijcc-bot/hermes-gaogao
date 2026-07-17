@@ -110,6 +110,9 @@ const importStateSource = fs.readFileSync(
   new URL('../b_k3ewYvsOEc1/src/components/DraftImportState.vue', import.meta.url),
   'utf8',
 );
+const outlineDockStart = outlineEditorSource.indexOf('<section\n      class="draft-ai-revision"');
+const outlineDockEnd = outlineEditorSource.indexOf('</section>', outlineDockStart);
+const outlineDockSource = outlineEditorSource.slice(outlineDockStart, outlineDockEnd);
 
 assert.match(sourceComposer, /<AutoResizeTextarea/);
 assert.match(sourceComposer, /开始编报/);
@@ -137,6 +140,17 @@ assert.match(outlineEditorSource, /@focus="revisionFocused = true"/);
 assert.match(outlineEditorSource, /@blur="revisionFocused = false"/);
 assert.match(outlineEditorSource, /position:\s*fixed/);
 assert.match(outlineEditorSource, /padding-bottom:\s*220px/);
+assert.ok(outlineDockStart >= 0 && outlineDockEnd > outlineDockStart);
+assert.match(outlineDockSource, /class="draft-dock-back"/);
+assert.match(outlineDockSource, /class="draft-ai-revision-main"/);
+assert.match(outlineDockSource, /class="draft-dock-confirm"/);
+assert.ok(outlineDockSource.indexOf('draft-dock-back') < outlineDockSource.indexOf('draft-ai-revision-main'));
+assert.ok(outlineDockSource.indexOf('draft-ai-revision-main') < outlineDockSource.indexOf('draft-dock-confirm'));
+assert.equal((outlineEditorSource.match(/返回事件分析/g) || []).length, 1);
+assert.equal((outlineEditorSource.match(/下一步：确认提纲/g) || []).length, 1);
+assert.doesNotMatch(outlineEditorSource, /draft-editor-footer/);
+assert.match(outlineEditorSource, /grid-template-areas:\s*"back ai confirm"/);
+assert.match(outlineEditorSource, /"ai-title ai-input ai-input"\s*"back revise confirm"/);
 assert.doesNotMatch(outlineEditorSource, /transition:\s*min-height/);
 assert.match(outlineEditorSource, /<AutoResizeTextarea/);
 assert.doesNotMatch(outlineEditorSource, /V\d|版本记录|恢复旧版本|版本比较/);
