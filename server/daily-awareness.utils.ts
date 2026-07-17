@@ -259,13 +259,13 @@ export function buildDailyReportMarkdown(input: {
   const grouped = buildDailyReportJson(input.events).sections;
   for (const [sectionIndex, section] of grouped.entries()) {
     lines.push(`### ${toChineseSectionNumber(sectionIndex + 1)}${section.category}`, '');
-    for (const item of section.items) {
-      const rank = Number(item.rank || 0);
+    for (const [itemIndex, item] of section.items.entries()) {
+      const sectionRank = itemIndex + 1;
       const title = String(item.title || '未命名新闻');
       const briefContent = String(item.briefContent || '暂无简要内容。');
       const publisher = sanitizeSourceText(item.publisher) || '来源未知';
       const publishedAt = String(item.publishedAt || '时间未知');
-      lines.push(`${rank}. ${title}`);
+      lines.push(`${sectionRank}. ${title}`);
       lines.push(`   简要内容：${briefContent}`);
       lines.push('');
       lines.push(`   来源：${publisher}，发布时间：${publishedAt}`);
