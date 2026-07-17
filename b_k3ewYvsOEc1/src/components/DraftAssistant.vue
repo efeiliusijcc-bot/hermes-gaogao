@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, Check, History, LoaderCircle, Pencil } from '@lucide/vue'
+import { Check, History, LoaderCircle, Pencil } from '@lucide/vue'
 import {
   analyzeDraftEvent,
   createReportJob,
@@ -59,7 +59,6 @@ const currentEventId = computed(() => (
   || ''
 ))
 const analysisSections = computed(() => buildDraftAnalysisSections(eventResult.value || {}))
-const canShowHistory = computed(() => stage.value !== 'input')
 const isImporting = computed(() => stage.value === 'importing' || stage.value === 'completed')
 
 function emptyOutline() {
@@ -428,11 +427,6 @@ async function startNewEvent() {
   historyOpen.value = false
 }
 
-async function handleBack() {
-  if (!(await flushBeforeLeaving())) return
-  emit('back')
-}
-
 function handleBeforeUnload(event) {
   if (!['dirty', 'saving'].includes(saveStatus.value)) return
   event.preventDefault()
@@ -473,12 +467,7 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <header class="draft-assistant-bar">
-        <button type="button" aria-label="返回工作台" title="返回工作台" @click="handleBack">
-          <ArrowLeft :size="19" aria-hidden="true" />
-        </button>
-        <strong>拟稿助手</strong>
         <button
-          v-if="canShowHistory"
           type="button"
           aria-label="查看历史编报"
           title="历史编报"
@@ -487,7 +476,8 @@ onBeforeUnmount(() => {
         >
           <History :size="19" aria-hidden="true" />
         </button>
-        <span v-else class="draft-bar-spacer" aria-hidden="true"></span>
+        <strong>拟稿助手</strong>
+        <span class="draft-bar-spacer" aria-hidden="true"></span>
       </header>
 
       <div class="draft-assistant-content" :class="`stage-${stage}`">
