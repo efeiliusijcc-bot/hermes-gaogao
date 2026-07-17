@@ -45,6 +45,11 @@ for (const name of [
   assert.match(deployScript, new RegExp(`write_env ${name}`));
 }
 assert.match(deployScript, /write_env DAILY_AWARENESS_AUTO_ENABLED "\$\{DAILY_AWARENESS_AUTO_ENABLED:-true\}"/);
+assert.match(
+  deployScript,
+  /run_api_container "\\\$CANDIDATE_NAME" no false false/,
+  'candidate container must disable automatic Daily Awareness scheduling',
+);
 assert.match(deployScript, /docker network connect --alias my_mysql hermes-net my_mysql/);
 
 const candidateCheck = deployScript.indexOf('hermes-api-candidate-');

@@ -269,8 +269,10 @@ run_api_container() {
   local name="\$1"
   local restart_policy="\$2"
   local publish_port="\${3:-false}"
+  local scheduler_enabled="\${4:-}"
   local stage_label="hermes.stage=artifact-stage-a"
   local publish_args=()
+  local scheduler_args=()
   local legacy_mount_args=(--mount type=bind,src=/opt/hermes,dst=/opt/data)
   if [ "\${HERMES_API_LEGACY_DATA_MOUNT:-true}" = "false" ]; then
     stage_label="hermes.stage=artifact-stage-b"
@@ -278,6 +280,9 @@ run_api_container() {
   fi
   if [ "\$publish_port" = "true" ]; then
     publish_args=(-p 1556:1555)
+  fi
+  if [ -n "\$scheduler_enabled" ]; then
+    scheduler_args=(-e "DAILY_AWARENESS_AUTO_ENABLED=\$scheduler_enabled")
   fi
 
   docker run -d \
@@ -288,6 +293,7 @@ run_api_container() {
     --user 1000:1000 \
     "\${publish_args[@]}" \
     --env-file "\$REMOTE_ENV_FILE" \
+    "\${scheduler_args[@]}" \
     --mount type=volume,source=report-artifacts,target=/app/storage/artifacts \
     --mount type=bind,src=/opt/hermes/workspace/report-agent/reports,dst=/app/hermes-inbox,readonly \
     --mount type=bind,src=/opt/hermes/workspace/report-agent/config,dst=/app/hermes-config \
@@ -337,7 +343,7 @@ rollback_deploy() {
 trap 'rollback_deploy' ERR
 
 docker rm -f "\$CANDIDATE_NAME" >/dev/null 2>&1 || true
-run_api_container "\$CANDIDATE_NAME" no false
+run_api_container "\$CANDIDATE_NAME" no false false
 docker exec "\$CANDIDATE_NAME" getent hosts todo_postgres
 docker exec "\$CANDIDATE_NAME" getent hosts my_mysql
 wait_container_health "\$CANDIDATE_NAME"
