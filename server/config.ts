@@ -92,6 +92,13 @@ export const HERMES_REMOTE_CLI_PROVIDER = process.env.HERMES_REMOTE_CLI_PROVIDER
 export const HERMES_REMOTE_CLI_MODEL = process.env.HERMES_REMOTE_CLI_MODEL || '';
 export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 
+export const DAILY_AWARENESS_MYSQL_HOST = process.env.DAILY_AWARENESS_MYSQL_HOST || 'my_mysql';
+export const DAILY_AWARENESS_MYSQL_PORT = Number(process.env.DAILY_AWARENESS_MYSQL_PORT || 3306);
+export const DAILY_AWARENESS_MYSQL_DATABASE = process.env.DAILY_AWARENESS_MYSQL_DATABASE || 'news';
+export const DAILY_AWARENESS_MYSQL_USER = process.env.DAILY_AWARENESS_MYSQL_USER || 'root';
+export const DAILY_AWARENESS_MYSQL_PASSWORD = process.env.DAILY_AWARENESS_MYSQL_PASSWORD || '';
+export const DAILY_AWARENESS_MYSQL_TABLE_PREFIX = process.env.DAILY_AWARENESS_MYSQL_TABLE_PREFIX || 'data_';
+
 export const REPORT_AGENT_PROVIDER = process.env.REPORT_AGENT_PROVIDER || 'hermes';
 export const REPORT_AGENT_BASE_URL =
   process.env.REPORT_AGENT_BASE_URL || process.env.DIRECT_QA_BASE_URL || DIRECT_QA_BASE_URL;

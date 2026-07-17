@@ -26,6 +26,7 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "marked": "^18.0.2",
+    "mysql2": "^3.23.0",
     "openai": "^6.34.0",
     "pg": "^8.21.0",
     "reflect-metadata": "^0.2.2",
