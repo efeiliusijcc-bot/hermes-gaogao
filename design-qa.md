@@ -39,4 +39,14 @@
 - No desktop or mobile horizontal overflow.
 - Final confirmation-page browser console check returned no errors or warnings.
 
+## Event Analysis Page Verification
+
+- Reference: production event-analysis screenshot supplied through browser comments at `1238 x 994`.
+- Desktop dock: `position: fixed`, `840px` wide, `66px` high, with back at `x=212` and generate at `x=918`.
+- Desktop dock stayed at `y=912` after scrolling; the final analysis section ended `77.9px` above the dock at maximum scroll.
+- Mobile viewport: `390 x 844`; both buttons remained in one row at `172px` wide each.
+- Mobile dock stayed fixed while scrolling; the final analysis section ended `119.8px` above it at maximum scroll.
+- No desktop or mobile horizontal overflow.
+- Final event-analysis browser console check returned no errors or warnings.
+
 final result: passed
