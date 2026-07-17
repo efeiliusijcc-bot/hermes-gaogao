@@ -40,3 +40,14 @@ test('daily awareness styles explicitly restore ordered and unordered list marke
   assert.match(component, /\.report-markdown :deep\(ol\)[\s\S]*?list-style-type:\s*decimal/u)
   assert.match(component, /\.report-markdown :deep\(ul\)[\s\S]*?list-style-type:\s*disc/u)
 })
+
+test('daily awareness switches between document and compact card views', () => {
+  const component = readFileSync(new URL('../components/DailyAwareness.vue', import.meta.url), 'utf8')
+
+  assert.match(component, /const contentView = ref\('document'\)/u)
+  assert.match(component, /aria-label="简报展示模式"/u)
+  assert.match(component, /v-if="contentView === 'document'"/u)
+  assert.match(component, /v-else class="news-view"/u)
+  assert.match(component, /\.news-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit/u)
+  assert.match(component, /\.news-card\.expanded\s*\{\s*grid-column:\s*1\s*\/\s*-1/u)
+})

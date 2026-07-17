@@ -1,4 +1,5 @@
 <script setup>
+import { FileText, LayoutGrid } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   downloadDailyAwarenessByDate,
@@ -42,6 +43,7 @@ const selectedCategory = ref('')
 const expandedEventIds = ref(new Set())
 const importedEventIds = ref(new Set())
 const viewMode = ref('current')
+const contentView = ref('document')
 
 const userPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
 const canView = computed(() => userPermissions.value.includes('daily-awareness:view'))
@@ -337,96 +339,125 @@ watch(() => props.currentUser?.id, () => {
         </div>
         <div class="brief-actions">
           <button type="button" class="secondary-button" :disabled="!contentMarkdown" @click="copyReport">复制</button>
+          <div class="brief-view-switch" role="group" aria-label="简报展示模式">
+            <button
+              type="button"
+              :class="{ active: contentView === 'document' }"
+              :aria-pressed="contentView === 'document'"
+              @click="contentView = 'document'"
+            >
+              <FileText :size="15" aria-hidden="true" />
+              <span>正文</span>
+            </button>
+            <button
+              type="button"
+              :class="{ active: contentView === 'cards' }"
+              :aria-pressed="contentView === 'cards'"
+              @click="contentView = 'cards'"
+            >
+              <LayoutGrid :size="15" aria-hidden="true" />
+              <span>卡片</span>
+            </button>
+          </div>
           <button type="button" class="primary-button" :disabled="exportingWord" @click="exportWord">
             {{ exportingWord ? '导出中...' : '导出 Word' }}
           </button>
         </div>
       </section>
 
-      <section class="report-document" aria-label="简报正文">
+      <section v-if="contentView === 'document'" class="report-document" aria-label="简报正文">
         <div v-if="contentHtml" class="report-markdown" v-html="contentHtml"></div>
         <p v-else class="report-empty">暂无简报正文。</p>
       </section>
 
-      <nav v-if="categoryDistribution.length" class="category-tabs" aria-label="新闻分类筛选">
-        <button type="button" :class="{ active: !selectedCategory }" @click="selectedCategory = ''">全部</button>
-        <button
-          v-for="item in categoryDistribution"
-          :key="item.category"
-          type="button"
-          :class="{ active: selectedCategory === item.category }"
-          @click="selectedCategory = item.category"
-        >
-          {{ item.category }} <span>{{ item.count }}</span>
-        </button>
-      </nav>
+      <div v-else class="news-view">
+        <nav v-if="categoryDistribution.length" class="category-tabs" aria-label="新闻分类筛选">
+          <button type="button" :class="{ active: !selectedCategory }" @click="selectedCategory = ''">全部</button>
+          <button
+            v-for="item in categoryDistribution"
+            :key="item.category"
+            type="button"
+            :class="{ active: selectedCategory === item.category }"
+            @click="selectedCategory = item.category"
+          >
+            {{ item.category }} <span>{{ item.count }}</span>
+          </button>
+        </nav>
 
-      <section class="news-section">
-        <header>
-          <div>
-            <span class="section-label">SELECTED NEWS</span>
-            <h2>入选新闻</h2>
-          </div>
-          <strong>{{ visibleEvents.length }} 条</strong>
-        </header>
+        <section class="news-section">
+          <header>
+            <div>
+              <span class="section-label">SELECTED NEWS</span>
+              <h2>入选新闻</h2>
+            </div>
+            <strong>{{ visibleEvents.length }} 条</strong>
+          </header>
 
-        <div v-if="!visibleEvents.length" class="empty-inline">当前分类暂无新闻。</div>
-        <article v-for="event in visibleEvents" :key="event.itemId" class="news-card">
-          <div class="news-rank">{{ String(event.rankNo || 0).padStart(2, '0') }}</div>
-          <div class="news-content">
-            <div class="news-title-row">
-              <div>
-                <span class="news-category">{{ event.category || '其他' }}</span>
-                <h3>{{ eventTitle(event) }}</h3>
+          <div v-if="!visibleEvents.length" class="empty-inline">当前分类暂无新闻。</div>
+          <div v-else class="news-grid">
+            <article
+              v-for="event in visibleEvents"
+              :key="event.itemId"
+              class="news-card"
+              :class="{ expanded: isEventExpanded(event.itemId) }"
+            >
+              <div class="news-rank">{{ String(event.rankNo || 0).padStart(2, '0') }}</div>
+              <div class="news-content">
+                <div class="news-title-row">
+                  <div>
+                    <span class="news-category">{{ event.category || '其他' }}</span>
+                    <h3>{{ eventTitle(event) }}</h3>
+                  </div>
+                  <button
+                    type="button"
+                    class="icon-button expand-button"
+                    :title="isEventExpanded(event.itemId) ? '收起详情' : '展开详情'"
+                    :aria-label="isEventExpanded(event.itemId) ? '收起详情' : '展开详情'"
+                    @click="toggleEventDetails(event.itemId)"
+                  >
+                    {{ isEventExpanded(event.itemId) ? '−' : '+' }}
+                  </button>
+                </div>
+                <p class="news-summary">{{ eventSummary(event) }}</p>
+                <div class="news-meta">
+                  <span>重要性 {{ Number(event.importanceScore || 0).toFixed(0) }}</span>
+                  <span>风险 {{ Number(event.riskScore || 0).toFixed(0) }}</span>
+                  <span>{{ sourceList(event).length }} 个来源</span>
+                </div>
+
+                <div v-if="isEventExpanded(event.itemId)" class="event-details">
+                  <div v-if="event.backgroundContext"><strong>背景</strong><p>{{ event.backgroundContext }}</p></div>
+                  <div v-if="event.importanceJudgement"><strong>重要性研判</strong><p>{{ event.importanceJudgement }}</p></div>
+                  <div v-if="event.riskToUs"><strong>对我风险</strong><p>{{ event.riskToUs }}</p></div>
+                  <div v-if="sourceList(event).length" class="source-list">
+                    <strong>来源</strong>
+                    <a
+                      v-for="(source, index) in sourceList(event)"
+                      :key="`${event.itemId}-source-${index}`"
+                      :href="source.url || undefined"
+                      :target="source.url ? '_blank' : undefined"
+                      rel="noreferrer"
+                    >
+                      {{ sourceLabel(source) }}
+                    </a>
+                  </div>
+                </div>
+
+                <div v-if="canImportToDraft" class="news-actions">
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    :disabled="importingItemId === event.itemId || isEventImported(event.itemId)"
+                    @click="importToDraft(event)"
+                  >
+                    {{ isEventImported(event.itemId) ? '已导入' : importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}
+                  </button>
+                </div>
               </div>
-              <button
-                type="button"
-                class="icon-button expand-button"
-                :title="isEventExpanded(event.itemId) ? '收起详情' : '展开详情'"
-                :aria-label="isEventExpanded(event.itemId) ? '收起详情' : '展开详情'"
-                @click="toggleEventDetails(event.itemId)"
-              >
-                {{ isEventExpanded(event.itemId) ? '−' : '+' }}
-              </button>
-            </div>
-            <p class="news-summary">{{ eventSummary(event) }}</p>
-            <div class="news-meta">
-              <span>重要性 {{ Number(event.importanceScore || 0).toFixed(0) }}</span>
-              <span>风险 {{ Number(event.riskScore || 0).toFixed(0) }}</span>
-              <span>{{ sourceList(event).length }} 个来源</span>
-            </div>
-
-            <div v-if="isEventExpanded(event.itemId)" class="event-details">
-              <div v-if="event.backgroundContext"><strong>背景</strong><p>{{ event.backgroundContext }}</p></div>
-              <div v-if="event.importanceJudgement"><strong>重要性研判</strong><p>{{ event.importanceJudgement }}</p></div>
-              <div v-if="event.riskToUs"><strong>对我风险</strong><p>{{ event.riskToUs }}</p></div>
-              <div v-if="sourceList(event).length" class="source-list">
-                <strong>来源</strong>
-                <a
-                  v-for="(source, index) in sourceList(event)"
-                  :key="`${event.itemId}-source-${index}`"
-                  :href="source.url || undefined"
-                  :target="source.url ? '_blank' : undefined"
-                  rel="noreferrer"
-                >
-                  {{ sourceLabel(source) }}
-                </a>
-              </div>
-            </div>
-
-            <div v-if="canImportToDraft" class="news-actions">
-              <button
-                type="button"
-                class="secondary-button"
-                :disabled="importingItemId === event.itemId || isEventImported(event.itemId)"
-                @click="importToDraft(event)"
-              >
-                {{ isEventImported(event.itemId) ? '已导入' : importingItemId === event.itemId ? '导入中...' : '导入拟稿助手' }}
-              </button>
-            </div>
+            </article>
           </div>
-        </article>
-      </section>
+        </section>
+      </div>
     </template>
 
     <section v-else class="empty-state">
@@ -579,6 +610,7 @@ button:disabled {
 .overview-grid,
 .brief-heading,
 .report-document,
+.news-view,
 .category-tabs,
 .news-section,
 .empty-state {
@@ -623,6 +655,41 @@ button:disabled {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.brief-view-switch {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #cfd6df;
+  border-radius: 6px;
+  background: #eef2f5;
+  box-sizing: border-box;
+}
+
+.brief-view-switch button {
+  min-width: 72px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  color: #667085;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brief-view-switch button.active {
+  color: #1f6b48;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
 }
 
 .brief-quality {
@@ -819,44 +886,60 @@ button:disabled {
 
 .category-tabs span { margin-left: 5px; opacity: 0.76; }
 
-.news-section { margin-top: 28px; }
+.news-view { margin-top: 14px; }
+.news-section { margin-top: 18px; }
 .news-section > header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .news-section h2 { margin-top: 4px; font-size: 21px; }
 .news-section > header > strong { color: #667085; font-size: 14px; }
 
+.news-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
 .news-card {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 16px;
-  margin-top: 8px;
-  padding: 18px;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
   border: 1px solid #dbe1e8;
-  border-radius: 7px;
+  border-radius: 6px;
   background: #fff;
 }
 
+.news-card.expanded { grid-column: 1 / -1; }
+
 .news-rank {
-  width: 42px;
-  height: 32px;
+  width: 34px;
+  height: 28px;
   display: grid;
   place-items: center;
   color: #1f6b48;
   background: #e4f2eb;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
 }
 
-.news-title-row { display: flex; justify-content: space-between; gap: 18px; }
-.news-title-row h3 { margin: 5px 0 0; font-size: 17px; line-height: 1.45; letter-spacing: 0; overflow-wrap: anywhere; }
+.news-title-row { display: flex; justify-content: space-between; gap: 12px; }
+.news-title-row h3 { margin: 4px 0 0; font-size: 15px; line-height: 1.45; letter-spacing: 0; overflow-wrap: anywhere; }
 .news-category { color: #28724f; font-size: 12px; font-weight: 800; }
-.expand-button { flex: 0 0 auto; width: 32px; height: 32px; font-size: 20px; }
-.news-summary { margin: 12px 0 0; color: #475467; line-height: 1.75; font-size: 14px; }
-.news-meta { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px 16px; color: #667085; font-size: 12px; }
+.expand-button { flex: 0 0 auto; width: 30px; height: 30px; font-size: 18px; }
+.news-summary { margin: 9px 0 0; color: #475467; line-height: 1.65; font-size: 13px; }
+.news-card:not(.expanded) .news-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.news-meta { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 6px 12px; color: #667085; font-size: 12px; }
 
 .event-details {
-  margin-top: 16px;
-  padding-top: 14px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid #e4e7ec;
   display: grid;
   gap: 12px;
@@ -867,7 +950,8 @@ button:disabled {
 .source-list { display: flex; flex-wrap: wrap; gap: 8px 14px; }
 .source-list strong { width: 100%; }
 .source-list a { color: #175cd3; font-size: 13px; text-decoration: none; overflow-wrap: anywhere; }
-.news-actions { margin-top: 14px; }
+.news-actions { margin-top: 10px; }
+.news-actions .secondary-button { min-height: 32px; padding: 0 10px; font-size: 13px; }
 
 .empty-state,
 .empty-inline {
@@ -935,7 +1019,9 @@ button:disabled {
   .overview-grid > div:nth-child(2) { border-right: 0; }
   .overview-grid > div:nth-child(-n + 2) { border-bottom: 1px solid #e4e8ee; }
   .brief-heading { align-items: flex-start; flex-direction: column; }
-  .brief-actions { width: 100%; justify-content: flex-start; }
+  .brief-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+  .brief-view-switch { order: -1; width: 100%; }
+  .brief-view-switch button { flex: 1; }
   .news-card { grid-template-columns: 1fr; }
   .news-rank { width: 38px; }
   .report-document { padding: 22px 18px; }
