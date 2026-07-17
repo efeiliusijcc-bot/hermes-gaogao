@@ -69,7 +69,7 @@ const emit = defineEmits(['back', 'generate', 'retry'])
 </template>
 
 <style scoped>
-.draft-analysis-view { width: min(840px, 100%); margin: 0 auto; padding: 26px 0 56px; }
+.draft-analysis-view { width: min(840px, 100%); margin: 0 auto; padding: 26px 0 160px; }
 .draft-user-message { width: min(680px, 88%); margin-left: auto; border-radius: 8px; background: #f2f3f5; padding: 14px 16px; }
 .draft-user-message span { color: #6b7280; font-size: 11px; font-weight: 700; }
 .draft-user-message p { margin: 6px 0 0; color: #252a34; font-size: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -86,7 +86,7 @@ const emit = defineEmits(['back', 'generate', 'retry'])
 .draft-analysis-error { margin: 20px 0 0 48px; border-left: 3px solid #ef4444; background: #fff7f7; padding: 14px 16px; color: #991b1b; }
 .draft-analysis-error p { margin: 0 0 10px; font-size: 13px; }
 .draft-analysis-error button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: #b91c1c; padding: 0; cursor: pointer; font-weight: 700; }
-.draft-analysis-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 30px 0 0 48px; }
+.draft-analysis-actions { position: fixed; left: 50%; bottom: 16px; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 10px; width: min(840px, calc(100vw - 56px)); box-sizing: border-box; margin: 0; border: 1px solid #d8dee7; background: rgba(255, 255, 255, 0.97); border-radius: 8px; box-shadow: 0 10px 30px rgba(30, 41, 59, 0.14); padding: 12px; transform: translateX(-50%); backdrop-filter: blur(12px); }
 .draft-analysis-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 15px; cursor: pointer; font-size: 13px; font-weight: 700; }
 .draft-analysis-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
 .draft-analysis-actions .secondary { border: 1px solid #d7dce4; background: #fff; color: #4b5563; }
@@ -96,11 +96,11 @@ const emit = defineEmits(['back', 'generate', 'retry'])
 @keyframes draft-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 640px) {
-  .draft-analysis-view { padding-top: 14px; }
+  .draft-analysis-view { padding: 14px 0 190px; }
   .draft-user-message { width: 94%; }
-  .draft-analysis-sections, .draft-analysis-loading, .draft-analysis-error, .draft-analysis-actions { margin-left: 0; }
-  .draft-analysis-actions { align-items: stretch; flex-direction: column-reverse; }
-  .draft-analysis-actions button { width: 100%; }
+  .draft-analysis-sections, .draft-analysis-loading, .draft-analysis-error { margin-left: 0; }
+  .draft-analysis-actions { bottom: 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: calc(100vw - 16px); padding: 10px; }
+  .draft-analysis-actions button { width: 100%; min-width: 0; padding: 0 8px; line-height: 1.4; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) { .draft-spin { animation: none; } }
 </style>
