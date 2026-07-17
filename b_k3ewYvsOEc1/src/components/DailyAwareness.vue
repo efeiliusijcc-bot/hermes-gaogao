@@ -7,7 +7,7 @@ import {
   getDailyAwarenessHistory,
   importDailyEventToDraft,
 } from '../lib/api.js'
-import { renderMarkdown } from '../lib/markdown.js'
+import { normalizePublishedDates, renderMarkdown } from '../lib/markdown.js'
 
 const props = defineProps({
   currentUser: {
@@ -54,7 +54,8 @@ const qualityStatus = computed(() => activeBrief.value?.qualityStatus || current
 const banner = computed(() => MESSAGE_MAP[currentState.value?.messageCode] || MESSAGE_MAP.TODAY_WAITING)
 const title = computed(() => activeBrief.value?.title || '每日动态简报')
 const contentMarkdown = computed(() => activeBrief.value?.contentMarkdown || '')
-const contentHtml = computed(() => renderMarkdown(contentMarkdown.value))
+const displayMarkdown = computed(() => normalizePublishedDates(contentMarkdown.value))
+const contentHtml = computed(() => renderMarkdown(displayMarkdown.value))
 const categoryDistribution = computed(() => {
   const distribution = activeBrief.value?.categoryDistribution
   if (distribution && typeof distribution === 'object' && !Array.isArray(distribution)) {
@@ -191,7 +192,7 @@ async function copyReport() {
   errorMessage.value = ''
   noticeMessage.value = ''
   try {
-    await navigator.clipboard.writeText(contentMarkdown.value)
+    await navigator.clipboard.writeText(displayMarkdown.value)
     noticeMessage.value = '简报内容已复制。'
   } catch {
     errorMessage.value = '复制失败，请检查浏览器剪贴板权限。'
@@ -748,7 +749,11 @@ button:disabled {
 .report-markdown :deep(ol) {
   margin: 10px 0 18px;
   padding-left: 1.7em;
+  list-style-position: outside;
 }
+
+.report-markdown :deep(ul) { list-style-type: disc; }
+.report-markdown :deep(ol) { list-style-type: decimal; }
 
 .report-markdown :deep(li) {
   margin: 6px 0;

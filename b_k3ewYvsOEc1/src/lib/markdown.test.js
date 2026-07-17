@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { renderMarkdown } from './markdown.js'
+import { normalizePublishedDates, renderMarkdown } from './markdown.js'
 
 test('renders headings and lists without exposing Markdown markers', () => {
   const sanitizer = { sanitize: (html) => html }
@@ -25,4 +26,17 @@ test('sanitizes the generated HTML before returning it', () => {
 
   assert.match(receivedHtml, /<script>/)
   assert.doesNotMatch(html, /<script>/)
+})
+
+test('keeps only the calendar date in published time labels', () => {
+  const markdown = '来源：新华社，发布时间：2026-07-15T06:06:00.000Z'
+
+  assert.equal(normalizePublishedDates(markdown), '来源：新华社，发布时间：2026-07-15')
+})
+
+test('daily awareness styles explicitly restore ordered and unordered list markers', () => {
+  const component = readFileSync(new URL('../components/DailyAwareness.vue', import.meta.url), 'utf8')
+
+  assert.match(component, /\.report-markdown :deep\(ol\)[\s\S]*?list-style-type:\s*decimal/u)
+  assert.match(component, /\.report-markdown :deep\(ul\)[\s\S]*?list-style-type:\s*disc/u)
 })

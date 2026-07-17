@@ -195,6 +195,15 @@ export function dailyReportTitle(date: string, usedFallback = false): string {
   return `${date} 每日动态简报${usedFallback ? '（使用最近可用信源）' : ''}`;
 }
 
+export function formatPublishedDate(value: unknown): string {
+  const text = String(value || '').trim();
+  if (!text) return '时间未知';
+  const dateOnly = text.match(/^(\d{4}-\d{2}-\d{2})(?:[T\s]|$)/u)?.[1];
+  if (dateOnly) return dateOnly;
+  const parsed = new Date(text);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : text;
+}
+
 export function buildDailyReportJson(events: DailyAwarenessScoredEvent[]) {
   const sections = new Map<string, Array<Record<string, unknown>>>();
   events.forEach((event, index) => {
@@ -264,7 +273,7 @@ export function buildDailyReportMarkdown(input: {
       const title = String(item.title || '未命名新闻');
       const briefContent = String(item.briefContent || '暂无简要内容。');
       const publisher = sanitizeSourceText(item.publisher) || '来源未知';
-      const publishedAt = String(item.publishedAt || '时间未知');
+      const publishedAt = formatPublishedDate(item.publishedAt);
       lines.push(`${sectionRank}. ${title}`);
       lines.push(`   简要内容：${briefContent}`);
       lines.push('');

@@ -9,6 +9,7 @@ import {
   dailyReportTitle,
   dedupeMaterials,
   extractJsonObject,
+  formatPublishedDate,
   normalizeEventTitle,
   rankDailyEvents,
   selectClassificationCandidates,
@@ -205,8 +206,15 @@ test('builds daily report markdown with overview, distribution, news and fallbac
   assert.match(markdown, /今日共从 2186 条候选新闻中筛选出 2 条重点新闻/);
   assert.match(markdown, /国际安全：1 条/);
   assert.match(markdown, /1\. 法案正式文本发布/);
-  assert.match(markdown, /来源：BBC，发布时间：2026-07-05T01:00:00Z/);
+  assert.match(markdown, /来源：BBC，发布时间：2026-07-05/);
+  assert.doesNotMatch(markdown, /发布时间：2026-07-05T/);
   assert.match(markdown, /已使用最近 7 天可用信源生成简报/);
+});
+
+test('formats published times as calendar dates', () => {
+  assert.equal(formatPublishedDate('2026-07-15T06:06:00.000Z'), '2026-07-15');
+  assert.equal(formatPublishedDate('2026-07-15 06:06:00'), '2026-07-15');
+  assert.equal(formatPublishedDate(''), '时间未知');
 });
 
 test('numbers grouped markdown items sequentially within each category', () => {

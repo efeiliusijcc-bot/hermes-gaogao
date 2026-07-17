@@ -53,6 +53,7 @@ import {
   dailyReportTitle,
   dedupeMaterials,
   extractJsonObject,
+  formatPublishedDate,
   rankDailyEvents,
   sanitizeSourceText,
   selectClassificationCandidates,
@@ -627,7 +628,7 @@ export class DailyAwarenessService implements OnModuleDestroy {
         heading: HeadingLevel.HEADING_2,
         children: [new TextRun({ text: `${rank ? `${rank}. ` : ''}${titleText}`, bold: true })],
       }));
-      children.push(this.metaParagraph(`分类：${category}｜重要性：${importance.toFixed(0)}｜来源：${source.publisher || '来源未知'}｜发布时间：${source.publishedAt || '时间未知'}`));
+      children.push(this.metaParagraph(`分类：${category}｜重要性：${importance.toFixed(0)}｜来源：${source.publisher || '来源未知'}｜发布时间：${formatPublishedDate(source.publishedAt)}`));
       children.push(this.bodyParagraph(`简要内容：${briefContent}`));
       if (source.url) {
         children.push(new Paragraph({
