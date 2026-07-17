@@ -26,7 +26,19 @@ HERMES_REMOTE_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports
 HERMES_CONTAINER_REPORT_DIR=/opt/data/workspace/report-agent/reports
 ```
 
-Keep using the existing pgvector database by setting `PGVECTOR_DATABASE_URL` in `.env`.
+PGVector remains available for the other retrieval workflows, but Daily Awareness online generation reads the complete business-date table from MySQL `3306/news`: `2026-07-16` maps to `data_20260716` (the table pattern is `data_YYYYMMDD`). The source rows already contain `ch_title`, `designated_tag`, `tag`, and `summary`; only title/category/tag go to the scoring model, while the displayed item content is the original `summary`.
+
+Configure the dedicated connection separately from `PGVECTOR_DATABASE_URL`:
+
+```env
+DAILY_AWARENESS_MYSQL_HOST=my_mysql
+DAILY_AWARENESS_MYSQL_PORT=3306
+DAILY_AWARENESS_MYSQL_DATABASE=news
+DAILY_AWARENESS_MYSQL_USER=root
+DAILY_AWARENESS_MYSQL_PASSWORD=
+DAILY_AWARENESS_MYSQL_TABLE_PREFIX=data_
+```
+
 Do not commit real tokens, database passwords, or `.env` files.
 
 Important: `http://74.121.148.204:1888/v1` is the legacy OpenClaw-compatible HTTP endpoint, not the Hermes container. Use it only for explicit legacy fallback testing:
@@ -47,6 +59,7 @@ The cloud deployment keeps the old `gaogao-api` container untouched. This projec
 docker network create hermes-net
 docker network connect --alias hermes hermes-net hermes
 docker network connect --alias todo_postgres hermes-net todo_postgres
+docker network connect --alias my_mysql hermes-net my_mysql
 ```
 
 Both `hermes` and `hermes-api` are expected to run as root and share `/opt/hermes:/opt/data`. The shared workspace is owned by `root:root`, so report artifacts and PG source files can be written consistently from either container.
@@ -55,6 +68,7 @@ After deployment, these checks should pass:
 
 ```bash
 docker exec hermes-api getent hosts todo_postgres
+docker exec hermes-api getent hosts my_mysql
 curl http://127.0.0.1:1556/api/hermes/health
 curl http://127.0.0.1:1556/api/vector-sources/status
 ```

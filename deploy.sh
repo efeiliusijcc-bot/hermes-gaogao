@@ -93,6 +93,12 @@ write_env DAILY_AWARENESS_WORKER_POLL_MS "${DAILY_AWARENESS_WORKER_POLL_MS:-2000
 write_env DAILY_AWARENESS_INBOX_LEASE_SECONDS "${DAILY_AWARENESS_INBOX_LEASE_SECONDS:-300}"
 write_env DAILY_AWARENESS_INBOX_MAX_ATTEMPTS "${DAILY_AWARENESS_INBOX_MAX_ATTEMPTS:-5}"
 write_env DAILY_AWARENESS_INBOX_RETRY_SECONDS "${DAILY_AWARENESS_INBOX_RETRY_SECONDS:-30}"
+write_env DAILY_AWARENESS_MYSQL_HOST "${DAILY_AWARENESS_MYSQL_HOST:-my_mysql}"
+write_env DAILY_AWARENESS_MYSQL_PORT "${DAILY_AWARENESS_MYSQL_PORT:-3306}"
+write_env DAILY_AWARENESS_MYSQL_DATABASE "${DAILY_AWARENESS_MYSQL_DATABASE:-news}"
+write_env DAILY_AWARENESS_MYSQL_USER "${DAILY_AWARENESS_MYSQL_USER:-root}"
+write_env DAILY_AWARENESS_MYSQL_PASSWORD "${DAILY_AWARENESS_MYSQL_PASSWORD:-}"
+write_env DAILY_AWARENESS_MYSQL_TABLE_PREFIX "${DAILY_AWARENESS_MYSQL_TABLE_PREFIX:-data_}"
 write_env FRONTEND_ORIGINS "${FRONTEND_ORIGINS:-https://hermes-gaogao.vercel.app,http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000}"
 write_env HERMES_MODEL "${HERMES_MODEL:-hermes-agent}"
 write_env HERMES_QA_AGENT_ID "${HERMES_QA_AGENT_ID:-qa-agent}"
@@ -211,6 +217,7 @@ echo "--- Ensure shared Docker network ---"
 docker network create hermes-net 2>/dev/null || true
 docker network connect --alias hermes hermes-net hermes 2>/dev/null || true
 docker network connect --alias todo_postgres hermes-net todo_postgres 2>/dev/null || true
+docker network connect --alias my_mysql hermes-net my_mysql 2>/dev/null || true
 
 echo "--- Ensure report artifact volumes ---"
 docker volume create report-artifacts >/dev/null
@@ -325,6 +332,7 @@ trap 'rollback_deploy' ERR
 docker rm -f "\$CANDIDATE_NAME" >/dev/null 2>&1 || true
 run_api_container "\$CANDIDATE_NAME" no false
 docker exec "\$CANDIDATE_NAME" getent hosts todo_postgres
+docker exec "\$CANDIDATE_NAME" getent hosts my_mysql
 wait_container_health "\$CANDIDATE_NAME"
 docker rm -f "\$CANDIDATE_NAME" >/dev/null
 CANDIDATE_NAME=""
@@ -341,6 +349,7 @@ fi
 run_api_container hermes-api unless-stopped true
 FINAL_STARTED=true
 docker exec hermes-api getent hosts todo_postgres
+docker exec hermes-api getent hosts my_mysql
 wait_container_health hermes-api
 curl -fsS http://127.0.0.1:1556/api/hermes/health
 INTERNAL_EVENT_CHECK=\$(curl -sS -o /dev/null -w '%{http_code}' \

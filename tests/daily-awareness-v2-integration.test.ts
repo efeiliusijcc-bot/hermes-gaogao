@@ -229,6 +229,12 @@ test('AppModule and deployment files expose the complete daily awareness contrac
     'DAILY_AWARENESS_INBOX_LEASE_SECONDS',
     'DAILY_AWARENESS_INBOX_MAX_ATTEMPTS',
     'DAILY_AWARENESS_INBOX_RETRY_SECONDS',
+    'DAILY_AWARENESS_MYSQL_HOST',
+    'DAILY_AWARENESS_MYSQL_PORT',
+    'DAILY_AWARENESS_MYSQL_DATABASE',
+    'DAILY_AWARENESS_MYSQL_USER',
+    'DAILY_AWARENESS_MYSQL_PASSWORD',
+    'DAILY_AWARENESS_MYSQL_TABLE_PREFIX',
   ]) {
     assert.match(env, new RegExp(`^${name}=`, 'm'));
     assert.match(deploy, new RegExp(name));
@@ -236,4 +242,6 @@ test('AppModule and deployment files expose the complete daily awareness contrac
   assert.match(readme, /POST \/internal\/events\/daily-data-finished/);
   assert.match(readme, /X-Hermes-Internal-Key/);
   assert.match(readme, /schema.*permission.*backend.*frontend.*writer/is);
+  assert.match(readme, /MySQL.*news.*data_YYYYMMDD/is);
+  assert.match(readme, /my_mysql.*hermes-net/is);
 });
