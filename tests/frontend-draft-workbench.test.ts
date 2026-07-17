@@ -118,7 +118,7 @@ const confirmStageEnd = assistantSource.indexOf('<DraftImportState', confirmStag
 const confirmStageSource = assistantSource.slice(confirmStageStart, confirmStageEnd);
 
 assert.match(sourceComposer, /<AutoResizeTextarea/);
-assert.match(sourceComposer, /开始编报/);
+assert.match(sourceComposer, /开始拟稿/);
 assert.doesNotMatch(sourceComposer, /事件分类|地区选择|信息完整度|最近草稿|独立链接/);
 assert.match(analysisSource, /事件概括/);
 assert.match(analysisSource, /核心主体/);
