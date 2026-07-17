@@ -7,6 +7,7 @@ import {
   getDailyAwarenessHistory,
   importDailyEventToDraft,
 } from '../lib/api.js'
+import { renderMarkdown } from '../lib/markdown.js'
 
 const props = defineProps({
   currentUser: {
@@ -53,6 +54,7 @@ const qualityStatus = computed(() => activeBrief.value?.qualityStatus || current
 const banner = computed(() => MESSAGE_MAP[currentState.value?.messageCode] || MESSAGE_MAP.TODAY_WAITING)
 const title = computed(() => activeBrief.value?.title || '每日动态简报')
 const contentMarkdown = computed(() => activeBrief.value?.contentMarkdown || '')
+const contentHtml = computed(() => renderMarkdown(contentMarkdown.value))
 const categoryDistribution = computed(() => {
   const distribution = activeBrief.value?.categoryDistribution
   if (distribution && typeof distribution === 'object' && !Array.isArray(distribution)) {
@@ -341,7 +343,8 @@ watch(() => props.currentUser?.id, () => {
       </section>
 
       <section class="report-document" aria-label="简报正文">
-        <pre>{{ contentMarkdown || '暂无简报正文。' }}</pre>
+        <div v-if="contentHtml" class="report-markdown" v-html="contentHtml"></div>
+        <p v-else class="report-empty">暂无简报正文。</p>
       </section>
 
       <nav v-if="categoryDistribution.length" class="category-tabs" aria-label="新闻分类筛选">
@@ -704,14 +707,84 @@ button:disabled {
   box-sizing: border-box;
 }
 
-.report-document pre {
+.report-markdown {
   margin: 0;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-family: inherit;
   font-size: 15px;
   line-height: 1.9;
   color: #27364a;
+}
+
+.report-markdown :deep(h1) {
+  margin: 0 0 20px;
+  color: #1f6b48;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.report-markdown :deep(h2) {
+  margin: 28px 0 12px;
+  color: #1e3a5f;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.report-markdown :deep(h3) {
+  margin: 22px 0 10px;
+  color: #344054;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.report-markdown :deep(p) {
+  margin: 0 0 14px;
+}
+
+.report-markdown :deep(ul),
+.report-markdown :deep(ol) {
+  margin: 10px 0 18px;
+  padding-left: 1.7em;
+}
+
+.report-markdown :deep(li) {
+  margin: 6px 0;
+  padding-left: 3px;
+}
+
+.report-markdown :deep(li::marker) {
+  color: #1f6b48;
+  font-weight: 800;
+}
+
+.report-markdown :deep(strong) {
+  color: #172133;
+  font-weight: 800;
+}
+
+.report-markdown :deep(a) {
+  color: #175cd3;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.report-markdown :deep(blockquote) {
+  margin: 16px 0;
+  padding: 4px 0 4px 16px;
+  border-left: 3px solid #1f6b48;
+  color: #475467;
+}
+
+.report-markdown :deep(:last-child),
+.report-empty {
+  margin-bottom: 0;
+}
+
+.report-empty {
+  color: #667085;
 }
 
 .category-tabs {
