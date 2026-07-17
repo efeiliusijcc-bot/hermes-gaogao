@@ -43,10 +43,10 @@ function handleKeydown(event) {
       />
       <div class="draft-source-actions">
         <span class="draft-source-count">{{ modelValue.length.toLocaleString('zh-CN') }} / 12,000</span>
-        <button type="submit" :disabled="loading" aria-label="开始编报" title="开始编报">
+        <button type="submit" :disabled="loading" aria-label="开始拟稿" title="开始拟稿">
           <LoaderCircle v-if="loading" :size="18" class="draft-spin" aria-hidden="true" />
           <ArrowUp v-else :size="19" aria-hidden="true" />
-          <span>{{ loading ? '正在分析' : '开始编报' }}</span>
+          <span>{{ loading ? '正在分析' : '开始拟稿' }}</span>
         </button>
       </div>
     </form>
