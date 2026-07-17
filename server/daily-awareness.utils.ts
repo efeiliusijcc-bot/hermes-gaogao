@@ -113,9 +113,13 @@ export function applyDailyAwarenessScores(
   scores: Array<Record<string, unknown>>,
 ): DailyAwarenessScoredEvent[] {
   const byCandidate = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const seen = new Set<string>();
   return scores.map((raw) => {
-    const candidate = byCandidate.get(String(raw.candidateId || '').trim());
+    const candidateId = String(raw.candidateId || '').trim();
+    const candidate = byCandidate.get(candidateId);
     if (!candidate) return null;
+    if (seen.has(candidateId)) return null;
+    seen.add(candidateId);
     return {
       candidateId: candidate.candidateId,
       eventTitle: candidate.title,

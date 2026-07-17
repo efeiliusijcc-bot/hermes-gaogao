@@ -115,3 +115,26 @@ test('uses the candidate summary and category instead of model-written brief fie
     relatedMaterialIds: ['row-1'],
   }]);
 });
+
+test('ignores unknown and duplicate candidate scores', async () => {
+  const { applyDailyAwarenessScores } = await import('../server/daily-awareness.utils.js');
+  const candidate = {
+    candidateId: 'candidate-1',
+    title: '标题',
+    summaryText: '摘要',
+    category: '涉华',
+    tag: '经贸',
+    sources: [],
+    relatedMaterialIds: ['row-1'],
+    sourceCount: 1,
+  };
+
+  const events = applyDailyAwarenessScores([candidate], [
+    { candidateId: 'candidate-1', importanceScore: 80, riskScore: 20 },
+    { candidateId: 'candidate-1', importanceScore: 100, riskScore: 100 },
+    { candidateId: 'unknown', importanceScore: 100, riskScore: 100 },
+  ]);
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].importanceScore, 80);
+});

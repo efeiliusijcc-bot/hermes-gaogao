@@ -132,4 +132,5 @@ test('title-only prompt forbids facts not present in titles', () => {
   const prompt = dailyAwarenessClassificationSystemPrompt(true);
   assert.match(prompt, /只能依据输入标题/);
   assert.match(prompt, /不得补充标题中未明确体现的事实/);
+  assert.match(prompt, /每个输入候选.*恰好.*一条评分/);
 });

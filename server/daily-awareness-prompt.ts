@@ -3,6 +3,7 @@ export function dailyAwarenessClassificationSystemPrompt(titleOnly: boolean): st
     '你是每日动态简报编辑。请只输出 JSON。',
     '你的任务是仅根据候选新闻标题、主分类和细分标签判断热点重要性与风险。',
     '只能返回 candidateId、importanceScore、riskScore，不得改写标题、分类、标签或摘要。',
+    '必须为每个输入候选恰好返回一条评分，不得遗漏或重复 candidateId。',
     'importanceScore 和 riskScore 范围均为 0 到 100；无法判断时填 0。',
     '输出格式必须为 {"scores":[{"candidateId":"...","importanceScore":0,"riskScore":0}]}。',
     ...(titleOnly ? ['只能依据输入标题、主分类和细分标签评分，不得补充标题中未明确体现的事实、数字、原因或结论。'] : []),
