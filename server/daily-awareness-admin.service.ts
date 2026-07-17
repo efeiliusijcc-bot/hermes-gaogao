@@ -7,10 +7,17 @@ export class DailyAwarenessAdminService implements OnModuleDestroy {
 
   async status(businessDate?: string) {
     const params: unknown[] = [];
-    const where = businessDate ? 'WHERE business_date = $1::date' : '';
+    const where = businessDate ? 'WHERE day.business_date = $1::date' : '';
     if (businessDate) params.push(businessDate);
     const result = await (await this.getPool()).query(
-      `SELECT * FROM daily_awareness_day_status ${where} ORDER BY business_date DESC LIMIT 1`,
+      `SELECT day.*, run.source_business_date, run.source_table, run.data_wait_deadline,
+              inbox.next_attempt_at
+         FROM daily_awareness_day_status day
+         LEFT JOIN daily_awareness_runs run ON run.id = day.last_run_id
+         LEFT JOIN daily_awareness_event_inbox inbox ON inbox.event_id = run.trigger_ref
+         ${where}
+        ORDER BY day.business_date DESC
+        LIMIT 1`,
       params,
     );
     return result.rows[0] || null;
@@ -58,6 +65,9 @@ export class DailyAwarenessAdminService implements OnModuleDestroy {
       attemptNo: Number(row.attempt_no || 0),
       qualityStatus: String(row.quality_status || ''),
       sourceCount: Number(row.source_count || 0),
+      sourceBusinessDate: String(row.source_business_date || '').slice(0, 10),
+      sourceTable: String(row.source_table || ''),
+      dataWaitDeadline: this.dateString(row.data_wait_deadline),
       summaryCount: Number(row.summary_count || 0),
       titleOnlyCount: Number(row.title_only_count || 0),
       skippedCount: Number(row.skipped_count || 0),

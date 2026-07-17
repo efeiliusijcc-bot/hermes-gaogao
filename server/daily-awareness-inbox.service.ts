@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import { createAuthPool, type PgPool } from './auth-database.js';
 import {
   dailyAwarenessInboxMaxAttempts,
+  dailyAwarenessDataRetryMinutes,
   dailyAwarenessRetryIntervalSeconds,
 } from './config.js';
 import type {
@@ -12,6 +13,40 @@ import type {
   DailyDataFinishedEvent,
 } from './daily-awareness.contracts.js';
 
+export interface DailyAwarenessInboxFailureDisposition {
+  status: 'RETRY_PENDING' | 'DEAD_LETTER';
+  nextAttemptAt: string | null;
+  errorCode: string;
+}
+
+export function dailyAwarenessInboxFailureDisposition(
+  item: DailyAwarenessInboxRecord,
+  error: unknown,
+  now = new Date(),
+): DailyAwarenessInboxFailureDisposition | null {
+  const code = String((error as { code?: unknown })?.code || '');
+  const deadline = new Date(String(item.payload.dataWaitDeadline || ''));
+  if (code !== 'DAILY_AWARENESS_MYSQL_TABLE_NOT_FOUND'
+    || item.payload.triggerSource !== 'AUTO_SCHEDULER'
+    || !Number.isFinite(deadline.getTime())) return null;
+  if (now.getTime() >= deadline.getTime()) {
+    return {
+      status: 'DEAD_LETTER',
+      nextAttemptAt: null,
+      errorCode: 'DAILY_AWARENESS_SOURCE_WAIT_DEADLINE_EXCEEDED',
+    };
+  }
+  const retryAt = Math.min(
+    deadline.getTime(),
+    now.getTime() + dailyAwarenessDataRetryMinutes() * 60_000,
+  );
+  return {
+    status: 'RETRY_PENDING',
+    nextAttemptAt: new Date(retryAt).toISOString(),
+    errorCode: 'DAILY_AWARENESS_SOURCE_TABLE_WAITING',
+  };
+}
+
 @Injectable()
 export class DailyAwarenessInboxService implements OnModuleDestroy {
   private pool: PgPool | null = null;
@@ -19,6 +54,20 @@ export class DailyAwarenessInboxService implements OnModuleDestroy {
   private processor: DailyAwarenessInboxProcessor | null = null;
 
   async accept(event: DailyDataFinishedEvent): Promise<DailyDataFinishedAcceptedResponse> {
+    return this.acceptWithPayload(event, { ...event });
+  }
+
+  async acceptScheduled(
+    event: DailyDataFinishedEvent,
+    metadata: Record<string, unknown>,
+  ): Promise<DailyDataFinishedAcceptedResponse> {
+    return this.acceptWithPayload(event, { ...event, ...metadata });
+  }
+
+  private async acceptWithPayload(
+    event: DailyDataFinishedEvent,
+    payload: Record<string, unknown>,
+  ): Promise<DailyDataFinishedAcceptedResponse> {
     const pool = await this.getPool();
     const result = await pool.query(
       `INSERT INTO daily_awareness_event_inbox
@@ -33,7 +82,7 @@ export class DailyAwarenessInboxService implements OnModuleDestroy {
         event.batchId,
         event.completedAt,
         event.totalCount ?? null,
-        JSON.stringify(event),
+        JSON.stringify(payload),
       ],
     );
     const duplicate = result.rows.length === 0;
@@ -116,6 +165,32 @@ export class DailyAwarenessInboxService implements OnModuleDestroy {
   }
 
   async markInfrastructureFailure(item: DailyAwarenessInboxRecord, error: unknown): Promise<void> {
+    const scheduled = dailyAwarenessInboxFailureDisposition(item, error);
+    if (scheduled) {
+      const pool = await this.getPool();
+      await pool.query(
+        `UPDATE daily_awareness_event_inbox
+            SET status = $2,
+                next_attempt_at = $3::timestamptz,
+                locked_at = NULL,
+                locked_by = NULL,
+                last_error_code = $4,
+                last_error_message = $5,
+                updated_at = now()
+          WHERE event_id = $1`,
+        [item.eventId, scheduled.status, scheduled.nextAttemptAt, scheduled.errorCode, this.safeError(error)],
+      );
+      if (scheduled.status === 'DEAD_LETTER') {
+        await pool.query(
+          `UPDATE daily_awareness_day_status
+              SET data_status = 'WAITING', generation_status = 'GENERATION_FAILED',
+                  last_error_code = $2, last_error_message = $3, updated_at = now()
+            WHERE business_date = $1::date`,
+          [item.businessDate, scheduled.errorCode, this.safeError(error)],
+        );
+      }
+      return;
+    }
     const maxAttempts = dailyAwarenessInboxMaxAttempts();
     const deadLetter = item.attemptCount >= maxAttempts;
     const baseSeconds = dailyAwarenessRetryIntervalSeconds();

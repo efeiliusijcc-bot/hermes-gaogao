@@ -7,6 +7,15 @@ import {
 import { createAuthPool, type PgPool } from './auth-database.js';
 import type { DailyAwarenessConfig } from './daily-awareness.contracts.js';
 
+export const DAILY_AWARENESS_CATEGORIES = ['涉政', '危安', '涉华', '其他'] as const;
+
+export function normalizeDailyAwarenessCategoryScope(value: unknown, allowLegacyEmpty = false): string[] {
+  const values = Array.isArray(value) ? value : [];
+  const normalized = Array.from(new Set(values.map((item) => String(item || '').trim()).filter(Boolean)));
+  if (!normalized.length && allowLegacyEmpty) return [...DAILY_AWARENESS_CATEGORIES];
+  return normalized;
+}
+
 @Injectable()
 export class DailyAwarenessConfigService implements OnModuleDestroy {
   private pool: PgPool | null = null;
@@ -58,17 +67,15 @@ export class DailyAwarenessConfigService implements OnModuleDestroy {
   }
 
   private validate(input: DailyAwarenessConfig): DailyAwarenessConfig {
-    const categoryScope = Array.from(new Set(
-      (Array.isArray(input.categoryScope) ? input.categoryScope : [])
-        .map((item) => String(item || '').trim())
-        .filter(Boolean),
-    )).slice(0, 20);
+    const categoryScope = normalizeDailyAwarenessCategoryScope(input.categoryScope);
     const valid = Number.isInteger(input.lookbackHours) && input.lookbackHours >= 1 && input.lookbackHours <= 168
       && Number.isInteger(input.maxArticles) && input.maxArticles >= 1 && input.maxArticles <= 3000
       && Number.isInteger(input.maxRetryCount) && input.maxRetryCount >= 0 && input.maxRetryCount <= 10
       && Number.isInteger(input.retryIntervalSeconds) && input.retryIntervalSeconds >= 1 && input.retryIntervalSeconds <= 3600
       && Number.isInteger(input.summaryMaxChars) && input.summaryMaxChars >= 100 && input.summaryMaxChars <= 10_000
-      && Number.isInteger(input.version) && input.version >= 1;
+      && Number.isInteger(input.version) && input.version >= 1
+      && categoryScope.length > 0
+      && categoryScope.every((item) => DAILY_AWARENESS_CATEGORIES.includes(item as typeof DAILY_AWARENESS_CATEGORIES[number]));
     if (!valid) {
       throw new BadRequestException({
         error: 'Invalid daily awareness configuration',
@@ -82,7 +89,7 @@ export class DailyAwarenessConfigService implements OnModuleDestroy {
     return {
       lookbackHours: Number(row.lookback_hours || 24),
       maxArticles: Number(row.max_articles || 50),
-      categoryScope: this.stringArray(row.category_scope),
+      categoryScope: normalizeDailyAwarenessCategoryScope(this.stringArray(row.category_scope), true),
       maxRetryCount: Number(row.max_retry_count ?? 3),
       retryIntervalSeconds: Number(row.retry_interval_seconds || 30),
       summaryMaxChars: Number(row.summary_max_chars || 1200),

@@ -92,6 +92,13 @@ export const HERMES_REMOTE_CLI_PROVIDER = process.env.HERMES_REMOTE_CLI_PROVIDER
 export const HERMES_REMOTE_CLI_MODEL = process.env.HERMES_REMOTE_CLI_MODEL || '';
 export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 
+export const DAILY_AWARENESS_MYSQL_HOST = process.env.DAILY_AWARENESS_MYSQL_HOST || 'my_mysql';
+export const DAILY_AWARENESS_MYSQL_PORT = Number(process.env.DAILY_AWARENESS_MYSQL_PORT || 3306);
+export const DAILY_AWARENESS_MYSQL_DATABASE = process.env.DAILY_AWARENESS_MYSQL_DATABASE || 'news';
+export const DAILY_AWARENESS_MYSQL_USER = process.env.DAILY_AWARENESS_MYSQL_USER || 'root';
+export const DAILY_AWARENESS_MYSQL_PASSWORD = process.env.DAILY_AWARENESS_MYSQL_PASSWORD || '';
+export const DAILY_AWARENESS_MYSQL_TABLE_PREFIX = process.env.DAILY_AWARENESS_MYSQL_TABLE_PREFIX || 'data_';
+
 export const REPORT_AGENT_PROVIDER = process.env.REPORT_AGENT_PROVIDER || 'hermes';
 export const REPORT_AGENT_BASE_URL =
   process.env.REPORT_AGENT_BASE_URL || process.env.DIRECT_QA_BASE_URL || DIRECT_QA_BASE_URL;
@@ -120,6 +127,28 @@ export function dailyAwarenessInboxMaxAttempts(): number {
 
 export function dailyAwarenessRetryIntervalSeconds(): number {
   return boundedInteger(process.env.DAILY_AWARENESS_INBOX_RETRY_SECONDS, 30, 1, 3600);
+}
+
+export function dailyAwarenessAutoEnabled(): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(String(process.env.DAILY_AWARENESS_AUTO_ENABLED || '').trim().toLowerCase());
+}
+
+export function dailyAwarenessAutoTime(): string {
+  return validHourMinute(process.env.DAILY_AWARENESS_AUTO_TIME, '06:00');
+}
+
+export function dailyAwarenessDataRetryMinutes(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_DATA_RETRY_MINUTES, 15, 1, 120);
+}
+
+export function dailyAwarenessSchedulerPollMs(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_SCHEDULER_POLL_MS, 60_000, 5_000, 300_000);
+}
+
+function validHourMinute(value: unknown, fallback: string): string {
+  const text = String(value || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) return fallback;
+  return text;
 }
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {

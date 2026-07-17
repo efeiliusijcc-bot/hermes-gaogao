@@ -19,7 +19,7 @@ test('config update rejects a stale version and invalid ranges', async () => {
     () => service.update({
       lookbackHours: 24,
       maxArticles: 50,
-      categoryScope: [],
+      categoryScope: ['其他'],
       maxRetryCount: 3,
       retryIntervalSeconds: 30,
       summaryMaxChars: 1200,
@@ -40,6 +40,94 @@ test('config update rejects a stale version and invalid ranges', async () => {
     }, 'admin-1'),
     (error) => responseCode(error) === 'DAILY_AWARENESS_INVALID_CONFIG',
   );
+});
+
+test('config validation accepts only fixed daily awareness categories and rejects an empty new selection', async () => {
+  const service = new DailyAwarenessConfigService() as DailyAwarenessConfigService & {
+    getPool: () => Promise<{ query: () => Promise<{ rows: Array<Record<string, unknown>> }> }>;
+  };
+  service.getPool = async () => ({ query: async () => ({ rows: [] }) });
+
+  await assert.rejects(
+    () => service.update({
+      lookbackHours: 24,
+      maxArticles: 50,
+      categoryScope: [],
+      maxRetryCount: 3,
+      retryIntervalSeconds: 30,
+      summaryMaxChars: 1200,
+      version: 1,
+    }, 'admin-1'),
+    (error) => responseCode(error) === 'DAILY_AWARENESS_INVALID_CONFIG',
+  );
+  await assert.rejects(
+    () => service.update({
+      lookbackHours: 24,
+      maxArticles: 50,
+      categoryScope: ['未知分类'],
+      maxRetryCount: 3,
+      retryIntervalSeconds: 30,
+      summaryMaxChars: 1200,
+      version: 1,
+    }, 'admin-1'),
+    (error) => responseCode(error) === 'DAILY_AWARENESS_INVALID_CONFIG',
+  );
+});
+
+test('legacy empty category scope reads as all four MySQL categories', async () => {
+  const service = new DailyAwarenessConfigService() as DailyAwarenessConfigService & {
+    getPool: () => Promise<{ query: () => Promise<{ rows: Array<Record<string, unknown>> }> }>;
+  };
+  service.getPool = async () => ({ query: async () => ({ rows: [{ category_scope: [], version: 2 }] }) });
+  assert.deepEqual((await service.get()).categoryScope, ['涉政', '危安', '涉华', '其他']);
+});
+
+test('admin run response exposes source date, table, and wait deadline', async () => {
+  const service = new (await import('../server/daily-awareness-admin.service.js')).DailyAwarenessAdminService() as never as {
+    run: (id: string) => Promise<Record<string, unknown>>;
+    getPool: () => Promise<{ query: () => Promise<{ rows: Array<Record<string, unknown>> }> }>;
+  };
+  service.getPool = async () => ({
+    query: async () => ({ rows: [{
+      id: 'run-1',
+      business_date: '2026-07-18',
+      status: 'RUNNING',
+      source_business_date: '2026-07-17',
+      source_table: 'data_20260717',
+      data_wait_deadline: '2026-07-18T00:00:00.000Z',
+    }] }),
+  });
+
+  const run = await service.run('run-1');
+  assert.equal(run.sourceBusinessDate, '2026-07-17');
+  assert.equal(run.sourceTable, 'data_20260717');
+  assert.equal(run.dataWaitDeadline, '2026-07-18T00:00:00.000Z');
+});
+
+test('admin status joins the latest run source and Inbox retry timing', async () => {
+  let sql = '';
+  const service = new (await import('../server/daily-awareness-admin.service.js')).DailyAwarenessAdminService() as never as {
+    status: (businessDate: string) => Promise<Record<string, unknown>>;
+    getPool: () => Promise<{ query: (query: string) => Promise<{ rows: Array<Record<string, unknown>> }> }>;
+  };
+  service.getPool = async () => ({
+    query: async (query: string) => {
+      sql = query;
+      return { rows: [{
+        business_date: '2026-07-18',
+        source_business_date: '2026-07-17',
+        source_table: 'data_20260717',
+        data_wait_deadline: '2026-07-18T00:00:00.000Z',
+        next_attempt_at: '2026-07-17T22:15:00.000Z',
+      }] };
+    },
+  });
+
+  const status = await service.status('2026-07-18');
+  assert.equal(status.source_table, 'data_20260717');
+  assert.equal(status.next_attempt_at, '2026-07-17T22:15:00.000Z');
+  assert.match(sql, /LEFT JOIN daily_awareness_runs run ON run\.id = day\.last_run_id/);
+  assert.match(sql, /LEFT JOIN daily_awareness_event_inbox inbox ON inbox\.event_id = run\.trigger_ref/);
 });
 
 test('Inbox reprocess refuses to overwrite a successful global brief', async () => {

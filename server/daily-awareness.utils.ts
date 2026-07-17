@@ -85,18 +85,56 @@ export function buildEventCandidates(materials: DailyAwarenessMaterial[]): Daily
       return {
         candidateId: `candidate_${hashText(key).slice(0, 16)}`,
         title: primary.title,
-        summaryText: sorted
-          .map((item) => String(item.summary || item.content || item.title).trim())
-          .filter(Boolean)
-          .join('\n')
-          .slice(0, 1200),
+        summaryText: String(primary.summary || primary.content || primary.title).trim(),
         sources,
         relatedMaterialIds: sorted.map((item) => item.id).filter(Boolean),
         sourceCount: sorted.length,
+        category: String(primary.designatedTag || primary.metadata.designatedTag || '其他').trim() || '其他',
+        tag: String(primary.tag || primary.metadata.tag || '').trim(),
       };
     })
     .filter((item) => item.title && item.summaryText)
     .sort((a, b) => b.sourceCount - a.sourceCount);
+}
+
+export function buildDailyAwarenessScoringPayload(
+  candidates: Array<Pick<DailyAwarenessCandidate, 'candidateId' | 'title' | 'category' | 'tag'>>,
+) {
+  return candidates.map((candidate) => ({
+    candidateId: candidate.candidateId,
+    title: candidate.title,
+    category: candidate.category || '其他',
+    tag: candidate.tag || '',
+  }));
+}
+
+export function applyDailyAwarenessScores(
+  candidates: Array<Pick<DailyAwarenessCandidate, 'candidateId' | 'title' | 'summaryText' | 'category' | 'tag' | 'sources' | 'relatedMaterialIds'>>,
+  scores: Array<Record<string, unknown>>,
+): DailyAwarenessScoredEvent[] {
+  const byCandidate = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const seen = new Set<string>();
+  return scores.map((raw) => {
+    const candidateId = String(raw.candidateId || '').trim();
+    const candidate = byCandidate.get(candidateId);
+    if (!candidate) return null;
+    if (seen.has(candidateId)) return null;
+    seen.add(candidateId);
+    return {
+      candidateId: candidate.candidateId,
+      eventTitle: candidate.title,
+      category: candidate.category || '其他',
+      region: '',
+      basicSituation: String(candidate.summaryText || '').trim(),
+      backgroundContext: '',
+      importanceJudgement: '',
+      riskToUs: '',
+      importanceScore: clampScore(raw.importanceScore),
+      riskScore: clampScore(raw.riskScore),
+      sourceInfo: candidate.sources,
+      relatedMaterialIds: candidate.relatedMaterialIds,
+    } satisfies DailyAwarenessScoredEvent;
+  }).filter((event): event is DailyAwarenessScoredEvent => Boolean(event));
 }
 
 export function rankDailyEvents(events: DailyAwarenessScoredEvent[], maxItems: number): DailyAwarenessScoredEvent[] {
@@ -221,13 +259,13 @@ export function buildDailyReportMarkdown(input: {
   const grouped = buildDailyReportJson(input.events).sections;
   for (const [sectionIndex, section] of grouped.entries()) {
     lines.push(`### ${toChineseSectionNumber(sectionIndex + 1)}${section.category}`, '');
-    for (const item of section.items) {
-      const rank = Number(item.rank || 0);
+    for (const [itemIndex, item] of section.items.entries()) {
+      const sectionRank = itemIndex + 1;
       const title = String(item.title || '未命名新闻');
       const briefContent = String(item.briefContent || '暂无简要内容。');
       const publisher = sanitizeSourceText(item.publisher) || '来源未知';
       const publishedAt = String(item.publishedAt || '时间未知');
-      lines.push(`${rank}. ${title}`);
+      lines.push(`${sectionRank}. ${title}`);
       lines.push(`   简要内容：${briefContent}`);
       lines.push('');
       lines.push(`   来源：${publisher}，发布时间：${publishedAt}`);

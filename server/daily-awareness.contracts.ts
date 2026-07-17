@@ -88,6 +88,8 @@ export interface DailyAwarenessDisplayedBrief {
   qualityStatus: DailyAwarenessQualityStatus;
   generatedAt: string;
   generatedByType: DailyAwarenessGeneratedByType;
+  sourceBusinessDate: string;
+  sourceTable: string;
   categories: unknown[];
   categoryDistribution: Record<string, unknown>;
   events: unknown[];

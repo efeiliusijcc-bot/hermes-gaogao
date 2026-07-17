@@ -31,7 +31,7 @@ test('keeps titled materials when summary is empty and calculates partial qualit
   assert.equal(prepared.candidates.find((item) => item.title === '只有标题')?.summaryText, '只有标题');
 });
 
-test('marks all title-only materials as TITLE_ONLY and truncates summaries deterministically', () => {
+test('marks all title-only materials as TITLE_ONLY and preserves source summaries', () => {
   const titleOnly = prepareDailyAwarenessMaterials([
     material({ id: 'a', title: '事件A', summary: '', url: 'https://example.com/a' }),
     material({ id: 'b', title: '事件B', summary: '', url: 'https://example.com/b' }),
@@ -42,7 +42,7 @@ test('marks all title-only materials as TITLE_ONLY and truncates summaries deter
     material({ id: 'long', title: '长摘要', summary: '甲'.repeat(180), url: 'https://example.com/long' }),
   ], 100);
   assert.equal(normal.qualityStatus, 'NORMAL');
-  assert.equal(normal.materials[0].summary?.length, 100);
+  assert.equal(normal.materials[0].summary?.length, 180);
 });
 
 test('preserves multiple sources for the same normalized title after URL dedupe', () => {
@@ -57,4 +57,84 @@ test('preserves multiple sources for the same normalized title after URL dedupe'
   assert.equal(prepared.candidates[0].sourceCount, 2);
   assert.equal(prepared.candidates[0].sources.length, 2);
   assert.deepEqual([...prepared.candidates[0].relatedMaterialIds].sort(), ['a', 'b']);
+});
+
+test('keeps source category, tag, and summary while building scoring input', async () => {
+  const { buildDailyAwarenessScoringPayload } = await import('../server/daily-awareness.utils.js');
+  const candidates = [{
+    candidateId: 'candidate-1',
+    title: '标题',
+    summaryText: 'MySQL 原始摘要，不应发送给评分模型',
+    category: '涉政',
+    tag: '选举',
+    sources: [],
+    relatedMaterialIds: ['row-1'],
+    sourceCount: 1,
+  }];
+
+  assert.deepEqual(buildDailyAwarenessScoringPayload(candidates), [{
+    candidateId: 'candidate-1',
+    title: '标题',
+    category: '涉政',
+    tag: '选举',
+  }]);
+  assert.equal(JSON.stringify(buildDailyAwarenessScoringPayload(candidates)).includes('原始摘要'), false);
+});
+
+test('uses the candidate summary and category instead of model-written brief fields', async () => {
+  const { applyDailyAwarenessScores } = await import('../server/daily-awareness.utils.js');
+  const candidates = [{
+    candidateId: 'candidate-1',
+    title: '标题',
+    summaryText: 'MySQL 原始摘要',
+    category: '危安',
+    tag: '冲突',
+    sources: [],
+    relatedMaterialIds: ['row-1'],
+    sourceCount: 1,
+  }];
+
+  assert.deepEqual(applyDailyAwarenessScores(candidates, [{
+    candidateId: 'candidate-1',
+    importanceScore: 88,
+    riskScore: 42,
+    briefContent: '模型重写内容',
+    category: '模型分类',
+  }]), [{
+    candidateId: 'candidate-1',
+    eventTitle: '标题',
+    category: '危安',
+    region: '',
+    basicSituation: 'MySQL 原始摘要',
+    backgroundContext: '',
+    importanceJudgement: '',
+    riskToUs: '',
+    importanceScore: 88,
+    riskScore: 42,
+    sourceInfo: [],
+    relatedMaterialIds: ['row-1'],
+  }]);
+});
+
+test('ignores unknown and duplicate candidate scores', async () => {
+  const { applyDailyAwarenessScores } = await import('../server/daily-awareness.utils.js');
+  const candidate = {
+    candidateId: 'candidate-1',
+    title: '标题',
+    summaryText: '摘要',
+    category: '涉华',
+    tag: '经贸',
+    sources: [],
+    relatedMaterialIds: ['row-1'],
+    sourceCount: 1,
+  };
+
+  const events = applyDailyAwarenessScores([candidate], [
+    { candidateId: 'candidate-1', importanceScore: 80, riskScore: 20 },
+    { candidateId: 'candidate-1', importanceScore: 100, riskScore: 100 },
+    { candidateId: 'unknown', importanceScore: 100, riskScore: 100 },
+  ]);
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].importanceScore, 80);
 });

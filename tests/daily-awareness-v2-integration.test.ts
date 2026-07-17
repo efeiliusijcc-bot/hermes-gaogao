@@ -8,6 +8,7 @@ import { AppModule } from '../server/app.module.js';
 import { DailyAwarenessGenerationService } from '../server/daily-awareness-generation.service.js';
 import { DailyAwarenessInboxService } from '../server/daily-awareness-inbox.service.js';
 import { DailyAwarenessInternalController } from '../server/daily-awareness.internal.controller.js';
+import { DailyAwarenessSchedulerService } from '../server/daily-awareness-scheduler.service.js';
 import { DailyAwarenessWorkerService } from '../server/daily-awareness-worker.service.js';
 import { InternalEventKeyGuard } from '../server/internal-event-key.guard.js';
 import type {
@@ -30,6 +31,7 @@ class MemoryStore {
   readonly dayStates = new Map<string, string>();
   readonly runStatuses: string[] = [];
   readonly generatedBy = new Map<string, string>();
+  readonly successfulEventCounts = new Map<string, number>();
   private runSequence = 0;
 
   async hasSuccessfulGlobalBrief(date: string) { return this.successfulDates.has(date); }
@@ -53,12 +55,13 @@ class MemoryStore {
     _runId: string,
     item: DailyAwarenessInboxRecord,
     _prepared: unknown,
-    _composed: unknown,
+    composed: { events?: unknown[] },
     generatedByType: string,
   ) {
     this.successfulDates.add(item.businessDate);
     this.dayStates.set(item.businessDate, 'SUCCESS');
     this.generatedBy.set(item.businessDate, generatedByType);
+    this.successfulEventCounts.set(item.businessDate, composed.events?.length || 0);
     this.runStatuses.push(`SUCCESS:${item.businessDate}:${generatedByType}`);
   }
 }
@@ -74,6 +77,12 @@ class MemoryInbox {
       this.items.set(event.eventId, { ...event, payload: { ...event }, status: 'RECEIVED', attemptCount: 0 });
     }
     return { accepted: true as const, duplicate, eventId: event.eventId };
+  }
+  async acceptScheduled(event: DailyDataFinishedEvent, metadata: Record<string, unknown>) {
+    const result = await this.accept(event);
+    const item = this.items.get(event.eventId);
+    if (item && !result.duplicate) item.payload = { ...event, ...metadata };
+    return result;
   }
   registerProcessor(processor: DailyAwarenessInboxProcessor) {
     this.processor = processor;
@@ -210,6 +219,70 @@ test('internal event, Inbox worker, generation state, replay, and manual overwri
   }
 });
 
+test('automatic schedule generates the current-day 50-item brief from the previous-day table idempotently', async () => {
+  process.env.DAILY_AWARENESS_AUTO_ENABLED = 'true';
+  process.env.DAILY_AWARENESS_AUTO_TIME = '06:00';
+  const store = new MemoryStore();
+  const inbox = new MemoryInbox(store.successfulDates);
+  const requestedSources: string[] = [];
+  const materials = {
+    prepareForBusinessDate: async (_businessDate: string, _config: unknown, sourceBusinessDate: string) => {
+      requestedSources.push(sourceBusinessDate);
+      return {
+        materials: [],
+        candidates: [],
+        sourceCount: 50,
+        summaryCount: 50,
+        titleOnlyCount: 0,
+        skippedCount: 0,
+        qualityStatus: 'NORMAL',
+        diagnostics: {},
+      };
+    },
+  };
+  const locks = {
+    withBusinessDateLock: async (_date: string, _mode: string, work: () => Promise<unknown>) => ({ acquired: true, value: await work() }),
+  };
+  const composer = {
+    composeGlobalBrief: async (date: string) => ({
+      title: `${date} 每日动态简报`,
+      summary: '摘要',
+      reportMarkdown: '# 每日动态简报\n\n自动调度集成测试生成的简报正文长度足够，用于验证前一日来源映射、五十条结果和重复调度幂等。',
+      contentJson: {},
+      categoryStats: [],
+      events: Array.from({ length: 50 }, (_, index) => ({ candidateId: `candidate-${index + 1}` })),
+    }),
+  };
+  const generation = new DailyAwarenessGenerationService(materials as never, locks as never, composer as never, inbox as never, store as never);
+  const worker = new DailyAwarenessWorkerService(inbox as never);
+  const scheduler = new DailyAwarenessSchedulerService(inbox as never, store as never);
+
+  try {
+    const scheduled = await scheduler.ensureScheduled(new Date('2026-07-17T22:00:00.000Z'));
+    assert.deepEqual(scheduled, { scheduled: true, reason: 'ACCEPTED', businessDate: '2026-07-18' });
+    const item = inbox.items.get('daily-awareness:auto:2026-07-18');
+    assert.equal(item?.payload.sourceBusinessDate, '2026-07-17');
+    assert.equal(item?.payload.sourceTable, 'data_20260717');
+
+    await worker.processAvailable();
+    assert.deepEqual(requestedSources, ['2026-07-17']);
+    assert.equal(store.dayStates.get('2026-07-18'), 'SUCCESS');
+    assert.equal(store.successfulEventCounts.get('2026-07-18'), 50);
+
+    assert.deepEqual(
+      await scheduler.ensureScheduled(new Date('2026-07-17T22:01:00.000Z')),
+      { scheduled: false, reason: 'SUCCESS_EXISTS', businessDate: '2026-07-18' },
+    );
+    assert.equal(inbox.items.size, 1);
+  } finally {
+    scheduler.onModuleDestroy();
+    generation.onModuleDestroy();
+    worker.onModuleDestroy();
+    delete process.env.DAILY_AWARENESS_AUTO_ENABLED;
+    delete process.env.DAILY_AWARENESS_AUTO_TIME;
+  }
+});
+
 test('AppModule and deployment files expose the complete daily awareness contract', async () => {
   const controllers = Reflect.getMetadata('controllers', AppModule) as unknown[];
   const providers = Reflect.getMetadata('providers', AppModule) as unknown[];
@@ -229,6 +302,19 @@ test('AppModule and deployment files expose the complete daily awareness contrac
     'DAILY_AWARENESS_INBOX_LEASE_SECONDS',
     'DAILY_AWARENESS_INBOX_MAX_ATTEMPTS',
     'DAILY_AWARENESS_INBOX_RETRY_SECONDS',
+    'DAILY_AWARENESS_MYSQL_HOST',
+    'DAILY_AWARENESS_MYSQL_PORT',
+    'DAILY_AWARENESS_MYSQL_DATABASE',
+    'DAILY_AWARENESS_MYSQL_USER',
+    'DAILY_AWARENESS_MYSQL_PASSWORD',
+    'DAILY_AWARENESS_MYSQL_TABLE_PREFIX',
+    'DAILY_AWARENESS_AUTO_ENABLED',
+    'DAILY_AWARENESS_AUTO_TIME',
+    'DAILY_AWARENESS_AUTO_TIMEZONE',
+    'DAILY_AWARENESS_SOURCE_DAY_OFFSET',
+    'DAILY_AWARENESS_DATA_RETRY_MINUTES',
+    'DAILY_AWARENESS_DATA_WAIT_UNTIL',
+    'DAILY_AWARENESS_SCHEDULER_POLL_MS',
   ]) {
     assert.match(env, new RegExp(`^${name}=`, 'm'));
     assert.match(deploy, new RegExp(name));
@@ -236,4 +322,8 @@ test('AppModule and deployment files expose the complete daily awareness contrac
   assert.match(readme, /POST \/internal\/events\/daily-data-finished/);
   assert.match(readme, /X-Hermes-Internal-Key/);
   assert.match(readme, /schema.*permission.*backend.*frontend.*writer/is);
+  assert.match(readme, /MySQL.*news.*data_YYYYMMDD/is);
+  assert.match(readme, /my_mysql.*hermes-net/is);
+  assert.match(readme, /06:00.*previous day.*15 minutes.*08:00/is);
+  assert.match(readme, /most recent successful brief/);
 });

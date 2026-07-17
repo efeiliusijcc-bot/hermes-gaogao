@@ -208,3 +208,41 @@ test('builds daily report markdown with overview, distribution, news and fallbac
   assert.match(markdown, /来源：BBC，发布时间：2026-07-05T01:00:00Z/);
   assert.match(markdown, /已使用最近 7 天可用信源生成简报/);
 });
+
+test('numbers grouped markdown items sequentially within each category', () => {
+  const event = (candidateId: string, eventTitle: string, category: string): DailyAwarenessScoredEvent => ({
+    candidateId,
+    eventTitle,
+    category,
+    region: '',
+    basicSituation: `${eventTitle}简要内容`,
+    backgroundContext: '',
+    importanceJudgement: '',
+    riskToUs: '',
+    importanceScore: 90,
+    riskScore: 80,
+    sourceInfo: [],
+    relatedMaterialIds: [],
+  });
+  const events = [
+    event('a-1', '涉华新闻一', '涉华'),
+    event('b-1', '危安新闻一', '危安'),
+    event('a-2', '涉华新闻二', '涉华'),
+  ];
+  const markdown = buildDailyReportMarkdown({
+    date: '2026-07-17',
+    title: dailyReportTitle('2026-07-17'),
+    summary: '测试摘要',
+    materialCount: 3,
+    selectedCount: 3,
+    categoryStats: categoryStats(events),
+    events,
+  });
+  const involvedChinaSection = markdown.split('### （一）涉华')[1].split('### （二）危安')[0];
+  const securitySection = markdown.split('### （二）危安')[1].split('## 四、可进一步研判方向')[0];
+
+  assert.match(involvedChinaSection, /1\. 涉华新闻一/);
+  assert.match(involvedChinaSection, /2\. 涉华新闻二/);
+  assert.doesNotMatch(involvedChinaSection, /3\. 涉华新闻二/);
+  assert.match(securitySection, /1\. 危安新闻一/);
+});

@@ -11,6 +11,7 @@ import { DailyAwarenessInboxService } from './daily-awareness-inbox.service.js';
 import { DailyAwarenessLockService } from './daily-awareness-lock.service.js';
 import { DailyAwarenessMaterialService } from './daily-awareness-material.service.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
+import { dailyAwarenessSourceContext } from './daily-awareness-date.js';
 
 @Injectable()
 export class DailyAwarenessGenerationService implements OnModuleDestroy {
@@ -27,6 +28,7 @@ export class DailyAwarenessGenerationService implements OnModuleDestroy {
   }
 
   async processEvent(item: DailyAwarenessInboxRecord): Promise<DailyAwarenessTerminalResult> {
+    item = this.withSourceContext(item);
     const triggerType: DailyAwarenessTriggerType = item.payload.reprocessRequested === true ? 'INBOX_REPROCESS' : 'EVENT';
     const locked = await this.locks.withBusinessDateLock(
       item.businessDate,
@@ -50,14 +52,15 @@ export class DailyAwarenessGenerationService implements OnModuleDestroy {
         code: 'DAILY_AWARENESS_INVALID_CONFIG',
       });
     }
-    const runId = await this.store.queueManualRun(businessDate, reason, actor.id);
+    const sourceContext = dailyAwarenessSourceContext(businessDate);
+    const runId = await this.store.queueManualRun(businessDate, reason, actor.id, sourceContext);
     const item: DailyAwarenessInboxRecord = {
       eventId: `manual:${runId}`,
       eventType: 'DAILY_DATA_FINISHED',
       businessDate,
       batchId: `manual:${runId}`,
       completedAt: new Date().toISOString(),
-      payload: { manualReason: reason, requestedBy: actor.id },
+      payload: { manualReason: reason, requestedBy: actor.id, ...sourceContext },
       status: 'PROCESSING',
       attemptCount: 1,
     };
@@ -87,7 +90,11 @@ export class DailyAwarenessGenerationService implements OnModuleDestroy {
       : await this.store.startRun(item, triggerType, attemptNo);
     let prepared;
     try {
-      prepared = await this.materials.prepareForBusinessDate(item.businessDate, config);
+      prepared = await this.materials.prepareForBusinessDate(
+        item.businessDate,
+        config,
+        String(item.payload.sourceBusinessDate || ''),
+      );
     } catch (error) {
       await this.store.failRun(runId, error, false);
       throw error;
@@ -147,6 +154,16 @@ export class DailyAwarenessGenerationService implements OnModuleDestroy {
       throw new BadRequestException({ error: 'businessDate must be YYYY-MM-DD', code: 'DAILY_AWARENESS_INVALID_CONFIG' });
     }
     return date;
+  }
+
+  private withSourceContext(item: DailyAwarenessInboxRecord): DailyAwarenessInboxRecord {
+    return {
+      ...item,
+      payload: {
+        ...item.payload,
+        ...dailyAwarenessSourceContext(item.businessDate),
+      },
+    };
   }
 
   private assertUsable(composed: DailyAwarenessComposedBrief): void {
