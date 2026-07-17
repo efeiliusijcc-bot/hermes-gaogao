@@ -19,6 +19,20 @@ export class DailyAwarenessInboxService implements OnModuleDestroy {
   private processor: DailyAwarenessInboxProcessor | null = null;
 
   async accept(event: DailyDataFinishedEvent): Promise<DailyDataFinishedAcceptedResponse> {
+    return this.acceptWithPayload(event, { ...event });
+  }
+
+  async acceptScheduled(
+    event: DailyDataFinishedEvent,
+    metadata: Record<string, unknown>,
+  ): Promise<DailyDataFinishedAcceptedResponse> {
+    return this.acceptWithPayload(event, { ...event, ...metadata });
+  }
+
+  private async acceptWithPayload(
+    event: DailyDataFinishedEvent,
+    payload: Record<string, unknown>,
+  ): Promise<DailyDataFinishedAcceptedResponse> {
     const pool = await this.getPool();
     const result = await pool.query(
       `INSERT INTO daily_awareness_event_inbox
@@ -33,7 +47,7 @@ export class DailyAwarenessInboxService implements OnModuleDestroy {
         event.batchId,
         event.completedAt,
         event.totalCount ?? null,
-        JSON.stringify(event),
+        JSON.stringify(payload),
       ],
     );
     const duplicate = result.rows.length === 0;

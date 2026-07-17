@@ -23,6 +23,7 @@ import { DailyAwarenessLockService } from './daily-awareness-lock.service.js';
 import { DailyAwarenessMaterialService } from './daily-awareness-material.service.js';
 import { DailyAwarenessMysqlService } from './daily-awareness-mysql.service.js';
 import { DailyAwarenessQueryService } from './daily-awareness-query.service.js';
+import { DailyAwarenessSchedulerService } from './daily-awareness-scheduler.service.js';
 import { DailyAwarenessService } from './daily-awareness.service.js';
 import { DailyAwarenessWorkerService } from './daily-awareness-worker.service.js';
 import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
@@ -103,6 +104,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     DailyAwarenessMaterialService,
     DailyAwarenessMysqlService,
     DailyAwarenessQueryService,
+    DailyAwarenessSchedulerService,
     DailyAwarenessWorkerService,
     DeepReportSourceCollectionService,
     DraftAssistantService,

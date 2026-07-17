@@ -129,6 +129,28 @@ export function dailyAwarenessRetryIntervalSeconds(): number {
   return boundedInteger(process.env.DAILY_AWARENESS_INBOX_RETRY_SECONDS, 30, 1, 3600);
 }
 
+export function dailyAwarenessAutoEnabled(): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(String(process.env.DAILY_AWARENESS_AUTO_ENABLED || '').trim().toLowerCase());
+}
+
+export function dailyAwarenessAutoTime(): string {
+  return validHourMinute(process.env.DAILY_AWARENESS_AUTO_TIME, '06:00');
+}
+
+export function dailyAwarenessDataRetryMinutes(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_DATA_RETRY_MINUTES, 15, 1, 120);
+}
+
+export function dailyAwarenessSchedulerPollMs(): number {
+  return boundedInteger(process.env.DAILY_AWARENESS_SCHEDULER_POLL_MS, 60_000, 5_000, 300_000);
+}
+
+function validHourMinute(value: unknown, fallback: string): string {
+  const text = String(value || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) return fallback;
+  return text;
+}
+
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = Math.floor(Number(value));
   if (!Number.isFinite(parsed)) return fallback;

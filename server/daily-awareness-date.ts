@@ -4,6 +4,11 @@ export interface DailyAwarenessSourceContext {
   dataWaitDeadline: string;
 }
 
+export interface DailyAwarenessShanghaiClock {
+  businessDate: string;
+  minutesAfterMidnight: number;
+}
+
 export function previousBusinessDate(businessDate: string): string {
   const date = requiredDate(businessDate);
   const parsed = new Date(`${date}T00:00:00.000Z`);
@@ -23,6 +28,24 @@ export function dailyAwarenessSourceContext(businessDate: string): DailyAwarenes
 
 export function requiredDailyAwarenessDate(value: unknown): string {
   return requiredDate(value);
+}
+
+export function dailyAwarenessShanghaiClock(now: Date): DailyAwarenessShanghaiClock {
+  if (!Number.isFinite(now.getTime())) throw new Error('now must be a valid date');
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    businessDate: `${value.year}-${value.month}-${value.day}`,
+    minutesAfterMidnight: Number(value.hour) * 60 + Number(value.minute),
+  };
 }
 
 function requiredDate(value: unknown): string {
