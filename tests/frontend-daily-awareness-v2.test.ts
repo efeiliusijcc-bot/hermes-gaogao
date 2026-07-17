@@ -64,6 +64,15 @@ test('daily awareness management page exposes fixed category checkboxes instead 
   assert.doesNotMatch(adminSource, /categoryScopeText|逗号分隔/);
 });
 
+test('daily awareness management page shows source date and delayed-data retry timing', async () => {
+  const adminSource = await source('components/DailyAwarenessAdmin.vue');
+  assert.match(adminSource, /来源数据日期/);
+  assert.match(adminSource, /来源表/);
+  assert.match(adminSource, /下次重试/);
+  assert.match(adminSource, /等待截止/);
+  assert.doesNotMatch(adminSource, /v-model[^\n]*(AUTO_TIME|自动生成时间)/i);
+});
+
 test('daily awareness management API and system entry use exact manage permission', async () => {
   const [apiSource, appSource, managementSource, headerSource] = await Promise.all([
     source('lib/api.js'),

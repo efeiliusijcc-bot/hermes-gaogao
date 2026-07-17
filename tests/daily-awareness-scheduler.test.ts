@@ -5,6 +5,8 @@ import {
   previousBusinessDate,
 } from '../server/daily-awareness-date.js';
 import { DailyAwarenessSchedulerService } from '../server/daily-awareness-scheduler.service.js';
+import { dailyAwarenessInboxFailureDisposition } from '../server/daily-awareness-inbox.service.js';
+import type { DailyAwarenessInboxRecord } from '../server/daily-awareness.contracts.js';
 
 test('maps a brief business date to the previous MySQL business date', () => {
   assert.equal(previousBusinessDate('2026-07-18'), '2026-07-17');
@@ -76,4 +78,66 @@ test('scheduler skips a date that already has a successful global brief', async 
 
   assert.deepEqual(result, { scheduled: false, reason: 'SUCCESS_EXISTS', businessDate: '2026-07-18' });
   assert.equal(accepted.length, 0);
+});
+
+function scheduledItem(attemptCount = 1): DailyAwarenessInboxRecord {
+  return {
+    eventId: 'daily-awareness:auto:2026-07-18',
+    eventType: 'DAILY_DATA_FINISHED',
+    businessDate: '2026-07-18',
+    batchId: 'scheduler:data_20260717',
+    completedAt: '2026-07-18T06:00:00+08:00',
+    payload: {
+      triggerSource: 'AUTO_SCHEDULER',
+      sourceBusinessDate: '2026-07-17',
+      sourceTable: 'data_20260717',
+      dataWaitDeadline: '2026-07-18T08:00:00+08:00',
+    },
+    status: 'PROCESSING',
+    attemptCount,
+  };
+}
+
+const missingTableError = Object.assign(new Error('missing data_20260717'), {
+  code: 'DAILY_AWARENESS_MYSQL_TABLE_NOT_FOUND',
+});
+
+test('missing scheduled source table retries every fifteen minutes until the deadline', () => {
+  process.env.DAILY_AWARENESS_DATA_RETRY_MINUTES = '15';
+  assert.deepEqual(
+    dailyAwarenessInboxFailureDisposition(scheduledItem(20), missingTableError, new Date('2026-07-17T22:00:00.000Z')),
+    {
+      status: 'RETRY_PENDING',
+      nextAttemptAt: '2026-07-17T22:15:00.000Z',
+      errorCode: 'DAILY_AWARENESS_SOURCE_TABLE_WAITING',
+    },
+  );
+  assert.equal(
+    dailyAwarenessInboxFailureDisposition(scheduledItem(20), missingTableError, new Date('2026-07-17T23:50:00.000Z')).nextAttemptAt,
+    '2026-07-18T00:00:00.000Z',
+  );
+});
+
+test('missing scheduled source table becomes dead letter at the 08:00 deadline', () => {
+  assert.deepEqual(
+    dailyAwarenessInboxFailureDisposition(scheduledItem(), missingTableError, new Date('2026-07-18T00:00:00.000Z')),
+    {
+      status: 'DEAD_LETTER',
+      nextAttemptAt: null,
+      errorCode: 'DAILY_AWARENESS_SOURCE_WAIT_DEADLINE_EXCEEDED',
+    },
+  );
+});
+
+test('non-scheduled and non-missing-table failures keep the normal Inbox retry policy', () => {
+  const externalItem = scheduledItem();
+  externalItem.payload.triggerSource = 'EXTERNAL_EVENT';
+  assert.equal(
+    dailyAwarenessInboxFailureDisposition(externalItem, missingTableError, new Date('2026-07-17T22:00:00.000Z')),
+    null,
+  );
+  assert.equal(
+    dailyAwarenessInboxFailureDisposition(scheduledItem(), new Error('database unavailable'), new Date('2026-07-17T22:00:00.000Z')),
+    null,
+  );
 });

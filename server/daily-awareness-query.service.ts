@@ -142,6 +142,8 @@ export class DailyAwarenessQueryService implements OnModuleDestroy {
       qualityStatus: this.qualityStatus(row.quality_status) || 'NORMAL',
       generatedAt: this.dateString(row.generated_at || row.updated_at || row.created_at),
       generatedByType: String(row.generated_by_type || 'SYSTEM') === 'MANUAL' ? 'MANUAL' : 'SYSTEM',
+      sourceBusinessDate: this.dateOnly(row.source_business_date),
+      sourceTable: String(row.source_table || ''),
       categories: this.array(row.categories),
       categoryDistribution: this.object(contentJson.categoryDistribution),
       events: eventsResult.rows.map((event) => this.event(event)),
@@ -156,6 +158,8 @@ export class DailyAwarenessQueryService implements OnModuleDestroy {
       qualityStatus: this.qualityStatus(row.quality_status) || 'NORMAL',
       generatedAt: this.dateString(row.generated_at || row.updated_at || row.created_at),
       generatedByType: String(row.generated_by_type || 'SYSTEM') === 'MANUAL' ? 'MANUAL' : 'SYSTEM',
+      sourceBusinessDate: this.dateOnly(row.source_business_date),
+      sourceTable: String(row.source_table || ''),
     };
   }
 

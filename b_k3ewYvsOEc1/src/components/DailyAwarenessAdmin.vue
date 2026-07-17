@@ -63,6 +63,10 @@ const statusItems = computed(() => [
   { label: '数据状态', value: statusField('data_status', 'dataStatus') || 'WAITING' },
   { label: '生成状态', value: statusField('generation_status', 'generationStatus') || 'WAITING' },
   { label: '质量状态', value: statusField('quality_status', 'qualityStatus') || '--' },
+  { label: '来源数据日期', value: statusField('source_business_date', 'sourceBusinessDate') || '--' },
+  { label: '来源表', value: statusField('source_table', 'sourceTable') || '--' },
+  { label: '下次重试', value: formatTime(statusField('next_attempt_at', 'nextAttemptAt')) },
+  { label: '等待截止', value: formatTime(statusField('data_wait_deadline', 'dataWaitDeadline')) },
 ])
 
 onMounted(() => {
@@ -327,8 +331,8 @@ function today() {
           <button class="admin-button" type="submit" :disabled="loading">查询</button>
         </form>
         <div class="table-wrap">
-          <table><thead><tr><th>业务日期</th><th>触发方式</th><th>状态</th><th>尝试</th><th>质量</th><th>材料</th><th>开始时间</th><th>错误</th></tr></thead>
-          <tbody><tr v-for="run in runs" :key="run.id"><td>{{ run.businessDate }}</td><td>{{ run.triggerType }}</td><td><span class="status-chip">{{ run.status }}</span></td><td>{{ run.attemptNo }}</td><td>{{ run.qualityStatus || '--' }}</td><td>{{ run.sourceCount }}</td><td>{{ formatTime(run.startedAt || run.createdAt) }}</td><td class="error-cell">{{ run.errorMessage || '--' }}</td></tr></tbody></table>
+          <table><thead><tr><th>业务日期</th><th>来源日期</th><th>来源表</th><th>触发方式</th><th>状态</th><th>尝试</th><th>质量</th><th>材料</th><th>开始时间</th><th>等待截止</th><th>错误</th></tr></thead>
+          <tbody><tr v-for="run in runs" :key="run.id"><td>{{ run.businessDate }}</td><td>{{ run.sourceBusinessDate || '--' }}</td><td>{{ run.sourceTable || '--' }}</td><td>{{ run.triggerType }}</td><td><span class="status-chip">{{ run.status }}</span></td><td>{{ run.attemptNo }}</td><td>{{ run.qualityStatus || '--' }}</td><td>{{ run.sourceCount }}</td><td>{{ formatTime(run.startedAt || run.createdAt) }}</td><td>{{ formatTime(run.dataWaitDeadline) }}</td><td class="error-cell">{{ run.errorMessage || '--' }}</td></tr></tbody></table>
           <div v-if="!loading && !runs.length" class="admin-empty">暂无运行记录。</div>
         </div>
       </section>
