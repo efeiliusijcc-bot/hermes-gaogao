@@ -155,9 +155,18 @@ DAILY_AWARENESS_WORKER_POLL_MS=2000
 DAILY_AWARENESS_INBOX_LEASE_SECONDS=300
 DAILY_AWARENESS_INBOX_MAX_ATTEMPTS=5
 DAILY_AWARENESS_INBOX_RETRY_SECONDS=30
+DAILY_AWARENESS_AUTO_ENABLED=true
+DAILY_AWARENESS_AUTO_TIME=06:00
+DAILY_AWARENESS_AUTO_TIMEZONE=Asia/Shanghai
+DAILY_AWARENESS_SOURCE_DAY_OFFSET=1
+DAILY_AWARENESS_DATA_RETRY_MINUTES=15
+DAILY_AWARENESS_DATA_WAIT_UNTIL=08:00
+DAILY_AWARENESS_SCHEDULER_POLL_MS=60000
 ```
 
 The fixed Inbox states are `RECEIVED`, `PROCESSING`, `RETRY_PENDING`, `PROCESSED`, and `DEAD_LETTER`. Day data states are `WAITING`, `READY`, and `NO_DATA`; generation states are `WAITING`, `PENDING`, `GENERATING`, `SUCCESS`, `GENERATION_FAILED`, and `NOT_REQUIRED`. Zero usable records produce `NO_DATA` without a brief. A terminal model failure produces `GENERATION_FAILED` while the triggering event is still marked `PROCESSED`. Infrastructure failures follow the configured Inbox retry policy and eventually become `DEAD_LETTER`.
+
+The application scheduler creates the current business day's brief at 06:00 Asia/Shanghai. It always reads the previous day's MySQL partition, so the `2026-07-18` brief reads `news.data_20260717`. If that source table is late, the Inbox retries every 15 minutes through 08:00. A table still missing at 08:00 becomes `DEAD_LETTER` and the day is marked `GENERATION_FAILED`; the current-brief API continues returning the most recent successful brief instead of an empty response. Stable scheduler event IDs and the unique global brief date prevent duplicate polls or replay from replacing an existing successful brief.
 
 ### Deployment order
 
@@ -165,7 +174,7 @@ Use this order so permission and response migrations remain compatible during a 
 
 1. **Schema:** apply `scripts/init-daily-awareness.sql`. It is additive, preserves legacy briefs, selects one canonical `GLOBAL` brief per historical date, and enforces unique event, day-status, and global-brief dates.
 2. **Permission mapping:** apply `scripts/init-rbac.sql`. It keeps legacy permission rows, copies old read assignments to `daily-awareness:view`, and explicitly grants administrators view and `system:daily-awareness:manage`.
-3. **Backend:** deploy with all five Daily Awareness environment variables. The model call runs outside long database transactions, and every automatic/manual path uses the same business-date advisory lock.
+3. **Backend:** deploy with the internal event, Inbox, MySQL, and seven scheduler environment variables. Start the first rollout with `DAILY_AWARENESS_AUTO_ENABLED=false`, verify the migration and previous-day source mapping, then enable it and restart. The model call runs outside long database transactions, and every automatic/manual path uses the same business-date advisory lock.
 4. **Verification:** check `/api/hermes/health`, submit an authenticated invalid internal event and expect HTTP 400, then submit a unique smoke event only when its business date and source data are real.
 5. **Frontend:** deploy the read-only user workspace and the separately authorized management console. Users need `daily-awareness:view`; operators need `system:daily-awareness:manage`.
 6. **Writer integration:** enable the external data writer last. It must use a stable unique `eventId`, retry non-202 responses, and treat every 202 response as accepted regardless of the `duplicate` flag.

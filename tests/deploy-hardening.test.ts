@@ -32,6 +32,19 @@ for (const name of [
   assert.match(envExample, new RegExp(`^${name}=`, 'm'));
   assert.match(deployScript, new RegExp(`write_env ${name}`));
 }
+for (const name of [
+  'DAILY_AWARENESS_AUTO_ENABLED',
+  'DAILY_AWARENESS_AUTO_TIME',
+  'DAILY_AWARENESS_AUTO_TIMEZONE',
+  'DAILY_AWARENESS_SOURCE_DAY_OFFSET',
+  'DAILY_AWARENESS_DATA_RETRY_MINUTES',
+  'DAILY_AWARENESS_DATA_WAIT_UNTIL',
+  'DAILY_AWARENESS_SCHEDULER_POLL_MS',
+]) {
+  assert.match(envExample, new RegExp(`^${name}=`, 'm'));
+  assert.match(deployScript, new RegExp(`write_env ${name}`));
+}
+assert.match(deployScript, /write_env DAILY_AWARENESS_AUTO_ENABLED "\$\{DAILY_AWARENESS_AUTO_ENABLED:-true\}"/);
 assert.match(deployScript, /docker network connect --alias my_mysql hermes-net my_mysql/);
 
 const candidateCheck = deployScript.indexOf('hermes-api-candidate-');
