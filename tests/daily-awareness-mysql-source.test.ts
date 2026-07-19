@@ -38,6 +38,16 @@ test('normalizes MySQL daily rows without rewriting source summary', () => {
   });
 });
 
+test('ignores an invalid MySQL Date without failing the entire daily batch', () => {
+  const invalidDate = new Date(Number.NaN);
+
+  assert.equal(normalizeDailyAwarenessMysqlRow({
+    id: 8,
+    ch_title: 'News with an invalid source timestamp',
+    publish_time: invalidDate,
+  }).publishedAt, '');
+});
+
 test('builds a parameterized category query for a validated table', () => {
   const query = buildDailyAwarenessMysqlQuery('data_20260716', ['涉政', '危安']);
   assert.match(query.text, /FROM `data_20260716`/);

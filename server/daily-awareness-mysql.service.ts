@@ -56,7 +56,7 @@ export function normalizeDailyAwarenessMysqlRow(row: DailyAwarenessMysqlRawRow |
   const title = String(value.ch_title || value.entitle || '').trim();
   const designatedTag = String(value.designated_tag || '').trim() || '其他';
   const publishedAt = value.publish_time instanceof Date
-    ? value.publish_time.toISOString()
+    ? (Number.isNaN(value.publish_time.getTime()) ? '' : value.publish_time.toISOString())
     : String(value.publish_time || '').trim();
   return {
     id: String(value.id || '').trim(),
