@@ -11,10 +11,11 @@ export class DailyAwarenessAdminService implements OnModuleDestroy {
     if (businessDate) params.push(businessDate);
     const result = await (await this.getPool()).query(
       `SELECT day.*, run.source_business_date, run.source_table, run.data_wait_deadline,
-              inbox.next_attempt_at
+              inbox.next_attempt_at, brief.selected_count, brief.generated_at
          FROM daily_awareness_day_status day
          LEFT JOIN daily_awareness_runs run ON run.id = day.last_run_id
          LEFT JOIN daily_awareness_event_inbox inbox ON inbox.event_id = run.trigger_ref
+         LEFT JOIN daily_briefs brief ON brief.brief_id = day.current_brief_id
          ${where}
         ORDER BY day.business_date DESC
         LIMIT 1`,

@@ -119,6 +119,8 @@ test('admin status joins the latest run source and Inbox retry timing', async ()
         source_table: 'data_20260717',
         data_wait_deadline: '2026-07-18T00:00:00.000Z',
         next_attempt_at: '2026-07-17T22:15:00.000Z',
+        selected_count: 50,
+        generated_at: '2026-07-18T00:10:00.000Z',
       }] };
     },
   });
@@ -126,8 +128,12 @@ test('admin status joins the latest run source and Inbox retry timing', async ()
   const status = await service.status('2026-07-18');
   assert.equal(status.source_table, 'data_20260717');
   assert.equal(status.next_attempt_at, '2026-07-17T22:15:00.000Z');
+  assert.equal(status.selected_count, 50);
+  assert.equal(status.generated_at, '2026-07-18T00:10:00.000Z');
   assert.match(sql, /LEFT JOIN daily_awareness_runs run ON run\.id = day\.last_run_id/);
   assert.match(sql, /LEFT JOIN daily_awareness_event_inbox inbox ON inbox\.event_id = run\.trigger_ref/);
+  assert.match(sql, /LEFT JOIN daily_briefs brief ON brief\.brief_id = day\.current_brief_id/);
+  assert.match(sql, /brief\.selected_count/);
 });
 
 test('Inbox reprocess refuses to overwrite a successful global brief', async () => {
