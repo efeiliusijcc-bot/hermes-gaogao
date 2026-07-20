@@ -105,3 +105,17 @@ test('daily awareness management API and system entry use exact manage permissio
   assert.match(managementSource, /DailyAwarenessAdmin/);
   assert.match(headerSource, /system:daily-awareness:manage/);
 });
+
+test('daily awareness admin forwards view navigation to the application workspace', async () => {
+  const [adminSource, managementSource, appSource] = await Promise.all([
+    source('components/DailyAwarenessAdmin.vue'),
+    source('components/UserManagement.vue'),
+    source('App.vue'),
+  ]);
+
+  assert.match(adminSource, /defineEmits\(\['open-daily-awareness'\]\)/);
+  assert.match(adminSource, /emit\('open-daily-awareness'\)/);
+  assert.match(managementSource, /defineEmits\(\['back', 'open-daily-awareness'\]\)/);
+  assert.match(managementSource, /@open-daily-awareness="emit\('open-daily-awareness'\)"/);
+  assert.match(appSource, /<UserManagement[^>]+@open-daily-awareness="openDailyAwareness"/s);
+});

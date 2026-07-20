@@ -23,7 +23,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['back'])
+const emit = defineEmits(['back', 'open-daily-awareness'])
 
 const fallbackRoles = [
   { id: 'admin', name: 'admin', description: '管理员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
@@ -845,6 +845,7 @@ async function confirmDeleteRole(role) {
       <DailyAwarenessAdmin
         v-else-if="activeTab === 'daily-awareness' && canManageDailyAwareness"
         :current-user="currentUser"
+        @open-daily-awareness="emit('open-daily-awareness')"
       />
     </template>
 
