@@ -16,6 +16,7 @@ function brief(id: string, date: string): Row {
     content_markdown: '# 每日动态简报',
     publication_scope: 'GLOBAL',
     quality_status: 'NORMAL',
+    selected_count: 50,
     generated_at: `${date}T08:00:00.000Z`,
     generated_by_type: 'SYSTEM',
   };
@@ -59,6 +60,15 @@ test('current returns today global brief when generation succeeded', async () =>
   assert.equal(result.messageCode, 'TODAY_READY');
   assert.equal(result.businessDate, '2026-07-16');
   assert.equal(result.displayedBrief?.businessDate, '2026-07-16');
+});
+
+test('history exposes the actual selected item count', async () => {
+  const item = brief('brief-today', '2026-07-20');
+  const service = serviceFor(null, [item]);
+
+  const result = await service.history({ page: 1, pageSize: 20 });
+
+  assert.equal(result.items[0]?.selectedCount, 50);
 });
 
 for (const scenario of [

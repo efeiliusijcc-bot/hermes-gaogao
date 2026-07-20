@@ -22,6 +22,7 @@ import {
   resolveActiveWorkspaceJob,
   upsertReportJob,
 } from '../lib/reportWorkspaceState.js'
+import { buildPlanningContextPayload } from '../lib/reportPlanningContext.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
 
@@ -1338,12 +1339,14 @@ export function useReportJobs() {
     }
 
     if (reportType.value === 'write-hb-k' || reportType.value === 'write-hb-hb') {
+      const planningPayload = isStructuredContext
+        ? buildPlanningContextPayload({ topic: subject, knownContext: context })
+        : { topic: subject, known_context: context }
       return {
         skill: 'write-hb',
         payload: {
-          topic: subject,
+          ...planningPayload,
           report_type: reportType.value === 'write-hb-hb' ? 'HB报' : 'K报',
-          known_context: context,
           useMyPreferences: useMyPreferences.value === true,
           deepReportEnabled: deepReportEnabled.value === true,
           focus_areas: isStructuredContext ? buildPlanningFocusAreas(extraContext) : ['国家', '地方', '政策', '社会', '传播'],

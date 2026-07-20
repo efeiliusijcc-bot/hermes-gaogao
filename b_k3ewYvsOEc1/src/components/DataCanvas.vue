@@ -5,6 +5,7 @@ import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
 import { buildReadableExecutionLogs, translateHermesExecutionLog } from '../lib/reportExecutionLogs.js'
+import { parseStructuredPlanningContext } from '../lib/reportPlanningContext.js'
 import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 import { getTruthfulSourceStats } from '../lib/sourceStats.js'
@@ -594,26 +595,6 @@ const resultTabs = [
   { key: 'progress', label: '任务进度' },
   { key: 'quality', label: '成稿自检' },
 ]
-
-function parseStructuredPlanningContext(value) {
-  if (!value) return null
-  if (typeof value === 'object') return value
-  const text = String(value || '').trim()
-  if (!text) return null
-  const candidates = [text]
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start >= 0 && end > start) candidates.push(text.slice(start, end + 1))
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate)
-      if (parsed?.kind === 'structured_report_context' || parsed?.selectedModules || parsed?.selectedSearchQueries) return parsed
-    } catch {
-      // Ignore non-JSON legacy context.
-    }
-  }
-  return null
-}
 
 const planningContext = computed(() => {
   const payload = props.job?.payload || {}

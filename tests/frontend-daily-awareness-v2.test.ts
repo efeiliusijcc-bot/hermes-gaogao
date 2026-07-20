@@ -47,13 +47,27 @@ test('daily awareness module and application entry require exact view permission
 test('daily awareness management page exposes operations without scheduling controls', async () => {
   const adminSource = await source('components/DailyAwarenessAdmin.vue').catch(() => '');
 
-  assert.match(adminSource, /运行状态/);
-  assert.match(adminSource, /版本化配置/);
-  assert.match(adminSource, /手动补生成/);
-  assert.match(adminSource, /运行记录/);
-  assert.match(adminSource, /死信/);
+  assert.match(adminSource, /今日简报/);
+  assert.match(adminSource, /生成设置/);
+  assert.match(adminSource, /重新生成/);
+  assert.match(adminSource, /历史生成记录/);
+  assert.match(adminSource, /需要处理的问题/);
   assert.match(adminSource, /confirmOverwrite/);
   assert.doesNotMatch(adminSource, /每日生成时间|定时任务开关/);
+});
+
+test('daily awareness management uses business pages and hides backend status terms', async () => {
+  const [adminSource, viewSource] = await Promise.all([
+    source('components/DailyAwarenessAdmin.vue'),
+    source('lib/dailyAwarenessAdminView.js'),
+  ]);
+
+  for (const label of ['今日简报', '异常处理', '历史记录', '查看技术详情']) {
+    assert.match(adminSource, new RegExp(label));
+  }
+  for (const label of ['需要人工处理', '正在自动恢复']) assert.match(viewSource, new RegExp(label));
+  assert.doesNotMatch(adminSource, /运行状态与配置|死信 Inbox/);
+  assert.doesNotMatch(adminSource, />\s*(RETRY_PENDING|DEAD_LETTER)\s*</);
 });
 
 test('daily awareness management page exposes fixed category checkboxes instead of comma text input', async () => {
@@ -64,12 +78,12 @@ test('daily awareness management page exposes fixed category checkboxes instead 
   assert.doesNotMatch(adminSource, /categoryScopeText|逗号分隔/);
 });
 
-test('daily awareness management page shows source date and delayed-data retry timing', async () => {
+test('daily awareness management page shows source date and readable retry timing', async () => {
   const adminSource = await source('components/DailyAwarenessAdmin.vue');
-  assert.match(adminSource, /来源数据日期/);
-  assert.match(adminSource, /来源表/);
-  assert.match(adminSource, /下次重试/);
-  assert.match(adminSource, /等待截止/);
+  assert.match(adminSource, /数据日期/);
+  assert.match(adminSource, /sourceTable/);
+  assert.match(adminSource, /下次尝试/);
+  assert.match(adminSource, /每天 06:00/);
   assert.doesNotMatch(adminSource, /v-model[^\n]*(AUTO_TIME|自动生成时间)/i);
 });
 
@@ -90,4 +104,18 @@ test('daily awareness management API and system entry use exact manage permissio
   assert.match(managementSource, /system:daily-awareness:manage/);
   assert.match(managementSource, /DailyAwarenessAdmin/);
   assert.match(headerSource, /system:daily-awareness:manage/);
+});
+
+test('daily awareness admin forwards view navigation to the application workspace', async () => {
+  const [adminSource, managementSource, appSource] = await Promise.all([
+    source('components/DailyAwarenessAdmin.vue'),
+    source('components/UserManagement.vue'),
+    source('App.vue'),
+  ]);
+
+  assert.match(adminSource, /defineEmits\(\['open-daily-awareness'\]\)/);
+  assert.match(adminSource, /emit\('open-daily-awareness'\)/);
+  assert.match(managementSource, /defineEmits\(\['back', 'open-daily-awareness'\]\)/);
+  assert.match(managementSource, /@open-daily-awareness="emit\('open-daily-awareness'\)"/);
+  assert.match(appSource, /<UserManagement[^>]+@open-daily-awareness="openDailyAwareness"/s);
 });
