@@ -35,6 +35,7 @@ const props = defineProps({
     default: 0,
   },
   currentQaSessionId: String,
+  reportHistoryVisible: Boolean,
 })
 
 const emit = defineEmits(['open-job', 'open-qa-session', 'start-qa', 'start-report', 'refresh-health', 'open-history-list', 'load-more-recent'])
@@ -181,7 +182,7 @@ function handleHistoryAction() {
       </div>
     </section>
 
-    <section class="panel recent-card flex-1 min-h-0 flex flex-col">
+    <section v-if="isQaMode || reportHistoryVisible" class="panel recent-card flex-1 min-h-0 flex flex-col">
       <div class="panel-header recent-header justify-between px-4 py-4">
         <div>
           <span class="font-mono text-sm neon-text tracking-widest">{{ historyTitle }}</span>

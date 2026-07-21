@@ -21,3 +21,33 @@ test('production frontend explicitly hides report history by default', async () 
   const envSource = await frontendSource('.env.production');
   assert.match(envSource, /^VITE_REPORT_HISTORY_VISIBLE=false$/m);
 });
+
+test('K-report history surfaces share the flag while unrelated histories remain available', async () => {
+  const [appSource, controlSource, canvasSource, jobsSource, dailySource] = await Promise.all([
+    frontendSource('src/App.vue'),
+    frontendSource('src/components/ControlPanel.vue'),
+    frontendSource('src/components/DataCanvas.vue'),
+    frontendSource('src/composables/useReportJobs.js'),
+    frontendSource('src/components/DailyAwareness.vue'),
+  ]);
+
+  assert.match(appSource, /import \{ REPORT_HISTORY_VISIBLE \} from '.\/lib\/reportHistoryVisibility\.js'/);
+  assert.match(appSource, /const reportHistoryVisible = REPORT_HISTORY_VISIBLE/);
+  assert.equal((appSource.match(/:report-history-visible="reportHistoryVisible"/g) || []).length, 2);
+  assert.match(appSource, /currentView === 'generator' \|\| !reportHistoryVisible/);
+  assert.match(appSource, /if \(!reportHistoryVisible\) return/);
+
+  assert.match(controlSource, /reportHistoryVisible:\s*Boolean/);
+  assert.match(controlSource, /v-if="isQaMode \|\| reportHistoryVisible"/);
+  assert.match(controlSource, /问答历史/);
+
+  assert.match(canvasSource, /reportHistoryVisible:\s*Boolean/);
+  assert.equal(
+    (canvasSource.match(/<button[^>]*v-if="reportHistoryVisible"[^>]*@click="emit\('list'\)"[^>]*>/g) || []).length,
+    3,
+  );
+
+  assert.match(jobsSource, /fetchReportJobs/);
+  assert.match(jobsSource, /createReportJob/);
+  assert.match(dailySource, /历史简报/);
+});
