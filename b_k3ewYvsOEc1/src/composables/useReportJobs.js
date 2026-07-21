@@ -23,6 +23,7 @@ import {
   upsertReportJob,
 } from '../lib/reportWorkspaceState.js'
 import { buildPlanningContextPayload } from '../lib/reportPlanningContext.js'
+import { REPORT_HISTORY_CREATED_AFTER } from '../lib/reportHistoryCutoff.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
 
@@ -431,6 +432,7 @@ export function useReportJobs() {
         page: nextPage,
         pageSize: recentPageSize,
         type: 'all',
+        createdAfter: REPORT_HISTORY_CREATED_AFTER,
       })
       if (requestId !== recentJobsRequestId) return
       const items = (Array.isArray(response) ? response : response.items || []).map((item) => ({
@@ -1683,6 +1685,7 @@ export function useReportJobs() {
         pageSize: listPageSize.value,
         q: listSearch.value.trim(),
         trash: listTrashMode.value ? 'true' : '',
+        createdAfter: REPORT_HISTORY_CREATED_AFTER,
       })
       if (requestId !== jobListRequestId) return
       const items = Array.isArray(response) ? response : response.items || []
