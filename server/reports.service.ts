@@ -102,6 +102,7 @@ interface JobListOptions {
   q?: string;
   mine?: string | boolean;
   trash?: string | boolean;
+  createdAfter?: string;
 }
 
 interface DatabaseSourceItem {
@@ -347,10 +348,13 @@ export class ReportsService implements OnModuleDestroy {
     const query = String(options.q ?? '').trim().toLowerCase();
     const mineOnly = options.mine === true || String(options.mine || '').toLowerCase() === 'true';
     const trashOnly = options.trash === true || String(options.trash || '').toLowerCase() === 'true';
+    const parsedCreatedAfter = Date.parse(String(options.createdAfter || ''));
+    const createdAfter = Number.isFinite(parsedCreatedAfter) ? parsedCreatedAfter : null;
 
     const filtered = Array.from(this.jobs.values())
       .filter((job) => this.isDeletedJob(job) === trashOnly)
       .filter((job) => this.canListJob(job, user, mineOnly))
+      .filter((job) => createdAfter === null || new Date(job.createdAt).getTime() > createdAfter)
       .filter((job) => type === 'all' || this.jobTypeKey(job) === type)
       .filter((job) => !query || this.jobSearchText(job).includes(query))
       .sort((a, b) => {

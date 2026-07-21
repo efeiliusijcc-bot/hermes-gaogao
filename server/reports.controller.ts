@@ -34,8 +34,9 @@ export class ReportsController {
     @Query('q') q?: string,
     @Query('mine') mine?: string,
     @Query('trash') trash?: string,
+    @Query('createdAfter') createdAfter?: string,
   ) {
-    return this.reports.listJobs({ page, pageSize, type, q, mine, trash }, user);
+    return this.reports.listJobs({ page, pageSize, type, q, mine, trash, createdAfter }, user);
   }
 
   @Get(':jobId')

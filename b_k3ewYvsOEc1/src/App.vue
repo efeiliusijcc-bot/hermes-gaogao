@@ -9,7 +9,6 @@ import UserManagement from './components/UserManagement.vue'
 import { useAuth } from './composables/useAuth.js'
 import { useReportJobs } from './composables/useReportJobs.js'
 import { deriveUserModules } from './lib/permissionModules.js'
-import { REPORT_HISTORY_VISIBLE } from './lib/reportHistoryVisibility.js'
 import { computed, onMounted, ref, watch } from 'vue'
 
 const {
@@ -102,7 +101,6 @@ const {
 } = useReportJobs()
 
 const QA_HISTORY_KEY = 'nexus-qa-history'
-const reportHistoryVisible = REPORT_HISTORY_VISIBLE
 const homeMode = ref('report')
 const selectedQaSessionId = ref('')
 const showUserManagement = ref(false)
@@ -422,7 +420,6 @@ function startReportFromSidebar() {
 }
 
 function openReportHistoryList() {
-  if (!reportHistoryVisible) return
   if (authUser.value && !hasModule('report')) {
     setAuthNotice('当前账号暂无编报权限，请联系管理员分配权限。')
     return
@@ -580,7 +577,7 @@ function jobActionLabel(status) {
       </section>
     </main>
 
-    <div v-else-if="currentView === 'generator' || !reportHistoryVisible" class="app-body">
+    <div v-else-if="currentView === 'generator'" class="app-body">
       <ControlPanel
         :health="health"
         :mode="homeMode"
@@ -594,7 +591,6 @@ function jobActionLabel(status) {
         :recentLoadError="recentLoadError"
         :currentJobId="sidebarCurrentJobId"
         :currentQaSessionId="selectedQaSessionId"
-        :report-history-visible="reportHistoryVisible"
         @open-job="openReportJob"
         @open-qa-session="openQaSession"
         @start-qa="startQaFromSidebar"
@@ -647,7 +643,6 @@ function jobActionLabel(status) {
         :isLogDrawerOpen="isLogDrawerOpen"
         :hasReturnableWorkspace="hasReturnableWorkspace"
         :canDeleteReport="canDeleteReports"
-        :report-history-visible="reportHistoryVisible"
         @generate="handleGenerate"
         @confirm-plan="confirmReportPlan"
         @cancel-plan="cancelReportPlan"
