@@ -110,6 +110,7 @@ const props = defineProps({
   isLogDrawerOpen: Boolean,
   hasReturnableWorkspace: Boolean,
   canDeleteReport: Boolean,
+  reportHistoryVisible: Boolean,
   homeMode: {
     type: String,
     default: 'report',
@@ -4044,7 +4045,7 @@ function exportPdf() {
           >
             导出 PDF
           </button>
-          <button @click="emit('list')" class="sci-btn text-[10px] px-3 py-2">报告列表</button>
+          <button v-if="reportHistoryVisible" @click="emit('list')" class="sci-btn text-[10px] px-3 py-2">报告列表</button>
         </template>
       </div>
     </div>
@@ -4970,7 +4971,7 @@ function exportPdf() {
           </div>
           <div class="history-error-actions">
             <button class="result-action-btn result-action-primary" type="button" @click="emit('retry-history-report')">重新加载</button>
-            <button class="result-action-btn" type="button" @click="emit('list')">返回报告列表</button>
+            <button v-if="reportHistoryVisible" class="result-action-btn" type="button" @click="emit('list')">返回报告列表</button>
           </div>
         </section>
       </div>
@@ -5241,7 +5242,7 @@ function exportPdf() {
               <button @click="exportPdf" :disabled="!canExport" class="result-action-btn" type="button">
                 <span>◧</span> 导出 PDF
               </button>
-              <button @click="emit('list')" class="result-action-btn" type="button">
+              <button v-if="reportHistoryVisible" @click="emit('list')" class="result-action-btn" type="button">
                 <span>☷</span> 报告列表
               </button>
               <button
