@@ -54,6 +54,33 @@ assert.deepEqual(aliases.timeline, ['2026年，欧洲']);
 assert.deepEqual(aliases.mainFacts, ['乌克兰继续推进加入欧盟进程']);
 assert.deepEqual(aliases.riskToUs, ['地缘政治与经贸外溢风险待研判']);
 
+const nestedEmpty = service.ensureMinimumAnalysis(
+  service.normalizeAnalysis({
+    oneSentenceSummary: '美国移民政策收紧，考虑建立第三国遣返中心。',
+    keyActors: [[]],
+    timeline: [[]],
+    mainFacts: [{ fact: '美国正考虑建立第三国遣返中心', source: '标题', confidence: 'low' }],
+    riskSummary: { risks: [], pendingVerifications: ['政策细节待核实'] },
+  }),
+  {
+    title: '移民政策收紧与第三国遣返中心',
+    materials: '移民政策收紧与第三国遣返中心',
+    category: '',
+    region: '',
+    sources: [],
+  },
+);
+
+assert.equal(nestedEmpty.keyActors.length, 1);
+assert.equal(nestedEmpty.timeline.length, 1);
+assert.equal(Array.isArray(nestedEmpty.keyActors[0]), false);
+assert.equal(Array.isArray(nestedEmpty.timeline[0]), false);
+assert.match(JSON.stringify(nestedEmpty.keyActors), /待核实|待结合权威信源确认/);
+assert.match(JSON.stringify(nestedEmpty.timeline), /待.*核实/);
+assert.deepEqual(nestedEmpty.mainFacts, [
+  { fact: '美国正考虑建立第三国遣返中心', source: '标题', confidence: 'low' },
+]);
+
 const sections = buildDraftAnalysisSections({
   analysis: {
     oneSentenceSummary: '事件概括',
@@ -78,5 +105,27 @@ const riskContent = sections.find((item) => item.key === 'risk')?.content || '';
 assert.match(riskContent, /外溢风险/);
 assert.match(riskContent, /能源、贸易/);
 assert.match(riskContent, /欧盟后续政策安排待核实/);
+
+const factObjectSections = buildDraftAnalysisSections({
+  analysis: nestedEmpty,
+});
+assert.match(
+  factObjectSections.find((item) => item.key === 'facts')?.content || '',
+  /美国正考虑建立第三国遣返中心/,
+);
+
+const historicalNestedEmptySections = buildDraftAnalysisSections({
+  analysis: {
+    oneSentenceSummary: '历史事件概括',
+    keyActors: [[]],
+    timeline: [[]],
+    mainFacts: [[]],
+    riskSummary: { risks: [], pendingVerifications: ['详细信息待核实'] },
+  },
+});
+assert.equal(
+  historicalNestedEmptySections.some((section) => section.content === '暂无明确内容'),
+  false,
+);
 
 console.log('draft assistant analysis normalization tests passed');

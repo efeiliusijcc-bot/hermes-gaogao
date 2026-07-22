@@ -485,6 +485,8 @@ export class DraftAssistantService implements OnModuleDestroy {
           outputRules: [
             '不要原样返回空模板。',
             '必须填充 oneSentenceSummary、basicSituation、mainFacts、uncertainties。',
+            'keyActors、timeline、mainFacts 不得返回空数组或嵌套空数组；证据不足时至少返回一条明确标注“待核实”的说明。',
+            '数组元素必须是有内容的字符串或对象，禁止输出 [[]]、[{}]、[""]。',
             '证据不足时不要编造事实，应明确写“待核实”。',
             '即使只有标题，也要输出基于标题的待核实分析框架。',
             'riskSummary 必须输出结构化对象，不要输出 JSON 字符串或 Markdown 代码块。',
@@ -686,12 +688,19 @@ export class DraftAssistantService implements OnModuleDestroy {
 
   private analysisItems(...values: unknown[]): unknown[] {
     for (const value of values) {
-      if (Array.isArray(value) && value.length) return value;
-      if (value && typeof value === 'object') return [value];
-      const text = this.text(value, 8000);
-      if (text) return [text];
+      const items = this.flattenAnalysisItems(value);
+      if (items.length) return items;
     }
     return [];
+  }
+
+  private flattenAnalysisItems(value: unknown): unknown[] {
+    if (Array.isArray(value)) return value.flatMap((item) => this.flattenAnalysisItems(item));
+    if (value && typeof value === 'object') {
+      return Object.keys(value as Record<string, unknown>).length ? [value] : [];
+    }
+    const text = this.text(value, 8000);
+    return text ? [text] : [];
   }
 
   private ensureMinimumAnalysis(

@@ -44,6 +44,7 @@ function readableValue(value) {
     value.summary,
     value.content,
     value.text,
+    value.fact,
     value.name,
     value.actor,
     value.title,
@@ -61,6 +62,11 @@ function firstReadable(...values) {
     if (readable) return readable
   }
   return '暂无明确内容'
+}
+
+function firstReadableOr(fallback, ...values) {
+  const content = firstReadable(...values)
+  return content === '暂无明确内容' ? fallback : content
 }
 
 export function buildDraftAnalyzePayload(sourceInput) {
@@ -83,18 +89,18 @@ export function buildDraftAnalysisSections(eventResult = {}) {
   const location = firstReadable(analysis.location, event.region)
   const timeAndPlace = [timeline, location]
     .filter((value, index, items) => value !== '暂无明确内容' && items.indexOf(value) === index)
-    .join('\n') || '暂无明确内容'
+    .join('\n') || '事件发生时间、关键节点及具体地点尚待权威信源核实。'
 
   return [
     {
       key: 'summary',
       title: '事件概括',
-      content: firstReadable(analysis.oneSentenceSummary, analysis.summary, event.summary),
+      content: firstReadableOr('当前材料不足以形成明确事件概括，需补充权威信源核实。', analysis.oneSentenceSummary, analysis.summary, event.summary),
     },
     {
       key: 'actors',
       title: '核心主体',
-      content: firstReadable(analysis.keyActors, analysis.coreActors, analysis.actors, event.actors),
+      content: firstReadableOr('当前材料未明确列出可核实的核心主体，相关国家、机构及当事方身份待核实。', analysis.keyActors, analysis.coreActors, analysis.actors, event.actors),
     },
     {
       key: 'timeAndPlace',
@@ -104,12 +110,12 @@ export function buildDraftAnalysisSections(eventResult = {}) {
     {
       key: 'facts',
       title: '关键事实',
-      content: firstReadable(analysis.mainFacts, event.basicFacts),
+      content: firstReadableOr('当前材料未提供可直接确认的关键事实，具体进展、政策安排及影响待核实。', analysis.mainFacts, event.basicFacts),
     },
     {
       key: 'risk',
       title: '涉我风险',
-      content: firstReadable(analysis.riskSummary, analysis.riskToUs, analysis.risks),
+      content: firstReadableOr('当前材料不足以形成明确涉我风险结论，相关影响待研判。', analysis.riskSummary, analysis.riskToUs, analysis.risks),
     },
   ]
 }
