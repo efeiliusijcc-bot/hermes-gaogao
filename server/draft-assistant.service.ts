@@ -669,57 +669,88 @@ export class DraftAssistantService implements OnModuleDestroy {
   private normalizeAnalysis(value: unknown): DraftAnalysisJson {
     const raw = this.objectValue(value);
     return {
-      oneSentenceSummary: this.text(raw.oneSentenceSummary, 2000),
-      basicSituation: this.text(raw.basicSituation, 8000),
+      oneSentenceSummary: this.text(raw.oneSentenceSummary || raw.summary || raw.eventSummary, 2000),
+      basicSituation: this.text(raw.basicSituation || raw.situation || raw.eventOverview, 8000),
       background: this.text(raw.background, 8000),
-      timeline: this.arrayValue(raw.timeline),
-      keyActors: this.arrayValue(raw.keyActors),
-      mainFacts: this.arrayValue(raw.mainFacts),
+      timeline: this.analysisItems(raw.timeline, raw.timeAndPlace, raw.timelineSummary),
+      keyActors: this.analysisItems(raw.keyActors, raw.coreActors, raw.actors, raw.mainActors),
+      mainFacts: this.analysisItems(raw.mainFacts, raw.keyFacts, raw.facts, raw.basicFacts),
       attitudes: this.arrayValue(raw.attitudes).map((item) => this.normalizeAttitude(item)).filter((item) => item.actor && item.attitudeSummary),
-      riskSummary: raw.riskSummary ?? raw.risks ?? raw.riskToUs ?? null,
-      riskToUs: this.arrayValue(raw.riskToUs),
+      riskSummary: raw.riskSummary ?? raw.risks ?? raw.riskToUs ?? raw.risksToChina ?? raw.chinaRisks ?? null,
+      riskToUs: this.analysisItems(raw.riskToUs, raw.risksToChina, raw.chinaRisks),
       importanceJudgement: this.text(raw.importanceJudgement, 4000),
       uncertainties: this.arrayValue(raw.uncertainties),
       suggestedAngles: this.arrayValue(raw.suggestedAngles),
     };
   }
 
+  private analysisItems(...values: unknown[]): unknown[] {
+    for (const value of values) {
+      if (Array.isArray(value) && value.length) return value;
+      if (value && typeof value === 'object') return [value];
+      const text = this.text(value, 8000);
+      if (text) return [text];
+    }
+    return [];
+  }
+
   private ensureMinimumAnalysis(
     analysis: DraftAnalysisJson,
     input: { title: string; materials: string; category: string; region: string; sources: DraftSourceResponse[] },
   ): DraftAnalysisJson {
-    const hasSubstance = Boolean(
-      analysis.oneSentenceSummary
-      || analysis.basicSituation
-      || analysis.mainFacts.length
-      || analysis.timeline.length
-      || analysis.uncertainties.length,
-    );
-    if (hasSubstance) return analysis;
-
     const contextBits = [
       input.category ? `类别：${input.category}` : '',
       input.region ? `地区：${input.region}` : '',
       input.materials ? `用户补充材料：${input.materials.slice(0, 500)}` : '',
       input.sources.length ? `已召回 ${input.sources.length} 条数据库信源` : '暂未召回到可直接支撑的数据库信源',
     ].filter(Boolean);
+    const riskSummary = this.hasRiskContent(analysis.riskSummary) || analysis.riskToUs.length
+      ? analysis.riskSummary
+      : {
+          ...this.objectValue(analysis.riskSummary),
+          summary: '当前材料不足以形成明确涉我风险结论，地缘政治、安全、经贸及舆情外溢影响均待研判。',
+          pendingVerifications: ['事件进展、相关主体正式表态及其对我国利益的实际影响待核实。'],
+          sourceStatus: 'unverified',
+        };
 
     return {
       ...analysis,
-      oneSentenceSummary: `围绕“${input.title}”的事件需要进一步核实信源后再形成正式判断。`,
-      basicSituation: [`用户关注事件：${input.title}`, ...contextBits].join('\n'),
-      mainFacts: [
-        `事件标题显示的核心议题为“${input.title}”，当前仍需补充权威信源确认事实细节。`,
-      ],
-      uncertainties: [
-        '事件发生时间、政策原文或权威出处仍需核实。',
-        '相关主体表态、执行范围和影响对象仍需进一步确认。',
-      ],
-      suggestedAngles: [
-        '优先核实政策原文、监管机构公告和主流媒体报道。',
-        '关注对平台治理、未成年人保护和言论/隐私权争议的影响。',
-      ],
+      oneSentenceSummary: analysis.oneSentenceSummary || `围绕“${input.title}”的事件需要进一步核实信源后再形成正式判断。`,
+      basicSituation: analysis.basicSituation || [`用户关注事件：${input.title}`, ...contextBits].join('\n'),
+      keyActors: analysis.keyActors.length
+        ? analysis.keyActors
+        : ['当前材料未明确列出可核实的核心主体，相关国家、机构及当事方身份待结合权威信源确认。'],
+      timeline: analysis.timeline.length
+        ? analysis.timeline
+        : ['事件发生时间、关键节点及具体地点尚待权威信源核实。'],
+      mainFacts: analysis.mainFacts.length
+        ? analysis.mainFacts
+        : [`当前仅确认用户关注主题为“${input.title}”，具体事件进展、政策安排及影响仍待核实。`],
+      riskSummary,
+      uncertainties: analysis.uncertainties.length
+        ? analysis.uncertainties
+        : [
+            '事件发生时间、政策原文或权威出处仍需核实。',
+            '相关主体表态、执行范围和影响对象仍需进一步确认。',
+          ],
+      suggestedAngles: analysis.suggestedAngles.length
+        ? analysis.suggestedAngles
+        : [
+            '优先核实政策原文、相关机构公告和主流媒体报道。',
+            '持续关注事件进展及其安全、经贸和舆情外溢影响。',
+          ],
     };
+  }
+
+  private hasRiskContent(value: unknown): boolean {
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'string') return Boolean(value.trim());
+    const raw = this.objectValue(value);
+    return Boolean(
+      this.text(raw.summary || raw.title || raw.description, 4000)
+      || this.arrayValue(raw.risks).length
+      || this.arrayValue(raw.pendingVerifications).length,
+    );
   }
 
   private normalizeAttitude(value: unknown): DraftAttitude {

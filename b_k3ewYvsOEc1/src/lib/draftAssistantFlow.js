@@ -23,6 +23,23 @@ function readableValue(value) {
   if (Array.isArray(value)) return value.map(readableValue).filter(Boolean).join('\n')
   if (typeof value !== 'object') return String(value).trim()
 
+  if ('risks' in value || 'pendingVerifications' in value) {
+    return [
+      readableValue(value.summary),
+      readableValue(value.risks),
+      readableValue(value.pendingVerifications),
+    ].filter(Boolean).join('\n')
+  }
+
+  if ('riskType' in value || 'riskLevel' in value) {
+    return [
+      readableValue(value.title || value.riskType),
+      readableValue(value.description),
+      readableValue(value.basis),
+      readableValue(value.uncertainty),
+    ].filter(Boolean).join('；')
+  }
+
   const preferred = [
     value.summary,
     value.content,
