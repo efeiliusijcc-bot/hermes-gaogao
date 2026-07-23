@@ -21,4 +21,5 @@ export interface JwtAuthPayload {
   modules?: string[];
   permissions?: string[];
   typ?: 'access' | 'refresh';
+  ver?: number;
 }

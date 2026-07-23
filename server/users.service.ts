@@ -4,17 +4,6 @@ import type { AuthUser, UserRole } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
 import { modulesFromPermissions, SYSTEM_ROLE_PERMISSIONS } from './permission-modules.js';
 
-interface UserRow {
-  id: string;
-  username: string;
-  display_name: string;
-  email: string | null;
-  role: string;
-  is_active: boolean;
-  created_at: Date | string;
-  updated_at: Date | string;
-}
-
 interface RoleRow {
   id: string;
   name: string;
@@ -207,7 +196,8 @@ export class UsersService implements OnModuleDestroy {
     const pool = await this.getPool();
     const result = await pool.query(
       `UPDATE users
-          SET password_hash = $1
+          SET password_hash = $1,
+              token_version = token_version + 1
         WHERE id = $2
         RETURNING id, username, display_name, email, role, is_active, created_at, updated_at`,
       [passwordHash, userId],

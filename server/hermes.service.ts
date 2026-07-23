@@ -522,9 +522,6 @@ export class HermesService {
   }
 
   private runHermesRemoteCli(skill: string, prompt: string): Promise<string> {
-    const keyPath = HERMES_REMOTE_SSH_KEY.startsWith('~')
-      ? path.join(os.homedir(), HERMES_REMOTE_SSH_KEY.slice(1))
-      : HERMES_REMOTE_SSH_KEY;
     const promptB64 = Buffer.from(prompt, 'utf-8').toString('base64');
     const remoteScript = [
       'import base64, os, subprocess, sys',

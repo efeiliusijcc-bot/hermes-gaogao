@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import fs from 'node:fs';
 import { AuthController } from '../server/auth.controller.js';
 import { AuthGuard } from '../server/auth.guard.js';
 import { AuthService } from '../server/auth.service.js';
@@ -32,10 +33,11 @@ async function assertStatus(response: Response, expected: number) {
 }
 
 function decode(token: string) {
-  return jwt.decode(token) as { exp?: number; iat?: number; roles?: string[]; permissions?: string[]; typ?: string };
+  return jwt.decode(token) as { exp?: number; iat?: number; roles?: string[]; permissions?: string[]; typ?: string; ver?: number };
 }
 
 function createAuthPoolStub(passwordHash: string, queries: Query[] = [], active = true) {
+  let tokenVersion = 0;
   return {
     query: async (text: string, params?: unknown[]) => {
       queries.push({ text, params });
@@ -48,12 +50,14 @@ function createAuthPoolStub(passwordHash: string, queries: Query[] = [], active 
           email: null,
           role: 'admin',
           is_active: active,
+          token_version: tokenVersion,
         }] };
       }
       if (text.includes('FROM user_roles')) {
         return { rows: [{ role_name: 'admin', resource: 'user', action: 'manage' }] };
       }
       if (text.includes('UPDATE users') && text.includes('password_hash')) {
+        tokenVersion += 1;
         return { rows: [{
           id: 'admin-1',
           username: 'admin',
@@ -62,7 +66,12 @@ function createAuthPoolStub(passwordHash: string, queries: Query[] = [], active 
           email: null,
           role: 'admin',
           is_active: true,
+          token_version: tokenVersion,
         }] };
+      }
+      if (text.includes('UPDATE users') && text.includes('token_version')) {
+        if (params?.[1] === tokenVersion) tokenVersion += 1;
+        return { rows: [] };
       }
       return { rows: [] };
     },
@@ -105,6 +114,7 @@ async function testAuthTokenAndRefreshCookie() {
     assert.ok(accessPayload.exp && accessPayload.iat);
     assert.ok(accessPayload.exp - accessPayload.iat <= 15 * 60 + 2);
     assert.ok(accessPayload.exp - accessPayload.iat >= 15 * 60 - 2);
+    assert.equal(accessPayload.ver, 0);
     const cookie = loginResponse.headers.get('set-cookie') || '';
     assert.match(cookie, /refresh_token=/);
     assert.match(cookie, /HttpOnly/i);
@@ -120,6 +130,31 @@ async function testAuthTokenAndRefreshCookie() {
   } finally {
     await app.close();
   }
+}
+
+async function testPasswordChangeAndLogoutRevokeIssuedTokens() {
+  process.env.JWT_SECRET = 'test-secret-for-auth-security';
+  const passwordHash = await bcrypt.hash('password123', 4);
+
+  const passwordPool = createAuthPoolStub(passwordHash);
+  const passwordService = new AuthService() as AuthService & { getPool: () => Promise<typeof passwordPool> };
+  passwordService.getPool = async () => passwordPool;
+  const beforePasswordChange = await passwordService.login('admin', 'password123');
+  await passwordService.changePassword(authUser(), 'password123', 'newpass123');
+  await assert.rejects(() => passwordService.verifyAccessToken(beforePasswordChange.access_token), (error: unknown) => (
+    Boolean(error && typeof error === 'object' && 'status' in error && error.status === 401)
+  ));
+  await assert.rejects(() => passwordService.refreshAccessToken(beforePasswordChange.refresh_token), /Invalid or expired refresh token/);
+
+  const logoutPool = createAuthPoolStub(passwordHash);
+  const logoutService = new AuthService() as AuthService & { getPool: () => Promise<typeof logoutPool> };
+  logoutService.getPool = async () => logoutPool;
+  const beforeLogout = await logoutService.login('admin', 'password123');
+  await logoutService.revokeRefreshToken(beforeLogout.refresh_token);
+  await assert.rejects(() => logoutService.verifyAccessToken(beforeLogout.access_token), (error: unknown) => (
+    Boolean(error && typeof error === 'object' && 'status' in error && error.status === 401)
+  ));
+  await assert.rejects(() => logoutService.refreshAccessToken(beforeLogout.refresh_token), /Invalid or expired refresh token/);
 }
 
 async function testRefreshRejectsInactiveUser() {
@@ -149,6 +184,12 @@ async function testPasswordStrengthAndChangePassword() {
   users.getPool = async () => createAuthPoolStub(passwordHash);
   await assert.rejects(() => users.createUser({ username: 'new', password: 'short', role: 'viewer' }), /at least 8/);
   await assert.rejects(() => users.resetPassword('admin-1', 'short'), /at least 8/);
+}
+
+function testAuthMigrationRevokesTokensOnBootstrapRotation() {
+  const migration = fs.readFileSync(new URL('../scripts/init-auth-users.sql', import.meta.url), 'utf8');
+  assert.match(migration, /token_version INTEGER NOT NULL DEFAULT 0/);
+  assert.match(migration, /WHEN :'rotate_bootstrap_admin_password'::boolean THEN users\.token_version \+ 1/);
 }
 
 async function testLoginFailureLockoutAndAuditSanitization() {
@@ -181,5 +222,7 @@ async function testLoginFailureLockoutAndAuditSanitization() {
 await testAuthTokenAndRefreshCookie();
 await testRefreshRejectsInactiveUser();
 await testPasswordStrengthAndChangePassword();
+testAuthMigrationRevokesTokensOnBootstrapRotation();
+await testPasswordChangeAndLogoutRevokeIssuedTokens();
 await testLoginFailureLockoutAndAuditSanitization();
 console.log('auth security tests passed');

@@ -77,6 +77,7 @@ write_env() {
 }
 
 write_env PORT "1555"
+write_env NODE_ENV "production"
 write_env HERMES_API_LEGACY_DATA_MOUNT "$HERMES_API_LEGACY_DATA_MOUNT"
 write_env HERMES_STATE_DIR "${HERMES_STATE_DIR:-$DEFAULT_HERMES_STATE_DIR}"
 write_env HERMES_RESEARCH_KEYS_DIR "${HERMES_RESEARCH_KEYS_DIR:-$DEFAULT_HERMES_RESEARCH_KEYS_DIR}"
@@ -107,6 +108,9 @@ write_env DAILY_AWARENESS_DATA_RETRY_MINUTES "${DAILY_AWARENESS_DATA_RETRY_MINUT
 write_env DAILY_AWARENESS_DATA_WAIT_UNTIL "${DAILY_AWARENESS_DATA_WAIT_UNTIL:-08:00}"
 write_env DAILY_AWARENESS_SCHEDULER_POLL_MS "${DAILY_AWARENESS_SCHEDULER_POLL_MS:-60000}"
 write_env FRONTEND_ORIGINS "${FRONTEND_ORIGINS:-https://hermes-gaogao.vercel.app,http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000}"
+write_env TRUST_PROXY_HOPS "${TRUST_PROXY_HOPS:-0}"
+write_env API_RATE_LIMIT_WINDOW_MS "${API_RATE_LIMIT_WINDOW_MS:-60000}"
+write_env API_RATE_LIMIT_MAX "${API_RATE_LIMIT_MAX:-300}"
 write_env HERMES_MODEL "${HERMES_MODEL:-hermes-agent}"
 write_env HERMES_QA_AGENT_ID "${HERMES_QA_AGENT_ID:-qa-agent}"
 write_env HERMES_QA_MODEL "${HERMES_QA_MODEL:-openclaw/qa-agent}"
@@ -144,6 +148,7 @@ echo "=== 1. Upload backend source ==="
 ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "
   rm -rf '$SRC_DIR'
   mkdir -p '$SRC_DIR/server/artifact-storage' '$SRC_DIR/server/reports' '$SRC_DIR/server/migrations' '$SRC_DIR/src/types' '$SRC_DIR/scripts' /opt/hermes/workspace/report-agent/agents /opt/hermes/workspace/report-agent/skills
+  rm -f '$SRC_DIR/server/crawler.controller.ts'
   rm -f /opt/hermes/workspace/report-agent/agents/source-collection-agent.md
   rm -rf /opt/hermes/workspace/report-agent/skills/controlled-web-collector
 "
@@ -208,16 +213,16 @@ docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 \
   -v bootstrap_admin_password_hash="\$BOOTSTRAP_ADMIN_PASSWORD_HASH" \
   -v rotate_bootstrap_admin_password="\$ROTATE_BOOTSTRAP_ADMIN_PASSWORD" \
   "\$AUTH_DATABASE_URL" < scripts/init-auth-users.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-chat-sessions.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-draft-assistant.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-plans.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-chat-sessions.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-draft-assistant.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-report-plans.sql
 docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-daily-awareness.sql
 docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-rbac.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-audit-logs.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-user-preferences.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-edits.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-crawler.sql
-docker exec -i todo_postgres psql "\$AUTH_DATABASE_URL" < scripts/init-report-quality-reviews.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-audit-logs.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-user-preferences.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-report-edits.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-crawler.sql
+docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$AUTH_DATABASE_URL" < scripts/init-report-quality-reviews.sql
 docker exec -i todo_postgres psql -v ON_ERROR_STOP=1 "\$PGVECTOR_DATABASE_URL" < server/migrations/20260714_hybrid_retrieval.sql
 
 echo "--- Ensure shared Docker network ---"

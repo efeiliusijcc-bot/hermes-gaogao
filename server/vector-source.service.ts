@@ -184,14 +184,6 @@ const INDEX_TABLE = process.env.PGVECTOR_INDEX_TABLE || 'news_vector_chunks';
 const INDEX_INTERVAL_MS = Math.max(60_000, Number(process.env.PGVECTOR_INDEX_INTERVAL_MS || 600_000));
 const INDEX_BATCH_SIZE = Math.max(1, Math.min(500, Number(process.env.PGVECTOR_INDEX_BATCH_SIZE || 100)));
 
-function defaultEmbeddingDimensions(model: string): number {
-  return isQwen3EmbeddingModel(model) ? 1024 : 1536;
-}
-
-function isQwen3EmbeddingModel(model: string): boolean {
-  return model.toLowerCase().includes('qwen3-embedding-0.6b');
-}
-
 @Injectable()
 export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
   private pool: PgPool | null = null;
@@ -513,7 +505,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
         returnedMaterialCount: materials.length,
         usedFallback,
         fallbackReason,
-        businessDateFallback: !Boolean(columns.businessDate),
+        businessDateFallback: !columns.businessDate,
       },
     };
   }

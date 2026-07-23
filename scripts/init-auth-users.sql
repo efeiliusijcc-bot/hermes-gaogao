@@ -8,10 +8,13 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(255),
   role VARCHAR(32) NOT NULL DEFAULT 'viewer',
   is_active BOOLEAN NOT NULL DEFAULT true,
+  token_version INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT users_role_check CHECK (role IN ('admin', 'operator', 'viewer'))
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE users ALTER COLUMN role SET DEFAULT 'viewer';
 
@@ -60,6 +63,10 @@ SET
   password_hash = CASE
     WHEN :'rotate_bootstrap_admin_password'::boolean THEN EXCLUDED.password_hash
     ELSE users.password_hash
+  END,
+  token_version = CASE
+    WHEN :'rotate_bootstrap_admin_password'::boolean THEN users.token_version + 1
+    ELSE users.token_version
   END,
   display_name = EXCLUDED.display_name,
   role = EXCLUDED.role,

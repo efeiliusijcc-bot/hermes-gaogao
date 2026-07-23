@@ -114,7 +114,6 @@ async function validateScenario(session: Session, scenario: Scenario) {
   const allBody = typeof all.body === 'string' ? {} : all.body;
   const webBody = typeof web.body === 'string' ? {} : web.body;
   const refsBody = typeof refs.body === 'string' ? {} : refs.body;
-  const candidatesBody = typeof candidates.body === 'string' ? {} : candidates.body;
   const acceptedUrls = new Set([...urls(databaseBody.sources), ...urls(webBody.items)]);
   const refItems = Array.isArray(refsBody.items) ? refsBody.items as Json[] : [];
   const invalidReferences = refItems.filter((item) => String(item.url || '') && !acceptedUrls.has(String(item.url)));

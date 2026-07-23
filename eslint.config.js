@@ -15,5 +15,15 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.node,
     },
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        ignoreRestSiblings: true,
+      }],
+      // These expressions intentionally match NUL bytes so external text can be sanitized.
+      'no-control-regex': 'off',
+    },
   },
 ])

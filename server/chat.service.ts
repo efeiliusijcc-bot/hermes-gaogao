@@ -125,7 +125,7 @@ export class ChatService {
     if (HERMES_QA_MODE === 'direct_pg') {
       try {
         return await this.streamQaWithPgContext(messages, onEvent, sessionId, user);
-      } catch (error) {
+      } catch {
         onEvent({
           type: 'status',
           status: 'fallback',

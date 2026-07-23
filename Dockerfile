@@ -19,6 +19,8 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
+ENV NODE_ENV=production
+
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 
 COPY package.json pnpm-lock.yaml ./

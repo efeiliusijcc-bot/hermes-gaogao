@@ -33,6 +33,7 @@ export class AuthController {
 
   @Post('logout')
   async logout(@CurrentUser() user: AuthUser | undefined, @Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    await this.auth.revokeRefreshToken(this.readCookie(request, 'refresh_token'));
     this.clearRefreshCookie(response);
     await this.audit?.log({
       actor: user || null,
@@ -70,9 +71,6 @@ export class AuthController {
   }
 
   private requestIp(request: Request): string {
-    const forwarded = request.headers['x-forwarded-for'];
-    if (Array.isArray(forwarded)) return String(forwarded[0] || '').split(',')[0].trim();
-    if (forwarded) return String(forwarded).split(',')[0].trim();
     return request.ip || request.socket?.remoteAddress || '';
   }
 

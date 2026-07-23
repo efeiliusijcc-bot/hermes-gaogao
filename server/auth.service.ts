@@ -14,6 +14,7 @@ interface UserRow {
   email: string | null;
   role: string;
   is_active: boolean;
+  token_version: number;
 }
 
 interface UserAccess {
@@ -34,6 +35,7 @@ const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL = '7d';
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MS = 10 * 60 * 1000;
+const MAX_LOGIN_FAILURE_ENTRIES = 10_000;
 const loginFailures = new Map<string, { count: number; lockedUntil: number }>();
 
 function jwtSecret(): string {
@@ -93,8 +95,8 @@ export class AuthService implements OnModuleDestroy {
       detail: { username: normalizedUsername },
     });
     return {
-      access_token: this.signAccessToken(user),
-      refresh_token: this.signRefreshToken(user),
+      access_token: this.signAccessToken(user, row.token_version),
+      refresh_token: this.signRefreshToken(user, row.token_version),
       user,
     };
   }
@@ -106,12 +108,12 @@ export class AuthService implements OnModuleDestroy {
     } catch {
       throw new UnauthorizedException({ error: 'Invalid or expired token' });
     }
-    if (!decoded?.sub || !decoded.username || !this.isUserRole(decoded.role) || decoded.typ === 'refresh') {
+    if (!decoded?.sub || !decoded.username || !this.isUserRole(decoded.role) || decoded.typ !== 'access') {
       throw new UnauthorizedException({ error: 'Invalid or expired token' });
     }
 
     const row = await this.findUserById(decoded.sub);
-    if (!row || !row.is_active) {
+    if (!row || !row.is_active || decoded.ver !== row.token_version) {
       throw new UnauthorizedException({ error: 'Invalid or expired token' });
     }
     return this.toAuthUser(row);
@@ -129,13 +131,13 @@ export class AuthService implements OnModuleDestroy {
     }
 
     const row = await this.findUserById(decoded.sub);
-    if (!row || !row.is_active) {
+    if (!row || !row.is_active || decoded.ver !== row.token_version) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
     const user = await this.toAuthUser(row);
     return {
-      access_token: this.signAccessToken(user),
-      refresh_token: this.signRefreshToken(user),
+      access_token: this.signAccessToken(user, row.token_version),
+      refresh_token: this.signRefreshToken(user, row.token_version),
       user,
     };
   }
@@ -149,7 +151,10 @@ export class AuthService implements OnModuleDestroy {
     if (!oldPasswordOk) throw new UnauthorizedException('old password is incorrect');
     const passwordHash = await bcrypt.hash(newPassword, 12);
     const pool = await this.getPool();
-    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, user.id]);
+    await pool.query(
+      'UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2',
+      [passwordHash, user.id],
+    );
     await this.audit?.log({
       actor: user,
       action: 'password_change',
@@ -162,6 +167,25 @@ export class AuthService implements OnModuleDestroy {
     return { success: true };
   }
 
+  async revokeRefreshToken(refreshToken: string): Promise<void> {
+    if (!refreshToken) return;
+    let decoded: JwtAuthPayload;
+    try {
+      decoded = jwt.verify(refreshToken, jwtSecret()) as JwtAuthPayload;
+    } catch {
+      return;
+    }
+    if (!decoded?.sub || decoded.typ !== 'refresh' || !Number.isInteger(decoded.ver)) return;
+    const pool = await this.getPool();
+    await pool.query(
+      `UPDATE users
+          SET token_version = token_version + 1
+        WHERE id = $1
+          AND token_version = $2`,
+      [decoded.sub, decoded.ver],
+    );
+  }
+
   clearLoginFailuresForTest(username: string, ip?: string): void {
     this.clearLoginFailures(username, ip);
   }
@@ -169,7 +193,7 @@ export class AuthService implements OnModuleDestroy {
   private async findUserByUsername(username: string): Promise<UserRow | null> {
     const pool = await this.getPool();
     const result = await pool.query(
-      `SELECT id, username, password_hash, display_name, email, role, is_active
+      `SELECT id, username, password_hash, display_name, email, role, is_active, token_version
          FROM users
         WHERE username = $1
         LIMIT 1`,
@@ -181,7 +205,7 @@ export class AuthService implements OnModuleDestroy {
   private async findUserById(id: string): Promise<UserRow | null> {
     const pool = await this.getPool();
     const result = await pool.query(
-      `SELECT id, username, password_hash, display_name, email, role, is_active
+      `SELECT id, username, password_hash, display_name, email, role, is_active, token_version
          FROM users
         WHERE id = $1
         LIMIT 1`,
@@ -190,7 +214,7 @@ export class AuthService implements OnModuleDestroy {
     return this.toUserRow(result.rows[0]);
   }
 
-  private signAccessToken(user: AuthUser): string {
+  private signAccessToken(user: AuthUser, tokenVersion: number): string {
     const payload: JwtAuthPayload = {
       sub: user.id,
       username: user.username,
@@ -200,17 +224,19 @@ export class AuthService implements OnModuleDestroy {
       modules: user.modules,
       permissions: user.permissions,
       typ: 'access',
+      ver: tokenVersion,
     };
     const options: SignOptions = { expiresIn: ACCESS_TOKEN_TTL };
     return jwt.sign(payload, jwtSecret(), options);
   }
 
-  private signRefreshToken(user: AuthUser): string {
+  private signRefreshToken(user: AuthUser, tokenVersion: number): string {
     const payload: JwtAuthPayload = {
       sub: user.id,
       username: user.username,
       role: user.role,
       typ: 'refresh',
+      ver: tokenVersion,
     };
     const options: SignOptions = { expiresIn: REFRESH_TOKEN_TTL };
     return jwt.sign(payload, jwtSecret(), options);
@@ -305,6 +331,7 @@ export class AuthService implements OnModuleDestroy {
       email: row.email ? String(row.email) : null,
       role: String(row.role || 'viewer'),
       is_active: row.is_active === true || String(row.is_active).toLowerCase() === 'true',
+      token_version: Math.max(0, Math.floor(Number(row.token_version) || 0)),
     };
   }
 
@@ -333,9 +360,11 @@ export class AuthService implements OnModuleDestroy {
 
   private async recordLoginFailure(username: string, context: AuthContext, reason: string, row?: UserRow): Promise<void> {
     const now = Date.now();
+    this.pruneLoginFailures(now);
     for (const key of this.loginFailureKeys(username, context.ip)) {
       const current = loginFailures.get(key);
       const count = (current?.lockedUntil && current.lockedUntil > now ? current.count : current?.count || 0) + 1;
+      loginFailures.delete(key);
       loginFailures.set(key, {
         count,
         lockedUntil: count >= LOGIN_FAILURE_LIMIT ? now + LOGIN_LOCK_MS : 0,
@@ -361,6 +390,19 @@ export class AuthService implements OnModuleDestroy {
     const keys = [`username:${String(username || '').trim().toLowerCase()}`];
     if (ip) keys.push(`ip:${ip}`);
     return keys;
+  }
+
+  private pruneLoginFailures(now: number): void {
+    if (loginFailures.size < MAX_LOGIN_FAILURE_ENTRIES) return;
+    for (const [key, state] of loginFailures) {
+      if (!state.lockedUntil || state.lockedUntil <= now) loginFailures.delete(key);
+      if (loginFailures.size < MAX_LOGIN_FAILURE_ENTRIES * 0.9) return;
+    }
+    while (loginFailures.size >= MAX_LOGIN_FAILURE_ENTRIES) {
+      const oldestKey = loginFailures.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      loginFailures.delete(oldestKey);
+    }
   }
 
   private async getPool(): Promise<PgPool> {

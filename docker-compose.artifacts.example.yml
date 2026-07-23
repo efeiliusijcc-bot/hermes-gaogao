@@ -6,6 +6,9 @@ services:
     environment:
       NODE_ENV: production
       PORT: 1555
+      TRUST_PROXY_HOPS: 0
+      API_RATE_LIMIT_WINDOW_MS: 60000
+      API_RATE_LIMIT_MAX: 300
       HERMES_RUN_MODE: runs
       HERMES_BASE_URL: http://hermes:8642/v1
       HERMES_HEALTH_URL: http://hermes:8642/health

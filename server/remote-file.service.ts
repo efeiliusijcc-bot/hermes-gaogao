@@ -126,7 +126,7 @@ export class RemoteFileService {
       }));
     }
     const output = await execSsh(
-      `ls -1p --time-style=full-iso '${dirPath}' 2>/dev/null | while IFS= read -r line; do name=\${line%%[/ ]*}; if [ "\${line: -1}" = "/" ]; then echo "D \$name"; else echo "F \$name"; fi; done`,
+      `ls -1p --time-style=full-iso '${dirPath}' 2>/dev/null | while IFS= read -r line; do name=\${line%%[/ ]*}; if [ "\${line: -1}" = "/" ]; then echo "D $name"; else echo "F $name"; fi; done`,
     );
     return output
       .trim()

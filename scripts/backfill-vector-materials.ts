@@ -47,7 +47,6 @@ interface MysqlRow {
 const require = createRequire(import.meta.url);
 const execFile = promisify(execFileCallback);
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
-const QWEN3_EMBEDDING_MODEL = 'Qwen3-Embedding-0.6B-Q8';
 
 async function main() {
   const args = await loadArgs();

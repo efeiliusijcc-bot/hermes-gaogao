@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import type { AuthUser } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
 import type {

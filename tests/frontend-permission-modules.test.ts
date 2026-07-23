@@ -23,9 +23,7 @@ sameMembers(modulesFromPermissions([
   'preference:update',
   'chat:execute',
   'chat:read',
-  'daily_awareness:create',
-  'daily_awareness:read',
-  'daily_awareness:import',
+  'daily-awareness:view',
 ]), ['report', 'qa', 'daily']);
 sameMembers(modulesFromPermissions(['crawler:delete']), []);
 sameMembers(deriveUserModules({ modules: ['report', 'draft'], permissions: ['chat:read'] }), ['report', 'draft']);

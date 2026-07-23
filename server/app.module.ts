@@ -85,6 +85,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     InternalEventKeyGuard,
     UsersService,
     UserPreferencesService,
+    ResearchKeysService,
     RolesService,
     HermesService,
     HermesGatewayDeviceService,
@@ -108,6 +109,7 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     DailyAwarenessWorkerService,
     DeepReportSourceCollectionService,
     DraftAssistantService,
+    VectorSourceService,
   ],
 })
 export class AppModule {}

@@ -6,6 +6,7 @@ const harnessInstallScript = await readFile(new URL('../scripts/install-hermes-h
 const envExample = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
 const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
 const authBootstrap = await readFile(new URL('../scripts/init-auth-users.sql', import.meta.url), 'utf8');
+const dockerfile = await readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
 
 const localDeployKey = '~/.ssh/hermes_bwg_us_204_ed25519';
 assert.ok(deployScript.includes(`SSH_KEY:=${localDeployKey}`));
@@ -18,6 +19,9 @@ assert.doesNotMatch(deployScript, /\$\{[^}]+,,\}/, 'deploy script must remain co
 assert.doesNotMatch(deployScript, /"password"\s*:\s*"admin"/);
 assert.doesNotMatch(authBootstrap, /\$2[aby]\$\d{2}\$/);
 assert.match(authBootstrap, /bootstrap_admin_password_hash/);
+assert.match(deployScript, /write_env NODE_ENV "production"/);
+assert.match(dockerfile, /FROM node:22-bookworm-slim[\s\S]*ENV NODE_ENV=production/);
+assert.doesNotMatch(dockerfile.split('# --- production ---')[0], /ENV NODE_ENV=production/);
 
 assert.match(deployScript, /releases\/\$RELEASE_ID/);
 assert.match(deployScript, /rm -rf ['"]?\$SRC_DIR/);
