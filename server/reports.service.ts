@@ -939,8 +939,11 @@ export class ReportsService implements OnModuleDestroy {
     ) => {
       evidenceByStage.set(key, [...(evidenceByStage.get(key) || []), evidence]);
       const current = statusByStage.get(key);
-      if (current === 'failed') return;
-      if (status === 'failed' || current !== 'done') statusByStage.set(key, status);
+      if (status === 'failed' || status === 'done') {
+        statusByStage.set(key, status);
+        return;
+      }
+      if (current !== 'done') statusByStage.set(key, status);
     };
 
     const now = new Date().toISOString();
@@ -972,6 +975,7 @@ export class ReportsService implements OnModuleDestroy {
           message: stage.key === 'report' ? '最终报告已确认生成。' : '任务已成功完成。',
           time: job.updatedAt || now,
         });
+        statusByStage.set(stage.key, 'done');
       }
     }
 
@@ -1154,15 +1158,15 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private normalizeProgressStageOrder(stages: ReportProgressStage[]): ReportProgressStage[] {
-    const failedIndex = stages.findIndex((stage) => stage.status === 'failed');
-    const observableLimit = failedIndex >= 0
-      ? failedIndex
-      : stages.reduce((last, stage, index) => stage.status !== 'not_started' ? index : last, -1);
+    const observableLimit = stages.reduce(
+      (last, stage, index) => stage.status !== 'not_started' ? index : last,
+      -1,
+    );
     if (observableLimit <= 0) return stages;
 
     const now = new Date().toISOString();
     return stages.map((stage, index) => {
-      if (index >= observableLimit || stage.status === 'failed' || stage.status === 'done') return stage;
+      if (index >= observableLimit || stage.status === 'done') return stage;
       return {
         ...stage,
         status: 'done',
@@ -1588,7 +1592,7 @@ export class ReportsService implements OnModuleDestroy {
           maxRows,
           lookbackDays,
         );
-      } catch (error) {
+      } catch {
         this.pushEvent(job, {
           type: 'stage',
           stage: 'database_sources',
@@ -2641,7 +2645,6 @@ export class ReportsService implements OnModuleDestroy {
   ): Array<Record<string, unknown>> {
     const payload = this.plainObject(job.payload);
     const topic = String(payload.topic || payload.title || payload.target_country || context.topic || '').trim();
-    const lower = markdown.toLowerCase();
     const hasTopic = !topic || markdown.includes(topic) || topic.split(/\s+/).some((part) => part && markdown.includes(part));
     const hasMainContent = /基本情况|主要内容|事件概述|背景/.test(markdown) && /发生|推动|宣布|涉及|影响|进展/.test(markdown);
     const hasAttitudeTrace = /各方态度|立场|表态|回应|认为|表示/.test(markdown) && /年|月|日|媒体|公告|声明|报道|发布/.test(markdown);
@@ -2776,7 +2779,7 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private countChineseReportCharacters(markdown: string): number {
-    return markdown.replace(/```[\s\S]*?```/g, '').replace(/[#*_>`\-\s\[\]\(\)0-9a-zA-Z.,;:!?，。；：！？、（）]/g, '').length;
+    return markdown.replace(/```[\s\S]*?```/g, '').replace(/[#*_>`\s[\]()0-9a-zA-Z.,;:!?，。；：！？、（）-]/g, '').length;
   }
 
   private clampScore(value: number): number {
@@ -5051,7 +5054,7 @@ export class ReportsService implements OnModuleDestroy {
     return null;
   }
 
-  private isToolSearchRawItem(item: unknown, evidenceKind?: ReportEvidenceKind): boolean {
+  private isToolSearchRawItem(item: unknown, _evidenceKind?: ReportEvidenceKind): boolean {
     if (!item || typeof item !== 'object') return false;
     const source = item as Record<string, unknown>;
     const haystack = [
