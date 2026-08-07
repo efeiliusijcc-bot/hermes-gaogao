@@ -149,24 +149,11 @@ function handleHistoryAction() {
   <aside class="sidebar-shell w-[312px] shrink-0 flex flex-col p-4 gap-3">
     <section class="panel status-card compact-status-card p-4">
       <div class="flex items-center justify-between mb-3">
-        <div>
-          <h2 class="font-mono text-sm neon-text tracking-widest">AI引擎状态</h2>
-          <div class="mt-1 font-mono text-[10px] text-[#374151]">ENGINE STATUS</div>
-        </div>
-        <button type="button" class="sci-btn text-[10px] px-3 py-1.5" @click.stop="emit('refresh-health')">检测</button>
-      </div>
-
-      <div class="flex items-center gap-3 mb-3">
-        <div
-          class="status-orb w-10 h-10 rounded-xl border flex items-center justify-center text-lg"
-          :class="healthOk ? 'border-neon-green/45 text-neon-green shadow-[0_0_22px_rgba(0,255,136,0.16)]' : !hasHealth ? 'border-cyber-yellow/35 text-cyber-yellow shadow-[0_0_18px_rgba(252,238,10,0.12)]' : 'border-red-300/45 text-red-300 shadow-[0_0_18px_rgba(252,90,122,0.14)]'"
-        >
-          ✓
-        </div>
-        <div class="min-w-0">
-          <div class="font-mono text-[22px] leading-none font-bold" :class="healthOk ? 'text-neon-green' : !hasHealth ? 'text-cyber-yellow' : 'text-red-300'">{{ engineStatus }}</div>
-          <div class="font-mono text-[10px] text-slate-300/70 mt-1 truncate">{{ engineText }}</div>
-        </div>
+        <h2 class="font-mono text-sm neon-text tracking-widest">AI引擎状态</h2>
+        <span
+          class="w-2 h-2 rounded-full shrink-0"
+          :class="!hasHealth ? 'bg-cyber-yellow shadow-[0_0_6px_rgba(252,238,10,0.5)]' : healthOk ? 'bg-neon-green shadow-[0_0_6px_rgba(0,255,136,0.5)]' : 'bg-red-300 shadow-[0_0_6px_rgba(252,90,122,0.5)]'"
+        ></span>
       </div>
 
       <div class="space-y-1.5 border-t border-neon-cyan/10 pt-3">
