@@ -6171,6 +6171,27 @@ canvas {
   }
 }
 
+@media (max-width: 900px) {
+  .source-data-table {
+    min-width: 0;
+  }
+
+  .source-data-table .source-col-publisher,
+  .source-data-table .source-col-time,
+  .source-publisher-heading,
+  .source-time-heading,
+  .source-publisher-cell,
+  .source-time-cell {
+    display: none;
+  }
+
+  .source-data-table .source-col-index { width: 6%; }
+  .source-data-table .source-col-title { width: 56%; }
+  .source-data-table .source-col-type { width: 14%; }
+  .source-data-table .source-col-score { width: 10%; }
+  .source-data-table .source-col-actions { width: 14%; }
+}
+
 @media (max-width: 720px) {
   .result-sticky-panel {
     top: -20px;

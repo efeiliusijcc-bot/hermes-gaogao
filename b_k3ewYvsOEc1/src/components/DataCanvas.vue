@@ -5448,8 +5448,8 @@ function exportPdf() {
                       <th>序号</th>
                       <th>信源标题</th>
                       <th>来源类型</th>
-                      <th>发布机构</th>
-                      <th>发布时间</th>
+                      <th class="source-publisher-heading">发布机构</th>
+                      <th class="source-time-heading">发布时间</th>
                       <th>相关性</th>
                       <th>操作</th>
                     </tr>
