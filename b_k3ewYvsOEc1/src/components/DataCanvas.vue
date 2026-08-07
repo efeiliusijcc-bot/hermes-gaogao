@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
+import { FileDown, FileText, List, Pencil, Plus, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
@@ -5164,20 +5165,26 @@ function exportPdf() {
 
       <div v-else class="result-shell">
         <div class="result-sticky-panel" @wheel="handleResultTabWheel">
-          <div class="result-toolbar">
-            <nav class="result-tabs" aria-label="报告结果切换">
-              <button
-                v-for="tab in resultTabs"
-                :key="tab.key"
-                class="result-tab"
-                :class="{ active: activeResultTab === tab.key }"
-                type="button"
-                @click="setActiveResultTab(tab.key)"
-              >
-                {{ tab.label }}
-              </button>
-            </nav>
+          <nav class="result-tabs" aria-label="报告结果切换">
+            <button
+              v-for="tab in resultTabs"
+              :key="tab.key"
+              class="result-tab"
+              :class="{ active: activeResultTab === tab.key }"
+              type="button"
+              @click="setActiveResultTab(tab.key)"
+            >
+              {{ tab.label }}
+            </button>
+          </nav>
 
+          <div class="result-toolbar">
+            <div class="result-info-bar">
+              <div v-for="item in resultInfoItems" :key="item[0]" class="result-info-item">
+                <span>{{ item[0] }}</span>
+                <strong>{{ item[1] }}</strong>
+              </div>
+            </div>
             <div class="result-actions">
               <button
                 v-if="job?.jobId && generatedHtml"
@@ -5185,16 +5192,16 @@ function exportPdf() {
                 class="result-action-btn"
                 type="button"
               >
-                <span>✎</span> 局部修改
+                <Pencil :size="15" aria-hidden="true" /> 局部修改
               </button>
               <button @click="exportWord" :disabled="!canExport" class="result-action-btn" type="button">
-                <span>▣</span> 导出 Word
+                <FileText :size="15" aria-hidden="true" /> 导出 Word
               </button>
               <button @click="exportPdf" :disabled="!canExport" class="result-action-btn" type="button">
-                <span>◧</span> 导出 PDF
+                <FileDown :size="15" aria-hidden="true" /> 导出 PDF
               </button>
               <button @click="emit('list')" class="result-action-btn" type="button">
-                <span>☷</span> 报告列表
+                <List :size="15" aria-hidden="true" /> 报告列表
               </button>
               <button
                 v-if="canDeleteReport && job?.jobId"
@@ -5202,23 +5209,16 @@ function exportPdf() {
                 class="result-action-btn result-action-danger"
                 type="button"
               >
-                <span>!</span> 删除编报
+                <Trash2 :size="15" aria-hidden="true" /> 删除编报
               </button>
               <button @click="emit('new-report')" class="result-action-btn result-action-primary" type="button">
-                <span>＋</span> 新开一篇
+                <Plus :size="15" aria-hidden="true" /> 新开一篇
               </button>
-            </div>
-          </div>
-
-          <div v-if="activeResultTab !== 'sources'" class="result-info-bar">
-            <div v-for="item in resultInfoItems" :key="item[0]" class="result-info-item">
-              <span>{{ item[0] }}</span>
-              <strong>{{ item[1] }}</strong>
             </div>
           </div>
         </div>
 
-        <section v-if="activeResultTab === 'report'" class="result-tab-panel">
+        <section v-if="activeResultTab === 'report'" class="result-tab-panel report-result-panel">
           <aside v-if="reportEditOpen" class="report-edit-panel">
             <div class="report-edit-head">
               <div>
@@ -5295,13 +5295,6 @@ function exportPdf() {
 
         <section v-else-if="activeResultTab === 'sources'" class="result-tab-panel">
           <div class="source-search-page">
-            <div class="source-task-strip">
-              <div v-for="item in resultInfoItems" :key="item[0]" class="source-task-strip-item">
-                <span>{{ item[0] }}</span>
-                <strong>{{ item[1] }}</strong>
-              </div>
-            </div>
-
             <div class="source-stat-row">
               <button
                 v-for="card in sourceCardConfigs"
@@ -5746,7 +5739,7 @@ function exportPdf() {
             </div>
           </div>
 
-          <details class="source-technical-details result-technical-details" open>
+          <details class="source-technical-details result-technical-details">
             <summary>查看技术详情</summary>
             <div ref="liveLogListRef" class="source-technical-log" @scroll="handleLogScroll('live', $event)">
               <ReportTechnicalTimeline
