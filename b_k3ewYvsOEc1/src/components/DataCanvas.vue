@@ -4426,26 +4426,7 @@ function exportPdf() {
               </div>
             </div>
 
-            <div class="mt-5 flex items-center justify-between gap-4 report-form-actions">
-              <div class="grid gap-2">
-                <div class="font-mono text-[10px] text-slate-500">先生成编报规划，确认后才会创建正式编报任务</div>
-                <label class="inline-flex items-center gap-2 font-mono text-[11px] text-slate-600">
-                  <input
-                    type="checkbox"
-                    :checked="useMyPreferences"
-                    @change="emit('update:useMyPreferences', $event.target.checked)"
-                  />
-                  使用个人偏好和默认模板
-                </label>
-                <label class="inline-flex items-center gap-2 font-mono text-[11px] text-slate-600">
-                  <input
-                    type="checkbox"
-                    :checked="deepReportEnabled"
-                    @change="emit('update:deepReportEnabled', $event.target.checked)"
-                  />
-                  深度编报
-                </label>
-              </div>
+            <div class="mt-5 flex items-center justify-end gap-4 report-form-actions">
               <button
                 class="generate-btn shrink-0 font-mono text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0"
                 type="button"

@@ -222,7 +222,7 @@ async function testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults(
   )));
 }
 
-async function testFrontendAndDeploymentExposeOnlyTheDeepReportToggle() {
+async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
   const [canvas, app, jobs, draft, deploy, hermes, reports, appModule, skill] = await Promise.all([
     readFile(new URL('b_k3ewYvsOEc1/src/components/DataCanvas.vue', root), 'utf8'),
     readFile(new URL('b_k3ewYvsOEc1/src/App.vue', root), 'utf8'),
@@ -235,10 +235,14 @@ async function testFrontendAndDeploymentExposeOnlyTheDeepReportToggle() {
     readFile(new URL('skills/planning-source-collection/SKILL.md', root), 'utf8'),
   ]);
 
-  assert.match(canvas, /深度编报/);
+  assert.doesNotMatch(canvas, /使用个人偏好和默认模板/);
+  assert.doesNotMatch(canvas, /:checked="(?:useMyPreferences|deepReportEnabled)"/);
   assert.match(canvas, /key: 'deep_collection'/);
   assert.match(app, /v-model:deepReportEnabled="deepReportEnabled"/);
-  assert.match(jobs, /deepReportEnabled:\s*deepReportEnabled\.value === true/);
+  assert.match(jobs, /const deepReportEnabled = ref\(true\)/);
+  assert.doesNotMatch(jobs, /deepReportEnabled:\s*deepReportEnabled\.value === true/);
+  assert.match(jobs, /useMyPreferences:\s*false/);
+  assert.match(jobs, /deepReportEnabled:\s*true/);
   assert.match(draft, /deepReportEnabled:\s*true/);
   assert.doesNotMatch(`${canvas}\n${app}\n${jobs}`, /标准采集|Skill采集|采集执行方式/);
   assert.match(deploy, /skills\/planning-source-collection/);
@@ -299,6 +303,6 @@ await testIncompleteSkillOutputFailsInsteadOfInventingEmptySuccess();
 await testNormalReportSkipsSkillAndKeepsProgressUnchanged();
 await testDeepReportWritesSkillResultIntoGenerationPayload();
 await testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults();
-await testFrontendAndDeploymentExposeOnlyTheDeepReportToggle();
+await testFrontendHidesReportModeOptionsAndDefaultsToDeepReport();
 testOrdinaryReportPromptIsByteForByteUnchangedByFalseFlag();
 console.log('deep report source collection tests passed');

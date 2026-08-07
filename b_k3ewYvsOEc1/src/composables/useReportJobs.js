@@ -151,7 +151,7 @@ export function useReportJobs() {
   const planSupplement = ref('')
   const databaseSourceEnabled = ref(true)
   const useMyPreferences = ref(false)
-  const deepReportEnabled = ref(false)
+  const deepReportEnabled = ref(true)
   const planError = ref('')
   const generatedHtml = ref('')
   const phase = ref('idle')
@@ -1002,7 +1002,7 @@ export function useReportJobs() {
     targetCity.value = ''
     visitTime.value = ''
     outputDepth.value = 'detailed'
-    deepReportEnabled.value = false
+    deepReportEnabled.value = true
     resetReportPlan()
     currentView.value = 'generator'
   }
@@ -1331,10 +1331,10 @@ export function useReportJobs() {
           current_position: currentPosition.value.trim() || '待研判',
           report_type: 'visiting_dignitary',
           visit_context: context,
-          useMyPreferences: useMyPreferences.value === true,
+          useMyPreferences: false,
           focus_areas: ['基本情况', '政治立场', '风险点', '接待建议'],
           output_depth: outputDepth.value,
-          deepReportEnabled: deepReportEnabled.value === true,
+          deepReportEnabled: true,
           language: 'zh-CN',
         },
       }
@@ -1349,8 +1349,8 @@ export function useReportJobs() {
         payload: {
           ...planningPayload,
           report_type: reportType.value === 'write-hb-hb' ? 'HB报' : 'K报',
-          useMyPreferences: useMyPreferences.value === true,
-          deepReportEnabled: deepReportEnabled.value === true,
+          useMyPreferences: false,
+          deepReportEnabled: true,
           focus_areas: isStructuredContext ? buildPlanningFocusAreas(extraContext) : ['国家', '地方', '政策', '社会', '传播'],
           language: 'zh-CN',
         },
@@ -1365,8 +1365,8 @@ export function useReportJobs() {
         target_city: targetCity.value.trim(),
         visit_time: visitTime.value.trim(),
         known_context: context,
-        useMyPreferences: useMyPreferences.value === true,
-        deepReportEnabled: deepReportEnabled.value === true,
+        useMyPreferences: false,
+        deepReportEnabled: true,
         focus_areas: ['公开信息检索', '风险识别', '舆情走势', '处置建议'],
         language: 'zh-CN',
       },
