@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
-import { FileDown, FileText, List, Pencil, Plus, Trash2 } from '@lucide/vue'
+import { Copy, ExternalLink, FileDown, FilePlus2, FileText, List, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
@@ -201,6 +201,7 @@ const sourceListSummary = ref(null)
 const sourceListDiagnostics = ref(null)
 const sourceCurrentPage = ref(1)
 const expandedSourceListId = ref('')
+const openSourceMenuId = ref('')
 const sourceListNotice = ref('')
 const acceptedCitationSources = ref([])
 const acceptedCitationSourcesLoading = ref(false)
@@ -2828,8 +2829,8 @@ const activeSourceConfig = computed(() => {
 })
 
 const sourceListCountText = computed(() => {
-  if (typeof sourceListTotal.value === 'number') return `共 ${sourceListTotal.value} 条`
-  return sourceListItems.value.length ? `已加载 ${sourceListItems.value.length} 条` : ''
+  if (typeof sourceListTotal.value === 'number') return `共 ${sourceListTotal.value} 条信源`
+  return sourceListItems.value.length ? `已加载 ${sourceListItems.value.length} 条信源` : ''
 })
 
 const resultInfoItems = computed(() => {
@@ -3114,7 +3115,7 @@ function normalizeSourceListItem(source, index, fallbackGroup = activeSourceType
     url,
     sourceName,
     publishRaw,
-    publishTime: formatDbSourceTime(publishRaw) || '时间未知',
+    publishTime: formatDbSourceTime(publishRaw) || '—',
     sourceType,
     status,
     method,
@@ -3150,10 +3151,42 @@ function normalizeSourceKind(value, source = null) {
 }
 
 function sourceChannelLabel(source) {
+  if (source?.sourceType === '官方文件' || /政府|委员会|公报|部|局|署|法院|人大|\bgov\b|commission/i.test(source?.sourceName || '')) return '官方来源'
   if (source?.sourceGroup === 'database_recall') return '数据库召回'
   if (source?.sourceGroup === 'tool_search') return '联网搜索采集'
   if (source?.sourceGroup === 'crawler') return '资料采集'
   return source?.sourceType || '--'
+}
+
+function sourceDomain(source) {
+  return sourceHostname(source?.url || '') || '—'
+}
+
+function sourcePublisherName(source) {
+  const name = String(source?.sourceName || '').trim()
+  return !name || name === '来源未知' || name === '--' ? '—' : name
+}
+
+function sourcePublishTime(source) {
+  const time = String(source?.publishTime || '').trim()
+  return !time || time === '时间未知' || time === '--' ? '—' : time
+}
+
+function sourceTypeTone(source) {
+  const label = `${sourceChannelLabel(source)} ${source?.sourceType || ''}`
+  if (/官方|政府|公告|文件/.test(label)) return 'official'
+  if (/联网|互联网|搜索/.test(label)) return 'web'
+  if (/数据库|召回|向量/.test(label)) return 'database'
+  return 'neutral'
+}
+
+function sourceRelevanceMeta(source) {
+  const hasScore = source?.relevance !== undefined && source?.relevance !== null && String(source.relevance).trim() !== ''
+  if (!hasScore) return { score: '—', level: '', tone: 'low' }
+  const score = Math.round(Number(source.numericScore) || 0)
+  if (score >= 90) return { score, level: '高', tone: 'high' }
+  if (score >= 70) return { score, level: '中', tone: 'medium' }
+  return { score, level: '低', tone: 'low' }
 }
 
 function normalizeNumericScore(value) {
@@ -3355,6 +3388,7 @@ function resetSourceListState({ preserveSummary = false } = {}) {
   sourceListError.value = ''
   sourceListNotice.value = ''
   expandedSourceListId.value = ''
+  openSourceMenuId.value = ''
 }
 
 function scrollSourceListToTop() {
@@ -3522,6 +3556,7 @@ function visibleSourcePages() {
 function handleSourceFiltersChanged() {
   sourceCurrentPage.value = 1
   expandedSourceListId.value = ''
+  openSourceMenuId.value = ''
   scrollSourceListToTop()
 }
 
@@ -3534,7 +3569,20 @@ function selectSourceType(type) {
 }
 
 function toggleSourceListItem(sourceId) {
+  openSourceMenuId.value = ''
   expandedSourceListId.value = expandedSourceListId.value === sourceId ? '' : sourceId
+}
+
+function toggleSourceMenu(sourceId) {
+  openSourceMenuId.value = openSourceMenuId.value === sourceId ? '' : sourceId
+}
+
+function closeSourceMenu() {
+  openSourceMenuId.value = ''
+}
+
+function handleSourceMenuKeydown(event) {
+  if (event.key === 'Escape') closeSourceMenu()
 }
 
 function sourceToBackgroundText(source) {
@@ -3555,6 +3603,16 @@ async function copySourceListItem(source) {
   window.setTimeout(() => {
     sourceListNotice.value = ''
   }, 1800)
+}
+
+async function copySourceListItemFromMenu(source) {
+  closeSourceMenu()
+  await copySourceListItem(source)
+}
+
+function importSourceListItemFromMenu(source) {
+  closeSourceMenu()
+  importSourceListItemAsReportContext(source)
 }
 
 function importSourceListItemAsReportContext(source) {
@@ -3738,6 +3796,8 @@ onMounted(() => {
   ensureReportDefaults()
   window.addEventListener('scroll', handleQaPageScroll, { passive: true })
   window.addEventListener('keydown', handleQaGuideKeydown)
+  window.addEventListener('keydown', handleSourceMenuKeydown)
+  document.addEventListener('click', closeSourceMenu)
   nextTick(() => {
     reportRef.value?.addEventListener('scroll', handleQaPageScroll, { passive: true })
   })
@@ -3754,6 +3814,8 @@ onBeforeUnmount(() => {
   stopSourceAutoRefresh()
   window.removeEventListener('scroll', handleQaPageScroll)
   window.removeEventListener('keydown', handleQaGuideKeydown)
+  window.removeEventListener('keydown', handleSourceMenuKeydown)
+  document.removeEventListener('click', closeSourceMenu)
   reportRef.value?.removeEventListener('scroll', handleQaPageScroll)
   closeAllQaStreams()
 })
@@ -5332,21 +5394,14 @@ function exportPdf() {
                   <p>{{ activeSourceConfig.desc }}</p>
                 </div>
                 <button class="source-fixed-refresh" type="button" :disabled="sourceListLoading" @click="reloadSourceRows">
-                  {{ sourceListLoading ? '加载中...' : '刷新' }}
+                  <RefreshCw :size="14" :class="{ spinning: sourceListLoading }" aria-hidden="true" />
+                  {{ sourceListLoading ? '加载中' : '刷新' }}
                 </button>
               </header>
 
               <div class="source-toolbar">
-                <label class="source-search-box">
-                  <span>⌕</span>
-                  <input
-                    v-model="sourceSearchQuery"
-                    type="search"
-                    placeholder="搜索标题 / 来源 / 关键词"
-                  />
-                </label>
                 <select v-model="sourceKindFilter" aria-label="来源类型筛选">
-                  <option v-for="item in sourceKindOptions" :key="item" :value="item">{{ item }}</option>
+                  <option v-for="item in sourceKindOptions" :key="item" :value="item">{{ item === '全部' ? '全部来源' : item }}</option>
                 </select>
                 <select v-model="sourceTimeFilter" aria-label="时间范围筛选">
                   <option v-for="item in sourceTimeOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
@@ -5354,6 +5409,15 @@ function exportPdf() {
                 <select v-model="sourceSortMode" aria-label="排序">
                   <option v-for="item in sourceSortOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
                 </select>
+                <span class="source-toolbar-count">{{ sourceListCountText || `共 ${filteredSourceRows.length} 条信源` }}</span>
+                <label class="source-search-box">
+                  <Search :size="15" aria-hidden="true" />
+                  <input
+                    v-model="sourceSearchQuery"
+                    type="search"
+                    placeholder="搜索信源标题或机构"
+                  />
+                </label>
               </div>
 
               <div ref="sourceListRef" class="source-table-scroll">
@@ -5370,9 +5434,18 @@ function exportPdf() {
                   <p>{{ currentSourceEmptyDesc }}</p>
                 </div>
                 <table v-else class="source-data-table">
+                  <colgroup>
+                    <col class="source-col-index" />
+                    <col class="source-col-title" />
+                    <col class="source-col-type" />
+                    <col class="source-col-publisher" />
+                    <col class="source-col-time" />
+                    <col class="source-col-score" />
+                    <col class="source-col-actions" />
+                  </colgroup>
                   <thead>
                     <tr>
-                      <th>#</th>
+                      <th>序号</th>
                       <th>信源标题</th>
                       <th>来源类型</th>
                       <th>发布机构</th>
@@ -5383,29 +5456,69 @@ function exportPdf() {
                   </thead>
                   <tbody>
                     <template v-for="(source, index) in paginatedSourceRows" :key="source.id">
-                      <tr :class="{ expanded: expandedSourceListId === source.id }">
+                      <tr
+                        class="source-data-row"
+                        :class="{ expanded: expandedSourceListId === source.id }"
+                        @click="toggleSourceListItem(source.id)"
+                      >
                         <td class="source-index-cell">
-                          <button type="button" @click="toggleSourceListItem(source.id)">
-                            {{ expandedSourceListId === source.id ? '⌄' : '›' }}
-                          </button>
                           <span>{{ String((sourceCurrentPage - 1) * sourceListPageSize + index + 1).padStart(2, '0') }}</span>
                         </td>
                         <td class="source-title-cell">
-                          <strong>{{ source.title }}</strong>
+                          <strong :title="source.title">{{ source.title }}</strong>
                           <p>{{ source.summary }}</p>
                         </td>
-                        <td><span class="source-type-pill">{{ sourceChannelLabel(source) }}</span></td>
-                        <td>{{ source.sourceName || '--' }}</td>
-                        <td>{{ source.publishTime || '--' }}</td>
-                        <td><span class="source-score">{{ source.relevance || '--' }}</span></td>
                         <td>
+                          <span class="source-type-pill" :class="`source-type-${sourceTypeTone(source)}`">
+                            {{ sourceChannelLabel(source) }}
+                          </span>
+                        </td>
+                        <td class="source-publisher-cell">
+                          <strong>{{ sourcePublisherName(source) }}</strong>
+                          <span>{{ sourceDomain(source) }}</span>
+                        </td>
+                        <td class="source-time-cell">{{ sourcePublishTime(source) }}</td>
+                        <td>
+                          <span class="source-score" :class="`source-score-${sourceRelevanceMeta(source).tone}`">
+                            <b>{{ sourceRelevanceMeta(source).score }}</b>
+                            <em v-if="sourceRelevanceMeta(source).level">{{ sourceRelevanceMeta(source).level }}</em>
+                          </span>
+                        </td>
+                        <td class="source-actions-cell">
                           <div class="source-row-actions">
-                            <button type="button" @click="toggleSourceListItem(source.id)">查看详情</button>
-                            <button type="button" @click="copySourceListItem(source)">复制引用</button>
+                            <button class="source-detail-link" type="button" @click.stop="toggleSourceListItem(source.id)">
+                              详情 <span>›</span>
+                            </button>
+                            <div class="source-more" :class="{ 'open-up': index >= paginatedSourceRows.length - 2 }" @click.stop>
+                              <button
+                                class="source-more-trigger"
+                                type="button"
+                                :aria-expanded="openSourceMenuId === source.id"
+                                :aria-label="`更多操作：${source.title}`"
+                                title="更多操作"
+                                @click.stop="toggleSourceMenu(source.id)"
+                              >
+                                <MoreHorizontal :size="17" aria-hidden="true" />
+                              </button>
+                              <div v-if="openSourceMenuId === source.id" class="source-more-menu" role="menu">
+                                <button type="button" role="menuitem" @click="copySourceListItemFromMenu(source)">
+                                  <Copy :size="14" aria-hidden="true" />
+                                  复制引用
+                                </button>
+                                <a v-if="source.url" :href="source.url" target="_blank" rel="noopener noreferrer" role="menuitem" @click="closeSourceMenu">
+                                  <ExternalLink :size="14" aria-hidden="true" />
+                                  打开原文
+                                </a>
+                                <button type="button" role="menuitem" @click="importSourceListItemFromMenu(source)">
+                                  <FilePlus2 :size="14" aria-hidden="true" />
+                                  作为编报背景
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         </td>
                       </tr>
-                      <tr v-if="expandedSourceListId === source.id" class="source-detail-row">
+                      <tr v-if="expandedSourceListId === source.id" class="source-detail-row" @click.stop>
                         <td colspan="7">
                           <div class="source-detail-grid">
                             <div>
@@ -5426,10 +5539,6 @@ function exportPdf() {
                               <p>{{ source.failedReason || source.method || source.status || '暂无补充信息。' }}</p>
                             </div>
                           </div>
-                          <div class="source-detail-actions">
-                            <button type="button" @click="copySourceListItem(source)">复制引用</button>
-                            <button type="button" @click="importSourceListItemAsReportContext(source)">作为编报背景</button>
-                          </div>
                         </td>
                       </tr>
                     </template>
@@ -5438,7 +5547,6 @@ function exportPdf() {
               </div>
 
               <footer class="source-pagination">
-                <span>共 {{ filteredSourceRows.length }} 条</span>
                 <button type="button" :disabled="sourceCurrentPage <= 1" @click="setSourcePage(sourceCurrentPage - 1)">上一页</button>
                 <button
                   v-for="page in visibleSourcePages()"
