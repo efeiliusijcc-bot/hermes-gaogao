@@ -8,7 +8,7 @@ import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
 import { buildReadableExecutionLogs, translateHermesExecutionLog } from '../lib/reportExecutionLogs.js'
 import { parseStructuredPlanningContext } from '../lib/reportPlanningContext.js'
 import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
-import { filterAcceptedReportReferences, firstSourceDisplayText, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
+import { filterAcceptedReportReferences, firstSourceDisplayText, hasDistinctSourceDetail, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 import { getTruthfulSourceStats } from '../lib/sourceStats.js'
 
 const purifyConfig = {
@@ -5528,7 +5528,7 @@ function exportPdf() {
                               <span>完整摘要</span>
                               <p>{{ source.summary || '暂无摘要。' }}</p>
                             </div>
-                            <div>
+                            <div v-if="hasDistinctSourceDetail(source.summary, source.detail)">
                               <span>正文片段</span>
                               <p>{{ source.detail || '暂无正文片段。' }}</p>
                             </div>

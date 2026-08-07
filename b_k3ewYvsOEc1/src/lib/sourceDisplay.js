@@ -40,6 +40,15 @@ export function sourceHostname(url) {
   }
 }
 
+export function hasDistinctSourceDetail(summary, detail) {
+  const normalize = (value) => String(value || '').trim().replace(/\s+/g, ' ')
+  const detailText = normalize(detail)
+  if (!detailText) return false
+  const summaryText = normalize(summary)
+  if (!summaryText) return true
+  return summaryText !== detailText
+}
+
 export function filterAcceptedReportReferences(items) {
   return (Array.isArray(items) ? items : []).filter((item) => item && typeof item === 'object')
 }
