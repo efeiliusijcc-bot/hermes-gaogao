@@ -2595,35 +2595,6 @@ const databaseSourceDiagnostics = computed(() => {
   }
 })
 
-const sourceSupplementStatus = computed(() => {
-  const diagnostics = sourceListDiagnostics.value || {}
-  const supplement = diagnostics.supplement || {}
-  const retrievalMetrics = supplement.retrievalMetrics || {}
-  const webMetrics = retrievalMetrics.web || {}
-  const deduplication = retrievalMetrics.deduplication || {}
-  const performance = retrievalMetrics.performance || {}
-  const database = diagnostics.database || props.databaseSources?.diagnostics || {}
-  const web = diagnostics.web || {}
-  const databaseAccepted = Number(database.acceptedCount ?? props.databaseSources?.sources?.length ?? 0)
-  const webAccepted = Number(web.acceptedCount ?? 0)
-  return {
-    visible: supplement.triggered === true || Boolean(supplement.reason),
-    triggered: supplement.triggered === true,
-    reason: supplement.reason || '',
-    databaseAccepted,
-    queryCount: Array.isArray(supplement.queries) ? supplement.queries.length : 0,
-    searchResultCount: Number(supplement.searchResultCount ?? web.searchResultCount ?? 0),
-    fetchedCount: Number(supplement.fetchedCount ?? web.fetchedCount ?? 0),
-    acceptedCount: Number(supplement.acceptedCount ?? webAccepted),
-    rejectedCount: Number(supplement.rejectedCount ?? 0),
-    finalCount: databaseAccepted + webAccepted,
-    fetchSuccessRate: Number(webMetrics.fetchSuccessRate ?? 0),
-    deduplicationRemoved: Number(deduplication.removedCount ?? 0),
-    referencedCount: Number(retrievalMetrics.final?.referencedSourceCount ?? 0),
-    durationMs: Number(performance.totalSupplementDurationMs ?? 0),
-  }
-})
-
 const filteredDatabaseCandidates = computed(() => {
   const data = props.databaseSources || {}
   const uncertain = Array.isArray(data.uncertainSources) ? data.uncertainSources : []
@@ -5367,30 +5338,6 @@ function exportPdf() {
                 </span>
               </button>
             </div>
-
-            <div class="source-count-note">
-              口径说明：数据库检索工具来自 PG 向量库/数据库；互联网搜索工具来自联网检索与正文抽取。报告引用编号和结构化整理状态作为信源属性展示，不作为主分类混算。
-            </div>
-
-            <section v-if="sourceSupplementStatus.visible" class="source-supplement-status">
-              <header>
-                <strong>{{ sourceSupplementStatus.triggered ? '数据库有效信源不足，已启动公开信源补充' : '公开信源补充状态' }}</strong>
-                <span>{{ sourceSupplementStatus.reason }}</span>
-              </header>
-              <div class="source-supplement-metrics">
-                <div><b>{{ sourceSupplementStatus.databaseAccepted }}</b><span>数据库有效</span></div>
-                <div><b>{{ sourceSupplementStatus.queryCount }}</b><span>Web 查询</span></div>
-                <div><b>{{ sourceSupplementStatus.searchResultCount }}</b><span>搜索候选</span></div>
-                <div><b>{{ sourceSupplementStatus.fetchedCount }}</b><span>抓取成功</span></div>
-                <div><b>{{ sourceSupplementStatus.acceptedCount }}</b><span>补充 accepted</span></div>
-                <div><b>{{ sourceSupplementStatus.rejectedCount }}</b><span>已过滤</span></div>
-                <div><b>{{ sourceSupplementStatus.finalCount }}</b><span>最终可用</span></div>
-                <div><b>{{ Math.round(sourceSupplementStatus.fetchSuccessRate * 100) }}%</b><span>抓取成功率</span></div>
-                <div><b>{{ sourceSupplementStatus.deduplicationRemoved }}</b><span>去重条数</span></div>
-                <div><b>{{ sourceSupplementStatus.referencedCount }}</b><span>最终引用</span></div>
-                <div><b>{{ (sourceSupplementStatus.durationMs / 1000).toFixed(1) }}s</b><span>补充耗时</span></div>
-              </div>
-            </section>
 
             <div class="source-sub-filter" aria-label="信源类型筛选">
               <button
