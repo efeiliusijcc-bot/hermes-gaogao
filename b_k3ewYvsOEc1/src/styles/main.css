@@ -5543,18 +5543,18 @@ canvas {
 
 .source-data-table {
   width: 100%;
-  min-width: 980px;
+  min-width: 920px;
   table-layout: fixed;
   border-collapse: collapse;
 }
 
 .source-data-table .source-col-index { width: 4%; }
-.source-data-table .source-col-title { width: 48%; }
+.source-data-table .source-col-title { width: 46%; }
 .source-data-table .source-col-type { width: 10%; }
 .source-data-table .source-col-publisher { width: 14%; }
 .source-data-table .source-col-time { width: 9%; }
 .source-data-table .source-col-score { width: 7%; }
-.source-data-table .source-col-actions { width: 8%; }
+.source-data-table .source-col-actions { width: 10%; }
 
 .source-data-table th {
   padding: 11px 16px;
@@ -5716,6 +5716,8 @@ canvas {
 .source-actions-cell {
   position: relative;
   overflow: visible;
+  padding-right: 10px !important;
+  padding-left: 10px !important;
 }
 
 .source-row-actions {
