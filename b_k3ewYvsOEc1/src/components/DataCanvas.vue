@@ -5763,6 +5763,11 @@ function exportPdf() {
                     <strong>{{ check.label || check.key }}</strong>
                     <span>{{ qualityStatusLabel(check.status) }}</span>
                     <p>{{ check.comment }}</p>
+                    <div v-if="check.evidence" class="quality-check-evidence">
+                      <b>检查依据</b>
+                      <p>{{ check.evidence }}</p>
+                    </div>
+                    <p v-else class="quality-check-evidence-empty">该项为旧版自检结果，未保存对应依据，请重新自检。</p>
                   </article>
                 </div>
               </div>

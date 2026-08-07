@@ -176,6 +176,13 @@ function createService(pool = createPool(), files: Record<string, string> = {}) 
     jobs: Map<string, ReturnType<typeof makeJob>>;
     runQualityReviewForJob: (job: ReturnType<typeof makeJob>) => Promise<unknown>;
     buildReportEditPayloadFromQualityIssue: (issue: Record<string, unknown>) => Record<string, unknown>;
+    buildQualityChecks: (
+      job: ReturnType<typeof makeJob>,
+      markdown: string,
+      context: Record<string, unknown>,
+      wordCount: number,
+      sourceUsage: Record<string, number>,
+    ) => Array<Record<string, unknown>>;
   };
   service.getPool = async () => pool.pool;
   service.jobs.set('quality-job-1', makeJob());
@@ -190,6 +197,96 @@ function assertScoreRange(value: unknown) {
 function errorText(error: unknown): string {
   if (error && typeof error === 'object' && 'response' in error) return JSON.stringify((error as { response?: unknown }).response);
   return error instanceof Error ? error.message : String(error);
+}
+
+function assertQualityCheckEvidence(checks: Array<Record<string, unknown>>, context: {
+  markdown: string;
+  topic: string;
+  reportTitle: string;
+  wordCount: number;
+  sourceUsage: Record<string, number>;
+}) {
+  const requiredKeys = [
+    'topic_alignment',
+    'main_content_clarity',
+    'attitude_traceability',
+    'risk_reasoning_basis',
+    'source_reference_clarity',
+    'plan_coverage',
+    'ai_boilerplate',
+    'word_count',
+  ];
+  assert.ok(Array.isArray(checks), 'reviewJson.checks 应为数组');
+  assert.equal(checks.length, requiredKeys.length, `checks 应包含 ${requiredKeys.length} 项，实际 ${checks.length} 项`);
+  const byKey = new Map(checks.map((check) => [String(check.key), check]));
+  for (const key of requiredKeys) {
+    assert.ok(byKey.has(key), `checks 缺少检查项 ${key}`);
+  }
+
+  const { markdown, topic, reportTitle, wordCount, sourceUsage } = context;
+  const referenceCount = (markdown.match(/\[\d+\]|〔\d+〕/g) || []).length;
+  const databaseCount = sourceUsage.databaseSourcesUsed ?? 0;
+  const internetCount = sourceUsage.internetSourcesUsed ?? 0;
+
+  // 按 key 建 Map：每个检查项要求有非空 evidence 且内容满足对应验证规则。
+  const validators = new Map<string, { label: string; requirement: string; validate: (evidence: string) => boolean }>([
+    ['topic_alignment', {
+      label: '主题一致性',
+      requirement: `evidence 需同时包含用户主题「${topic}」和成稿标题「${reportTitle}」`,
+      validate: (evidence) => evidence.includes(topic) && evidence.includes(reportTitle),
+    }],
+    ['main_content_clarity', {
+      label: '事件描述清楚度',
+      requirement: 'evidence 需包含测试报告原文片段「英国政府推动未成年人社交媒体监管」',
+      validate: (evidence) => evidence.includes('英国政府推动未成年人社交媒体监管'),
+    }],
+    ['attitude_traceability', {
+      label: '各方态度可追溯性',
+      requirement: 'evidence 需包含「企业表态」或报告中的具体态度线索（表态/认为/表示/回应/立场）',
+      validate: (evidence) => evidence.includes('企业表态') || /表态|认为|表示|回应|立场/.test(evidence),
+    }],
+    ['risk_reasoning_basis', {
+      label: '涉我风险依据',
+      requirement: 'evidence 需包含「中资平台合规成本」',
+      validate: (evidence) => evidence.includes('中资平台合规成本'),
+    }],
+    ['source_reference_clarity', {
+      label: '信源引用清晰度',
+      requirement: `evidence 需按字段分别给出引用标记(${referenceCount})、数据库信源(${databaseCount})和互联网信源(${internetCount})`,
+      validate: (evidence) =>
+        new RegExp(`引用标记[^\\d]*${referenceCount}`).test(evidence) &&
+        new RegExp(`数据库信源[^\\d]*${databaseCount}`).test(evidence) &&
+        new RegExp(`互联网信源[^\\d]*${internetCount}`).test(evidence),
+    }],
+    ['plan_coverage', {
+      label: '编报规划体现度',
+      requirement: 'evidence 需包含规划项「基本情况、涉我风险、对策建议」并给出覆盖结论（覆盖/体现/完整）',
+      validate: (evidence) =>
+        ['基本情况', '涉我风险', '对策建议'].every((section) => evidence.includes(section)) &&
+        /覆盖|体现|完整/.test(evidence),
+    }],
+    ['ai_boilerplate', {
+      label: '无用 AI 痕迹',
+      requirement: 'evidence 需说明扫描过的具体模板词（作为ai/以下是/样式说明/本文将/下面是/我将为您）',
+      validate: (evidence) => /作为ai|以下是|样式说明|本文将|下面是|我将为您/i.test(evidence),
+    }],
+    ['word_count', {
+      label: '字数充足度',
+      requirement: `evidence 需包含实际估算字数(${wordCount})和 2500 阈值`,
+      validate: (evidence) => evidence.includes(String(wordCount)) && evidence.includes('2500'),
+    }],
+  ]);
+
+  for (const key of requiredKeys) {
+    const check = byKey.get(key)!;
+    const { label, requirement, validate } = validators.get(key)!;
+    const evidence = String(check.evidence ?? '').trim();
+    assert.ok(evidence.length > 0, `检查项 ${key}(${label}) 缺少非空 evidence 字段`);
+    assert.ok(
+      validate(evidence),
+      `检查项 ${key}(${label}) 的 evidence 不满足要求。要求：${requirement}。实际 evidence: "${evidence}"`,
+    );
+  }
 }
 
 async function testOwnerAdminIsolation() {
@@ -217,6 +314,15 @@ async function testRunQualityReviewWritesStructuredResultAndDoesNotOverwriteRepo
   assert.ok(reviewJson.scores && typeof reviewJson.scores === 'object');
   assert.ok(Array.isArray(reviewJson.checks));
   assert.ok(Array.isArray(reviewJson.issues));
+
+  const reportTitle = (originalMarkdown.match(/^#\s+(.+)$/m) || [])[1] ?? '英国未成年人社交媒体禁令报告';
+  assertQualityCheckEvidence(reviewJson.checks as Array<Record<string, unknown>>, {
+    markdown: originalMarkdown,
+    topic: makeJob().payload.topic,
+    reportTitle,
+    wordCount: reviewJson.wordCount as number,
+    sourceUsage: reviewJson.sourceUsage as Record<string, number>,
+  });
 }
 
 async function testQualityReviewFailureDoesNotChangeSucceededJob() {
@@ -228,6 +334,39 @@ async function testQualityReviewFailureDoesNotChangeSucceededJob() {
   assert.equal(job.status, 'succeeded');
   assert.ok(pool.inserted.length >= 1);
   assert.equal(pool.inserted[0].status, 'failed');
+}
+
+function testMissingPlanSectionProducesWarningWithEvidence() {
+  const { service } = createService();
+  const missingSection = '国际舆情研判';
+  const checks = service.buildQualityChecks(
+    makeJob(),
+    makeJob().markdown,
+    { report_plan: { sections: ['基本情况', '涉我风险', '对策建议', missingSection] } },
+    180,
+    { databaseSourcesUsed: 1, internetSourcesUsed: 1 },
+  );
+  const planCheck = checks.find((check) => check.key === 'plan_coverage');
+  assert.equal(planCheck?.status, 'warning');
+  assert.match(String(planCheck?.evidence), new RegExp(`未覆盖项：${missingSection}`));
+}
+
+function testMissingContentEvidenceDoesNotReuseUnrelatedParagraph() {
+  const { service } = createService();
+  const unrelatedParagraph = '这是一段普通说明文字，仅用于确认系统不会错误引用首段。';
+  const checks = service.buildQualityChecks(
+    makeJob(),
+    `# 无关报告\n\n${unrelatedParagraph}`,
+    {},
+    20,
+    { databaseSourcesUsed: 0, internetSourcesUsed: 0 },
+  );
+  for (const key of ['main_content_clarity', 'attitude_traceability', 'risk_reasoning_basis']) {
+    const check = checks.find((item) => item.key === key);
+    assert.equal(check?.status, 'warning', `${key} 未命中对应原文时应告警`);
+    assert.match(String(check?.evidence), /未检出/);
+    assert.doesNotMatch(String(check?.evidence), new RegExp(unrelatedParagraph));
+  }
 }
 
 function testQualityIssueCanBecomeReportEditPayload() {
@@ -298,6 +437,8 @@ async function testHttpEndpoints() {
 await testOwnerAdminIsolation();
 await testRunQualityReviewWritesStructuredResultAndDoesNotOverwriteReport();
 await testQualityReviewFailureDoesNotChangeSucceededJob();
+testMissingPlanSectionProducesWarningWithEvidence();
+testMissingContentEvidenceDoesNotReuseUnrelatedParagraph();
 testQualityIssueCanBecomeReportEditPayload();
 await testHttpEndpoints();
 

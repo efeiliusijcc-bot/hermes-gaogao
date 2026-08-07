@@ -7662,6 +7662,37 @@ body {
   border-left-color: #22c55e;
 }
 
+.quality-check-evidence {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+}
+
+.quality-check-evidence b {
+  display: block;
+  margin-bottom: 4px;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.quality-check-evidence p {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.quality-check-evidence-empty {
+  margin: 0;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .quality-check-card strong,
 .quality-issue-card strong,
 .quality-edit-card strong {

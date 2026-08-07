@@ -259,6 +259,8 @@ interface DraftAssistantPlanBundle {
   attitudes: Record<string, unknown>[];
 }
 
+const QUALITY_AI_BOILERPLATE_WORDS = ['作为AI', '以下是', '样式说明', '本文将', '下面是', '我将为您'];
+
 @Injectable()
 export class ReportsService implements OnModuleDestroy {
   private readonly jobs = new Map<string, JobRecord>();
@@ -2645,29 +2647,133 @@ export class ReportsService implements OnModuleDestroy {
   ): Array<Record<string, unknown>> {
     const payload = this.plainObject(job.payload);
     const topic = String(payload.topic || payload.title || payload.target_country || context.topic || '').trim();
+    const reportTitle = this.qualityEvidenceFirstHeading(markdown);
     const hasTopic = !topic || markdown.includes(topic) || topic.split(/\s+/).some((part) => part && markdown.includes(part));
-    const hasMainContent = /基本情况|主要内容|事件概述|背景/.test(markdown) && /发生|推动|宣布|涉及|影响|进展/.test(markdown);
-    const hasAttitudeTrace = /各方态度|立场|表态|回应|认为|表示/.test(markdown) && /年|月|日|媒体|公告|声明|报道|发布/.test(markdown);
-    const hasRiskBasis = /涉我风险|风险/.test(markdown) && /基于|依据|显示|来源|监管|数据|报道|文件|逻辑/.test(markdown);
-    const hasSourceClarity = (sourceUsage.databaseSourcesUsed + sourceUsage.internetSourcesUsed) > 0 || /\[\d+\]|参考资料|来源/.test(markdown);
+    const mainContentSnippet = this.qualityEvidenceSnippet(markdown, /发生|推动|宣布|涉及|影响|进展/);
+    const attitudeSnippet = this.qualityEvidenceSnippet(
+      markdown,
+      /(?=.*(?:立场|表态|回应|认为|表示))(?=.*(?:年|月|日|媒体|公告|声明|报道|发布))/,
+    );
+    const riskBasisSnippet = this.qualityEvidenceSnippet(
+      markdown,
+      /(?=.*(?:涉我风险|风险))(?=.*(?:基于|依据|显示|来源|监管|数据|报道|文件|逻辑))/,
+    );
+    const hasMainContent = Boolean(mainContentSnippet);
+    const hasAttitudeTrace = Boolean(attitudeSnippet);
+    const hasRiskBasis = Boolean(riskBasisSnippet);
+    const hasSourceClarity = (sourceUsage.databaseSourcesUsed + sourceUsage.internetSourcesUsed) > 0 || /\[\d+\]|〔\d+〕|参考资料|来源/.test(markdown);
     const plan = this.plainObject(context.report_plan);
-    const planText = JSON.stringify(plan || {});
-    const hasPlan = !planText || planText === '{}' || ['基本情况', '涉我风险', '对策建议', '事件概述'].some((section) => markdown.includes(section));
     const aiTrace = /作为ai|以下是|样式说明|本文将|下面是|我将为您/i.test(markdown);
+
+    const referenceCount = this.countQualityReferenceMarkers(markdown);
+    const databaseCount = sourceUsage.databaseSourcesUsed || 0;
+    const internetCount = sourceUsage.internetSourcesUsed || 0;
+    const referenceSectionFound = /参考资料|参考来源|引用来源/.test(markdown);
+    const planSections = this.qualityEvidenceReportPlanSections(plan);
+    const coveredSections = planSections.filter((section) => markdown.includes(section));
+    const uncoveredSections = planSections.filter((section) => !markdown.includes(section));
+    const hasPlan = planSections.length === 0 || uncoveredSections.length === 0;
+    const aiBoilerplateHits = QUALITY_AI_BOILERPLATE_WORDS.filter((word) => new RegExp(word, 'i').test(markdown));
+
     return [
-      this.qualityCheck('topic_alignment', '主题一致性', hasTopic, hasTopic ? '报告主题与用户标题基本一致。' : '报告未明显围绕用户标题展开。'),
-      this.qualityCheck('main_content_clarity', '事件描述清楚度', hasMainContent, hasMainContent ? '主要内容基本交代事件背景、经过或影响。' : '主要内容对事件要素交代不足。'),
-      this.qualityCheck('attitude_traceability', '各方态度可追溯性', hasAttitudeTrace, hasAttitudeTrace ? '各方态度包含一定主体、时间或来源线索。' : '各方态度缺少主体、时间、媒体或来源。'),
-      this.qualityCheck('risk_reasoning_basis', '涉我风险依据', hasRiskBasis, hasRiskBasis ? '涉我风险包含一定事实或逻辑依据。' : '涉我风险判断可能偏空泛。'),
-      this.qualityCheck('source_reference_clarity', '信源引用清晰度', hasSourceClarity, hasSourceClarity ? '报告包含来源或参考资料线索。' : '报告未清楚呈现信源引用。'),
-      this.qualityCheck('plan_coverage', '编报规划体现度', hasPlan, hasPlan ? '报告结构基本体现编报规划。' : '用户确认的规划重点未充分体现。'),
-      this.qualityCheck('ai_boilerplate', '无用 AI 痕迹', !aiTrace, aiTrace ? '报告存在“以下是”等无用 AI 描述。' : '未发现明显无用 AI 描述。'),
-      this.qualityCheck('word_count', '字数充足度', wordCount >= 2500, wordCount >= 2500 ? '成稿字数达到基础检查阈值。' : '成稿字数明显偏少，建议扩充事实和分析密度。'),
+      this.qualityCheck(
+        'topic_alignment', '主题一致性', hasTopic,
+        hasTopic ? '主题一致，成稿围绕用户主题展开。' : '主题不一致，成稿未明显围绕用户主题展开。',
+        `用户主题「${topic || '（未提供）'}」，成稿标题「${reportTitle || '（未识别到标题）'}」，匹配结论：${hasTopic ? '成稿围绕主题展开，匹配通过' : '成稿未明显围绕用户主题展开，匹配不足'}。`,
+      ),
+      this.qualityCheck(
+        'main_content_clarity', '事件描述清楚度', hasMainContent,
+        hasMainContent ? '事件内容清楚，具备背景、经过或影响要素。' : '事件内容交代不足，缺少关键要素。',
+        mainContentSnippet ? `命中事件事实原文：${mainContentSnippet}` : '未检出包含事件事实要素的对应原文。',
+      ),
+      this.qualityCheck(
+        'attitude_traceability', '各方态度可追溯性', hasAttitudeTrace,
+        hasAttitudeTrace ? '各方态度可追溯，包含主体、时间或来源线索。' : '各方态度可追溯性不足，缺少主体、时间、媒体或来源。',
+        attitudeSnippet ? `命中态度及来源线索原文：${attitudeSnippet}` : '未检出同时包含态度和时间、媒体或来源线索的对应原文。',
+      ),
+      this.qualityCheck(
+        'risk_reasoning_basis', '涉我风险依据', hasRiskBasis,
+        hasRiskBasis ? '涉我风险具备事实或逻辑依据。' : '涉我风险依据不足，判断可能偏空泛。',
+        riskBasisSnippet ? `命中涉我风险及依据原文：${riskBasisSnippet}` : '未检出同时包含涉我风险判断和事实、来源或逻辑依据的对应原文。',
+      ),
+      this.qualityCheck(
+        'source_reference_clarity', '信源引用清晰度', hasSourceClarity,
+        hasSourceClarity ? '信源引用清楚，正文含来源或参考资料线索。' : '信源引用不清楚，正文缺少来源标注。',
+        `报告引用标记 ${referenceCount} 处、数据库信源 ${databaseCount} 条、互联网信源 ${internetCount} 条、参考资料章节 ${referenceSectionFound ? '已识别' : '未识别'}。`,
+      ),
+      this.qualityCheck(
+        'plan_coverage', '编报规划体现度', hasPlan,
+        hasPlan ? '编报规划体现较完整。' : '编报规划体现不足，存在未覆盖重点。',
+        planSections.length
+          ? `规划项：${planSections.join('、')}；已覆盖项${coveredSections.length ? `：${coveredSections.join('、')}` : '：无'}；未覆盖项${uncoveredSections.length ? `：${uncoveredSections.join('、')}` : '：无'}。`
+          : '未识别到 report_plan 章节，本项无明确规划要求。',
+      ),
+      this.qualityCheck(
+        'ai_boilerplate', '无用 AI 痕迹', !aiTrace,
+        aiTrace ? '发现无用 AI 描述，需要清理。' : '未发现无用 AI 描述。',
+        `扫描模板词：${QUALITY_AI_BOILERPLATE_WORDS.join('、')}；命中：${aiBoilerplateHits.length ? aiBoilerplateHits.join('、') : '无'}。`,
+      ),
+      this.qualityCheck(
+        'word_count', '字数充足度', wordCount >= 2500,
+        wordCount >= 2500 ? '字数达到基础检查阈值。' : '字数未达 2500 字阈值，建议扩充事实和分析密度。',
+        `正文实际估算约 ${wordCount} 字，基础检查阈值 2500 字，差额 ${Math.abs(2500 - wordCount)} 字${wordCount >= 2500 ? '，已达标' : '，未达标'}。`,
+      ),
     ];
   }
 
-  private qualityCheck(key: string, label: string, passed: boolean, comment: string): Record<string, unknown> {
-    return { key, label, status: passed ? 'pass' : 'warning', comment };
+  private qualityCheck(key: string, label: string, passed: boolean, comment: string, evidence: string): Record<string, unknown> {
+    return { key, label, status: passed ? 'pass' : 'warning', comment, evidence };
+  }
+
+  private qualityEvidenceFirstHeading(markdown: string): string {
+    const match = markdown.match(/^#{1,6}\s+(.+?)\s*$/m);
+    return match ? match[1].trim() : '';
+  }
+
+  private qualityEvidenceSnippet(markdown: string, keywords?: RegExp): string {
+    const lines = markdown.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    if (keywords) {
+      const target = lines.find((line) => !line.startsWith('#') && keywords.test(line)) || '';
+      return this.stripMarkdownMarkers(target);
+    }
+    const target = lines.find((line) => line.length > 20 && !line.startsWith('#')) || lines[0] || '';
+    return this.stripMarkdownMarkers(target);
+  }
+
+  private stripMarkdownMarkers(text: string): string {
+    const stripped = String(text || '')
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/[*_`>]/g, '')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+      .replace(/\[\d+\]/g, '')
+      .replace(/〔\d+〕/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return stripped.length > 220 ? `${stripped.slice(0, 220)}…` : stripped;
+  }
+
+  private qualityEvidenceReportPlanSections(plan: Record<string, unknown>): string[] {
+    const sections: string[] = [];
+    const collect = (value: unknown): void => {
+      if (!Array.isArray(value)) return;
+      for (const item of value) {
+        if (typeof item === 'string') {
+          const text = item.trim();
+          if (text) sections.push(text);
+        } else if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const title = this.firstString(item as Record<string, unknown>, ['title', 'label', 'sectionTitle', 'name']);
+          if (title) sections.push(title);
+        }
+      }
+    };
+    collect(plan.sections);
+    collect(plan.steps);
+    collect(plan.modules);
+    return [...new Set(sections)];
+  }
+
+  private countQualityReferenceMarkers(markdown: string): number {
+    return (markdown.match(/\[\d+\]|〔\d+〕/g) || []).length;
   }
 
   private buildQualityIssues(
@@ -2767,7 +2873,7 @@ export class ReportsService implements OnModuleDestroy {
     const webSources = Array.isArray(context.webSources) ? context.webSources : [];
     const draftContext = this.plainObject(context.draftAssistantContext);
     const draftSources = Array.isArray(draftContext.sources) ? draftContext.sources : [];
-    const referenceCount = (markdown.match(/\[\d+\]/g) || []).length;
+    const referenceCount = this.countQualityReferenceMarkers(markdown);
     const judgementCount = (markdown.match(/可能|预计|或将|风险|影响|认为/g) || []).length;
     return {
       databaseSourcesUsed: Math.min(databaseSources.length, referenceCount || databaseSources.length),
