@@ -2684,17 +2684,17 @@ export class ReportsService implements OnModuleDestroy {
       this.qualityCheck(
         'main_content_clarity', '事件描述清楚度', hasMainContent,
         hasMainContent ? '事件内容清楚，具备背景、经过或影响要素。' : '事件内容交代不足，缺少关键要素。',
-        mainContentSnippet ? `命中事件事实原文：${mainContentSnippet}` : '未检出包含事件事实要素的对应原文。',
+        mainContentSnippet ? `命中事件事实原文：${mainContentSnippet}` : '未检出对应原文：正文中未找到包含事件要素（发生/推动/宣布/涉及/影响/进展）的具体片段。',
       ),
       this.qualityCheck(
         'attitude_traceability', '各方态度可追溯性', hasAttitudeTrace,
         hasAttitudeTrace ? '各方态度可追溯，包含主体、时间或来源线索。' : '各方态度可追溯性不足，缺少主体、时间、媒体或来源。',
-        attitudeSnippet ? `命中态度及来源线索原文：${attitudeSnippet}` : '未检出同时包含态度和时间、媒体或来源线索的对应原文。',
+        attitudeSnippet ? `命中态度及来源线索原文：${attitudeSnippet}` : '未检出对应原文：正文中未找到同时包含态度表述与媒体/时间线索的具体片段。',
       ),
       this.qualityCheck(
         'risk_reasoning_basis', '涉我风险依据', hasRiskBasis,
         hasRiskBasis ? '涉我风险具备事实或逻辑依据。' : '涉我风险依据不足，判断可能偏空泛。',
-        riskBasisSnippet ? `命中涉我风险及依据原文：${riskBasisSnippet}` : '未检出同时包含涉我风险判断和事实、来源或逻辑依据的对应原文。',
+        riskBasisSnippet ? `命中涉我风险及依据原文：${riskBasisSnippet}` : '未检出对应原文：正文中未找到同时包含涉我风险判断与依据线索（基于/依据/来源/监管/数据）的具体片段。',
       ),
       this.qualityCheck(
         'source_reference_clarity', '信源引用清晰度', hasSourceClarity,
@@ -2703,10 +2703,14 @@ export class ReportsService implements OnModuleDestroy {
       ),
       this.qualityCheck(
         'plan_coverage', '编报规划体现度', hasPlan,
-        hasPlan ? '编报规划体现较完整。' : '编报规划体现不足，存在未覆盖重点。',
+        planSections.length === 0
+          ? '编报规划未提供明确章节要求，无需逐项核对。'
+          : uncoveredSections.length === 0
+            ? '编报规划体现较完整，规划章节均已覆盖。'
+            : '编报规划体现不足，存在未覆盖重点。',
         planSections.length
           ? `规划项：${planSections.join('、')}；已覆盖项${coveredSections.length ? `：${coveredSections.join('、')}` : '：无'}；未覆盖项${uncoveredSections.length ? `：${uncoveredSections.join('、')}` : '：无'}。`
-          : '未识别到 report_plan 章节，本项无明确规划要求。',
+          : '编报规划未提供明确章节要求，无规划项需核对，本项视为通过。',
       ),
       this.qualityCheck(
         'ai_boilerplate', '无用 AI 痕迹', !aiTrace,
