@@ -44,6 +44,7 @@ export const DIRECT_QA_EMBEDDING_MODEL = process.env.DIRECT_QA_EMBEDDING_MODEL |
 export const DIRECT_QA_EMBEDDING_DIMENSIONS = Number(process.env.DIRECT_QA_EMBEDDING_DIMENSIONS || process.env.PGVECTOR_EMBEDDING_DIMENSIONS || 1024);
 export const HERMES_QA_TIMEOUT_MS = Number(process.env.HERMES_QA_TIMEOUT_MS || 900000);
 export const REPORT_TIMEOUT_MS = Number(process.env.HERMES_TIMEOUT_MS || 900000);
+export const HERMES_RUNS_RECOVERY_WAIT_MS = Number(process.env.HERMES_RUNS_RECOVERY_WAIT_MS || 180000);
 export const HEALTH_TIMEOUT_MS = Number(process.env.HERMES_HEALTH_TIMEOUT_MS || 30000);
 export const HERMES_WS_URL =
   process.env.HERMES_WS_URL || HERMES_BASE_URL.replace(/^http/, 'ws').replace(/\/v1\/?$/, '');

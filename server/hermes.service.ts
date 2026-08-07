@@ -177,6 +177,7 @@ export class HermesService {
     return [
       'This is an internal Deep Report workflow step executed by report-agent.',
       'Load and follow the planning-source-collection Skill from the report-agent skills directory.',
+      'When loading nested research capabilities, use the report-agent workspace skill path explicitly: /opt/data/workspace/report-agent/skills/web-research-firecrawl/SKILL.md.',
       'Do not create a report, do not expose a standalone collection entrypoint, and do not call legacy Crawler task routes.',
       'Use only the controlled research tools allowed by that Skill.',
       'The required trusted workflow context is:',
@@ -244,6 +245,11 @@ export class HermesService {
   }
 
   private parseDeepReportSourceCollectionResult(text: string): Record<string, unknown> | null {
+    const parsed = this.parseJsonObjectFromText(text);
+    return this.findDeepReportSourceCollectionRecord(parsed, new Set<unknown>());
+  }
+
+  private parseJsonObjectFromText(text: unknown): unknown {
     const trimmed = String(text || '').trim();
     if (!trimmed) return null;
     const unfenced = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -251,16 +257,56 @@ export class HermesService {
     const end = unfenced.lastIndexOf('}');
     if (start < 0 || end <= start) return null;
     try {
-      const parsed = JSON.parse(unfenced.slice(start, end + 1)) as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-      const record = parsed as Record<string, unknown>;
-      const nested = record.collectionResult;
-      return nested && typeof nested === 'object' && !Array.isArray(nested)
-        ? nested as Record<string, unknown>
-        : record;
+      return JSON.parse(unfenced.slice(start, end + 1)) as unknown;
     } catch {
       return null;
     }
+  }
+
+  private findDeepReportSourceCollectionRecord(value: unknown, seen: Set<unknown>): Record<string, unknown> | null {
+    if (typeof value === 'string') {
+      const parsed = this.parseJsonObjectFromText(value);
+      return parsed === value ? null : this.findDeepReportSourceCollectionRecord(parsed, seen);
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || seen.has(value)) return null;
+    seen.add(value);
+
+    const record = value as Record<string, unknown>;
+    if (this.isDeepReportSourceCollectionLike(record)) return record;
+
+    for (const key of [
+      'collectionResult',
+      'sourceCollectionResult',
+      'deepReportSources',
+      'result',
+      'data',
+      'payload',
+      'output',
+      'response',
+      'content',
+      'message',
+    ]) {
+      const nested = this.findDeepReportSourceCollectionRecord(record[key], seen);
+      if (nested) return nested;
+    }
+
+    return null;
+  }
+
+  private isDeepReportSourceCollectionLike(record: Record<string, unknown>): boolean {
+    if (record.status === 'not_available' || record.status === 'failed') return true;
+    return [
+      'acceptedSources',
+      'accepted_sources',
+      'acceptedWebSources',
+      'sources',
+      'uncertainSources',
+      'uncertain_sources',
+      'coveredGaps',
+      'covered_gaps',
+      'uncoveredGaps',
+      'uncovered_gaps',
+    ].some((key) => Array.isArray(record[key]));
   }
 
   async runReportViaRunsApi(input: RunInput): Promise<RunResult> {

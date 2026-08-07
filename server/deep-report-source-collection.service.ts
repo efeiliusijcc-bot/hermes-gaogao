@@ -40,21 +40,29 @@ export class DeepReportSourceCollectionService {
     if (raw?.status === 'failed') {
       throw new Error(this.cleanText(raw.summary, 500) || 'Deep Report source collection failed.');
     }
+    const acceptedSourcesRaw = this.firstArray(raw, ['acceptedSources', 'accepted_sources', 'acceptedWebSources', 'sources']);
+    const uncertainSourcesRaw = this.firstArray(raw, ['uncertainSources', 'uncertain_sources', 'uncertainWebSources']);
+    const coveredGapsRaw = this.firstArray(raw, ['coveredGaps', 'covered_gaps']);
+    const uncoveredGapsRaw = this.firstArray(raw, ['uncoveredGaps', 'uncovered_gaps']);
+    const summaryRaw = this.firstString(raw, ['summary', 'resultSummary', 'collectionSummary']);
+    const hasStructuredPayload = [
+      acceptedSourcesRaw,
+      uncertainSourcesRaw,
+      coveredGapsRaw,
+      uncoveredGapsRaw,
+    ].some(Array.isArray);
     if (
-      !Array.isArray(raw?.acceptedSources)
-      || !Array.isArray(raw?.uncertainSources)
-      || !Array.isArray(raw?.coveredGaps)
-      || !Array.isArray(raw?.uncoveredGaps)
-      || typeof raw?.summary !== 'string'
+      !hasStructuredPayload
+      || typeof summaryRaw !== 'string'
     ) {
       throw new Error('Deep Report source collection returned invalid structured output.');
     }
 
-    const acceptedSources = this.sourceArray(raw?.acceptedSources);
-    const uncertainSources = this.sourceArray(raw?.uncertainSources);
-    const coveredGaps = this.jsonArray(raw?.coveredGaps);
-    const uncoveredGaps = this.jsonArray(raw?.uncoveredGaps);
-    const summary = this.cleanText(raw?.summary, 2000);
+    const acceptedSources = this.sourceArray(acceptedSourcesRaw || []);
+    const uncertainSources = this.sourceArray(uncertainSourcesRaw || []);
+    const coveredGaps = this.jsonArray(coveredGapsRaw || []);
+    const uncoveredGaps = this.jsonArray(uncoveredGapsRaw || []);
+    const summary = this.cleanText(summaryRaw, 2000);
     return {
       status: raw?.status === 'partial' || uncoveredGaps.length > 0 ? 'partial' : 'completed',
       acceptedSources,
@@ -63,6 +71,20 @@ export class DeepReportSourceCollectionService {
       uncoveredGaps,
       summary,
     };
+  }
+
+  private firstArray(record: Record<string, unknown>, keys: string[]): unknown[] | undefined {
+    for (const key of keys) {
+      if (Array.isArray(record[key])) return record[key] as unknown[];
+    }
+    return undefined;
+  }
+
+  private firstString(record: Record<string, unknown>, keys: string[]): string | undefined {
+    for (const key of keys) {
+      if (typeof record[key] === 'string') return record[key] as string;
+    }
+    return undefined;
   }
 
   private sourceArray(value: unknown): DeepReportCollectedSource[] {

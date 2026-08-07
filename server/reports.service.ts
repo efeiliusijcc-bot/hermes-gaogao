@@ -3,7 +3,7 @@ import { marked } from 'marked';
 import OpenAI from 'openai';
 import { Subject } from 'rxjs';
 import { v4 as uuid } from 'uuid';
-import { HERMES_RUN_MODE, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL, REPORT_AGENT_PROVIDER } from './config.js';
+import { HERMES_RUN_MODE, HERMES_RUNS_RECOVERY_WAIT_MS, REPORT_AGENT_API_KEY, REPORT_AGENT_BASE_URL, REPORT_AGENT_MODEL, REPORT_AGENT_PROVIDER } from './config.js';
 import { CrawlerService } from './crawler.service.js';
 import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { ArtifactPathResolver } from './artifact-path-resolver.service.js';
@@ -3171,7 +3171,7 @@ export class ReportsService implements OnModuleDestroy {
             stage: 'runs_recovering',
             message: `Hermes runs API failed; checking for an already written report file. ${message}`,
           });
-          recoveredReport = await this.findMarkdownFileInJobDir(job.jobId) ?? await this.findBestMarkdownFileForJob(job);
+          recoveredReport = await this.waitForRecoverableRunsReport(job, HERMES_RUNS_RECOVERY_WAIT_MS);
           if (recoveredReport) {
             this.pushEvent(job, {
               type: 'stage',
@@ -4215,6 +4215,27 @@ export class ReportsService implements OnModuleDestroy {
     return null;
   }
 
+  private async waitForRecoverableRunsReport(job: JobRecord, waitMs: number) {
+    const deadline = Date.now() + Math.max(0, waitMs);
+    let announcedWait = false;
+    do {
+      const report = await this.findMarkdownFileInJobDir(job.jobId) ?? await this.findBestMarkdownFileForJob(job);
+      if (report) return report;
+      if (Date.now() >= deadline) break;
+      if (!announcedWait) {
+        announcedWait = true;
+        this.pushEvent(job, {
+          type: 'stage',
+          stage: 'runs_recovery_waiting',
+          message: `Hermes runs API timed out; waiting up to ${Math.ceil(Math.max(0, waitMs) / 1000)}s for a late report artifact.`,
+        });
+      }
+      await this.sleep(5_000);
+    } while (Date.now() < deadline);
+
+    return null;
+  }
+
   private async describeHermesJobArtifacts(job: JobRecord): Promise<string> {
     try {
       const dir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
@@ -4267,7 +4288,7 @@ export class ReportsService implements OnModuleDestroy {
 
   private canRecoverJobFromExistingReport(job: JobRecord): boolean {
     if (job.status === 'queued' || job.status === 'running' || job.status === 'waiting_approval') return false;
-    return this.hasExplicitReportCompletionEvidence(job);
+    return this.hasExplicitReportCompletionEvidence(job) || this.hasLateRunsArtifactRecoveryEvidence(job);
   }
 
   private hasExplicitReportCompletionEvidence(job: JobRecord): boolean {
@@ -4279,6 +4300,14 @@ export class ReportsService implements OnModuleDestroy {
         && entry.phase === 'done'
         && /report generation completed|报告.*完成|最终报告.*确认/i.test(entry.summary || '');
     });
+  }
+
+  private hasLateRunsArtifactRecoveryEvidence(job: JobRecord): boolean {
+    const text = [
+      job.errorMessage,
+      ...(job.eventLog || []).slice(-50).map((item) => [item.phase, item.status, item.summary, item.detail].filter(Boolean).join(' ')),
+    ].join(' ');
+    return /runs API failed|run_\w+.*timed out|no final report file was recovered/i.test(text);
   }
 
   private async findBestMarkdownFileForJob(job: JobRecord) {

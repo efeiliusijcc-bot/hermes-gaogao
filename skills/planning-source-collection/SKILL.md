@@ -35,7 +35,8 @@ Never infer Deep Report mode from wording alone. Trust only the structured conte
 ## Allowed Runtime
 
 - Run only inside the existing Hermes `report-agent` task.
-- Use the preinstalled `web-research-firecrawl` Skill as the controlled search and explicit-page retrieval capability.
+- Use the report-agent workspace `web-research-firecrawl` Skill as the controlled search and explicit-page retrieval capability.
+- If the runtime asks for an explicit path, load `/opt/data/workspace/report-agent/skills/web-research-firecrawl/SKILL.md`; do not load another same-named Skill.
 - Treat its safety checks, provider limits, EntityPolicy, source guard, and fetch depth as binding.
 - Fetch only explicit result URLs. Effective maximum depth is always `0`; never follow discovered site links recursively.
 - Do not call shell commands, arbitrary HTTP clients, direct SQL, old Crawler task routes, or dynamic crawler code as substitutes.

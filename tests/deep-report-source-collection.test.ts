@@ -139,6 +139,56 @@ async function testIncompleteSkillOutputFailsInsteadOfInventingEmptySuccess() {
   );
 }
 
+async function testSnakeCaseCollectionResultIsNormalized() {
+  const service = new DeepReportSourceCollectionService({
+    runDeepReportSourceCollectionSkill: async () => ({
+      status: 'partial',
+      accepted_sources: [acceptedSource],
+      uncertain_sources: [],
+      covered_gaps: ['项目真实性'],
+      uncovered_gaps: ['投产时间'],
+      resultSummary: '字段使用蛇形命名，但结构有效。',
+    }),
+  } as never);
+  const result = await service.execute({
+    workflow: 'deep_report',
+    deepReportEnabled: true,
+    stage: 'source_collection',
+    planningSessionId: 'job-deep-report',
+    topic: '深度编报主题',
+  });
+
+  assert.equal(result.status, 'partial');
+  assert.deepEqual(result.acceptedSources, [acceptedSource]);
+  assert.deepEqual(result.uncoveredGaps, ['投产时间']);
+  assert.equal(result.summary, '字段使用蛇形命名，但结构有效。');
+}
+
+function testNestedCollectionResultIsParsed() {
+  const hermes = new HermesService({} as never, {} as never) as HermesService & {
+    parseDeepReportSourceCollectionResult: (text: string) => Record<string, unknown> | null;
+  };
+  const parsed = hermes.parseDeepReportSourceCollectionResult(JSON.stringify({
+    sourceCollectionResult: {
+      status: 'completed',
+      acceptedSources: [acceptedSource],
+      uncertainSources: [],
+      coveredGaps: ['项目真实性'],
+      uncoveredGaps: [],
+      summary: '已补充核验资料。',
+    },
+  }));
+
+  assert.deepEqual(parsed?.acceptedSources, [acceptedSource]);
+}
+
+function testArbitraryJsonRunEnvelopeIsNotAcceptedAsCollectionResult() {
+  const hermes = new HermesService({} as never, {} as never) as HermesService & {
+    parseDeepReportSourceCollectionResult: (text: string) => Record<string, unknown> | null;
+  };
+  assert.equal(hermes.parseDeepReportSourceCollectionResult('{"id":"run_1","status":"completed"}'), null);
+}
+
 function reportsService(collector: { execute: (input: Record<string, unknown>) => Promise<Record<string, unknown>> }) {
   return new ReportsService(
     {} as never,
@@ -300,6 +350,9 @@ await testServerGuardRejectsNonDeepReportContexts();
 await testValidDeepReportContextRunsSkillOnce();
 await testSkillNotAvailableResponseIsNeverNormalizedAsSuccess();
 await testIncompleteSkillOutputFailsInsteadOfInventingEmptySuccess();
+await testSnakeCaseCollectionResultIsNormalized();
+testNestedCollectionResultIsParsed();
+testArbitraryJsonRunEnvelopeIsNotAcceptedAsCollectionResult();
 await testNormalReportSkipsSkillAndKeepsProgressUnchanged();
 await testDeepReportWritesSkillResultIntoGenerationPayload();
 await testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults();
