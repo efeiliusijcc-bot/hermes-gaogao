@@ -3047,6 +3047,7 @@ const citationItems = computed(() => {
   return acceptedCitationSources.value.map((source, index) => {
     const number = Number(source.citationNo) || index + 1
     const match = text.match(new RegExp(`(?:\\\\[|〔|【)${number}(?:\\\\]|〕|】)`))
+    const matchStatus = source.matchStatus || 'matched'
     return {
       number,
       chapter: chapterForCitation(text, match?.index || 0),
@@ -3054,7 +3055,9 @@ const citationItems = computed(() => {
       sourceName: source.sourceName || '--',
       method: source.method || '后端 accepted 引用',
       credibility: source.relevance || '--',
-      summary: source.summary || '当前引用已通过后端信源校验。',
+      matchStatus,
+      matchStatusLabel: matchStatus === 'matched' ? '已匹配信源' : matchStatus === 'raw_only' ? '仅正文引用' : '待核验',
+      summary: source.summary || source.detail || '当前引用已从报告正文提取，暂无结构化信源详情。',
     }
   })
 })
@@ -5708,6 +5711,7 @@ function exportPdf() {
                   <span>来源机构：{{ item.sourceName }}</span>
                   <span>采集方式：{{ item.method }}</span>
                   <span>可信度：{{ item.credibility }}</span>
+                  <span :class="['citation-status', `citation-status-${item.matchStatus}`]">{{ item.matchStatusLabel }}</span>
                 </div>
                 <p>{{ item.summary }}</p>
               </div>

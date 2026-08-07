@@ -41,9 +41,7 @@ export function sourceHostname(url) {
 }
 
 export function filterAcceptedReportReferences(items) {
-  return (Array.isArray(items) ? items : []).filter((item) => (
-    item && typeof item === 'object' && item.matchStatus === 'matched'
-  ))
+  return (Array.isArray(items) ? items : []).filter((item) => item && typeof item === 'object')
 }
 
 export function resolveSourceGroup(source, fallbackGroup = 'all') {

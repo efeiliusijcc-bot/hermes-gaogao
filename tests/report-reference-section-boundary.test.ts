@@ -80,6 +80,23 @@ assert.equal(fullWidthMatchedReferences.length, 1);
 assert.equal(fullWidthMatchedReferences[0].citationNo, 1);
 assert.equal(fullWidthMatchedReferences[0].matchStatus, 'matched');
 
+service.reportCitationToolSearchSources = async () => [];
+const rawOnlyMarkdown = `# 测试报告
+
+正文事实一[1]，正文事实二[2]。
+
+## 参考资料
+
+[1] Example News. Only listed reference. https://example.com/raw
+`;
+const rawOnlyReferences = await service.buildReportReferenceItems(
+  { jobId: 'job-raw-only-reference' },
+  rawOnlyMarkdown,
+);
+assert.equal(rawOnlyReferences.length, 2);
+assert.deepEqual(rawOnlyReferences.map((item) => item.citationNo), [1, 2]);
+assert.deepEqual(rawOnlyReferences.map((item) => item.matchStatus), ['raw_only', 'raw_only']);
+
 let markdownReadArgs: [string | null, string | undefined] | null = null;
 service.readMarkdownFile = async (filePath, jobId) => {
   markdownReadArgs = [filePath, jobId];

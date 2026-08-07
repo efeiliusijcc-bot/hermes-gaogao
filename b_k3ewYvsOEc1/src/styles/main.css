@@ -5298,6 +5298,27 @@ canvas {
   overflow-wrap: break-word;
 }
 
+.citation-status {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 800;
+}
+
+.citation-status-matched {
+  border-color: rgba(22, 163, 74, 0.22);
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.citation-status-raw_only {
+  border-color: rgba(245, 158, 11, 0.28);
+  background: #fffbeb;
+  color: #b45309;
+}
+
 .citation-body p {
   margin: 10px 0 0;
   color: #475569;

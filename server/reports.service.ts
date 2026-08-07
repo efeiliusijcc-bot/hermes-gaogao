@@ -4631,14 +4631,23 @@ export class ReportsService implements OnModuleDestroy {
 
   private async reportReferenceSources(job: JobRecord): Promise<ReportSourceListItem[]> {
     const persisted = await this.readReportReferencesArtifact(job);
-    const acceptedPersisted = (persisted || []).filter((item) => item.matchStatus === 'matched');
-    if (acceptedPersisted.length) return acceptedPersisted;
+    if (persisted?.length) {
+      const markdown = await this.reportMarkdown(job);
+      const citationNumbers = markdown ? this.parseCitationNumbers(markdown) : [];
+      const persistedNumbers = new Set(persisted.map((item) => item.citationNo).filter((value): value is number => Boolean(value)));
+      const coversReportCitations = citationNumbers.every((number) => persistedNumbers.has(number));
+      if (!citationNumbers.length || coversReportCitations) return persisted;
+
+      const rebuilt = await this.buildReportReferenceItems(job, markdown);
+      await this.writeReportReferencesArtifact(job, markdown, rebuilt);
+      return rebuilt;
+    }
 
     const markdown = await this.reportMarkdown(job);
     if (!markdown) return [];
     const rebuilt = await this.buildReportReferenceItems(job, markdown);
     await this.writeReportReferencesArtifact(job, markdown, rebuilt);
-    return rebuilt.filter((item) => item.matchStatus === 'matched');
+    return rebuilt;
   }
 
   private async buildReportReferenceItems(job: JobRecord, markdown: string): Promise<ReportSourceListItem[]> {
@@ -4780,7 +4789,7 @@ export class ReportsService implements OnModuleDestroy {
   ): Promise<void> {
     try {
       const items = prebuiltItems ?? await this.buildReportReferenceItems(job, markdown);
-      const references = items.filter((item) => item.matchStatus === 'matched').slice(0, 300).map((item) => ({
+      const references = items.slice(0, 300).map((item) => ({
         citationNo: item.citationNo,
         title: item.title || '',
         sourceName: item.sourceName || '',
