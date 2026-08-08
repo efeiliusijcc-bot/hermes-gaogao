@@ -108,6 +108,7 @@ const showDraftAssistant = ref(false)
 const showDailyAwareness = ref(false)
 const showPersonalSettings = ref(false)
 const draftInitialEventId = ref('')
+const nexusHeaderRef = ref(null)
 const {
   currentUser: authUser,
   isLoading: authLoading,
@@ -190,6 +191,10 @@ function handleLogout() {
   showPersonalSettings.value = false
   draftInitialEventId.value = ''
   returnHome()
+}
+
+function openSidebarSettings(event) {
+  nexusHeaderRef.value?.toggleSettingsMenu(event)
 }
 
 function openUserManagement() {
@@ -530,6 +535,7 @@ function jobActionLabel(status) {
     <div class="crt-scanline"></div>
 
     <NexusHeader
+      ref="nexusHeaderRef"
       :user="authUser"
       :auth-loading="authLoading"
       :auth-error="authError"
@@ -591,6 +597,7 @@ function jobActionLabel(status) {
         :recentLoadError="recentLoadError"
         :currentJobId="sidebarCurrentJobId"
         :currentQaSessionId="selectedQaSessionId"
+        :showSettings="Boolean(authUser)"
         @open-job="openReportJob"
         @open-qa-session="openQaSession"
         @start-qa="startQaFromSidebar"
@@ -598,6 +605,7 @@ function jobActionLabel(status) {
         @refresh-health="refreshHealth"
         @open-history-list="openReportHistoryList"
         @load-more-recent="loadMoreRecentReports"
+        @open-settings="openSidebarSettings"
       />
 
       <DataCanvas

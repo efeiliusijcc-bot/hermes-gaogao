@@ -274,14 +274,26 @@ function updateSettingsMenuPosition() {
   const button = settingsButtonRef.value
   if (!button) return
   const rect = button.getBoundingClientRect()
+  if (button.closest('.sidebar-shell')) {
+    settingsMenuStyle.value = {
+      top: 'auto',
+      right: 'auto',
+      bottom: `${window.innerHeight - rect.top + 8}px`,
+      left: `${rect.left}px`,
+    }
+    return
+  }
   settingsMenuStyle.value = {
     top: `${rect.bottom + 8}px`,
     right: `${Math.max(16, window.innerWidth - rect.right)}px`,
+    bottom: 'auto',
+    left: 'auto',
   }
 }
 
 function toggleSettingsMenu(event) {
   event?.stopPropagation()
+  if (event?.currentTarget instanceof HTMLElement) settingsButtonRef.value = event.currentTarget
   if (!props.user) {
     openLoginDialog()
     return
@@ -457,6 +469,8 @@ watch(() => props.authError, (error) => {
   loginForm.password = ''
   loginTouched.password = false
 })
+
+defineExpose({ toggleSettingsMenu })
 </script>
 
 <template>
@@ -527,19 +541,6 @@ watch(() => props.authError, (error) => {
         <span class="header-user-caret">▾</span>
       </button>
 
-      <div v-if="user" class="header-settings relative">
-        <button
-          ref="settingsButtonRef"
-          class="settings-icon-btn"
-          type="button"
-          aria-label="设置"
-          :aria-expanded="showSettingsMenu"
-          title="设置"
-          @click.stop="toggleSettingsMenu"
-        >
-          ⚙
-        </button>
-      </div>
     </div>
   </header>
 

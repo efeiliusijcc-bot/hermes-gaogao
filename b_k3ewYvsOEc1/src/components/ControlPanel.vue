@@ -35,9 +35,10 @@ const props = defineProps({
     default: 0,
   },
   currentQaSessionId: String,
+  showSettings: Boolean,
 })
 
-const emit = defineEmits(['open-job', 'open-qa-session', 'start-qa', 'start-report', 'refresh-health', 'open-history-list', 'load-more-recent'])
+const emit = defineEmits(['open-job', 'open-qa-session', 'start-qa', 'start-report', 'refresh-health', 'open-history-list', 'load-more-recent', 'open-settings'])
 
 const hasHealth = computed(() => Boolean(props.health))
 const healthOk = computed(() => Boolean(props.health?.ok))
@@ -252,5 +253,16 @@ function handleHistoryAction() {
         </div>
       </div>
     </section>
+
+    <button
+      v-if="showSettings"
+      class="settings-icon-btn"
+      type="button"
+      aria-label="设置"
+      title="设置"
+      @click="emit('open-settings', $event)"
+    >
+      ⚙
+    </button>
   </aside>
 </template>
