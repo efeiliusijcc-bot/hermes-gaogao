@@ -301,6 +301,17 @@ async function testOwnerAdminIsolation() {
   assert.equal(adminResult?.overallScore, 82);
 }
 
+async function testLegacyQualityReviewIsEnrichedWithEvidence() {
+  const { service } = createService();
+  const result = await service.getQualityReview('quality-job-1', user('user-1', 'operator'));
+  const checks = result?.checks || [];
+  const topicCheck = checks.find((check) => check.key === 'topic_alignment');
+  assert.ok(topicCheck, '应保留或补齐主题一致性检查项');
+  assert.match(String(topicCheck?.evidence || ''), /用户主题「英国未成年人社交媒体禁令」/);
+  assert.match(String(topicCheck?.evidence || ''), /成稿标题「英国未成年人社交媒体禁令报告」/);
+  assert.ok(checks.some((check) => check.key === 'source_reference_clarity'), '旧版结果应补齐缺失检查项');
+}
+
 async function testRunQualityReviewWritesStructuredResultAndDoesNotOverwriteReport() {
   const { service, remoteFs, pool } = createService();
   const originalMarkdown = makeJob().markdown;
@@ -435,6 +446,7 @@ async function testHttpEndpoints() {
 }
 
 await testOwnerAdminIsolation();
+await testLegacyQualityReviewIsEnrichedWithEvidence();
 await testRunQualityReviewWritesStructuredResultAndDoesNotOverwriteReport();
 await testQualityReviewFailureDoesNotChangeSucceededJob();
 testMissingPlanSectionProducesWarningWithEvidence();

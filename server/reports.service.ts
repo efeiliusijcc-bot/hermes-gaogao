@@ -537,9 +537,9 @@ export class ReportsService implements OnModuleDestroy {
     await this.jobsReady;
     const job = this.assertCanAccessJob(jobId, user);
     const dbReview = await this.readLatestQualityReviewFromDb(job.jobId);
-    if (dbReview) return dbReview;
+    if (dbReview) return this.enrichQualityReviewEvidence(job, dbReview);
     const artifactReview = await this.readQualityReviewArtifact(job);
-    return artifactReview ? this.toQualityReview(artifactReview, job) : null;
+    return artifactReview ? this.enrichQualityReviewEvidence(job, this.toQualityReview(artifactReview, job)) : null;
   }
 
   async runQualityReview(jobId: string, user: AuthUser): Promise<ReportQualityReviewResponse> {
@@ -2555,6 +2555,53 @@ export class ReportsService implements OnModuleDestroy {
     const dir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
     const raw = await this.readJsonFile(this.remoteFs.joinPath(dir, 'quality', 'quality_review.json'));
     return raw && !Array.isArray(raw) ? raw : null;
+  }
+
+  private async enrichQualityReviewEvidence(
+    job: JobRecord,
+    review: ReportQualityReviewResponse,
+  ): Promise<ReportQualityReviewResponse> {
+    const currentChecks = Array.isArray(review.checks) ? review.checks : [];
+    const needsEvidence = currentChecks.some((check) => !String((check as Record<string, unknown>).evidence || '').trim());
+    if (!needsEvidence && currentChecks.length >= 8) return review;
+
+    try {
+      const markdown = await this.readFinalMarkdownForQualityReview(job);
+      if (!markdown.trim()) return review;
+      const context = await this.collectQualityReviewContext(job);
+      const fallback = this.buildQualityReviewJson(job, markdown, context);
+      const fallbackChecks = Array.isArray(fallback.checks) ? fallback.checks as Array<Record<string, unknown>> : [];
+      if (!fallbackChecks.length) return review;
+
+      const checksByKey = new Map(fallbackChecks.map((check) => [String(check.key || check.label || ''), check]));
+      const mergedChecks = currentChecks.map((check) => {
+        const existing = this.plainObject(check);
+        const key = String(existing.key || existing.label || '');
+        const fallbackCheck = checksByKey.get(key);
+        if (!fallbackCheck) return existing;
+        return {
+          ...fallbackCheck,
+          ...existing,
+          evidence: String(existing.evidence || '').trim() || fallbackCheck.evidence || '',
+        };
+      });
+      const existingKeys = new Set(mergedChecks.map((check) => String((check as Record<string, unknown>).key || (check as Record<string, unknown>).label || '')));
+      for (const fallbackCheck of fallbackChecks) {
+        const key = String(fallbackCheck.key || fallbackCheck.label || '');
+        if (key && !existingKeys.has(key)) mergedChecks.push(fallbackCheck);
+      }
+
+      return {
+        ...review,
+        checks: mergedChecks,
+        reviewJson: {
+          ...this.plainObject(review.reviewJson),
+          checks: mergedChecks,
+        },
+      };
+    } catch {
+      return review;
+    }
   }
 
   private async readFinalMarkdownForQualityReview(job: JobRecord): Promise<string> {
