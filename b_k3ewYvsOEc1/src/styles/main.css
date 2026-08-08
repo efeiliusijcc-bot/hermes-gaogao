@@ -975,6 +975,10 @@ canvas {
   box-shadow: 0 12px 26px rgba(37, 99, 235, 0.08);
 }
 
+.header-user-chip-sidebar-mode {
+  display: none;
+}
+
 .header-user-avatar {
   width: 26px;
   height: 26px;
@@ -1550,6 +1554,43 @@ canvas {
 
 .sidebar-shell > .status-card {
   flex-shrink: 0;
+}
+
+.sidebar-footer {
+  display: grid;
+  flex-shrink: 0;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #eef2f7;
+}
+
+.sidebar-user-chip {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.sidebar-user-chip:hover {
+  border-color: rgba(37, 99, 235, 0.42);
+  background: #f8fbff;
+}
+
+.sidebar-user-chip .header-user-text {
+  flex: 1;
+}
+
+.sidebar-user-chip .header-user-caret {
+  margin-left: auto;
 }
 
 .sidebar-shell > .panel:last-child {
@@ -6665,6 +6706,10 @@ canvas {
 
   .header-user-chip {
     max-width: 180px;
+  }
+
+  .header-user-chip-sidebar-mode {
+    display: inline-flex;
   }
 
   .workspace-actions {

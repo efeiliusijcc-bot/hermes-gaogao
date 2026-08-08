@@ -1,7 +1,12 @@
 <script setup>
 import { computed } from 'vue'
+import { displayUserRoleNames } from '../lib/permissionModules.js'
 
 const props = defineProps({
+  user: {
+    type: Object,
+    default: null,
+  },
   health: Object,
   mode: {
     type: String,
@@ -51,6 +56,8 @@ const engineText = computed(() => {
 })
 const reportTotalText = computed(() => Number(props.reportTotal || 0).toLocaleString('zh-CN'))
 const qaTotalText = computed(() => Number(props.qaTotal || 0).toLocaleString('zh-CN'))
+const displayUserName = computed(() => props.user?.displayName || props.user?.username || '')
+const displayRoleName = computed(() => displayUserRoleNames(props.user))
 const recentJobs = computed(() => props.recentJobs.length ? props.recentJobs : props.jobs)
 const isQaMode = computed(() => props.mode === 'qa')
 const historyTitle = computed(() => isQaMode.value ? '问答历史' : '编报历史')
@@ -254,15 +261,31 @@ function handleHistoryAction() {
       </div>
     </section>
 
-    <button
-      v-if="showSettings"
-      class="settings-icon-btn"
-      type="button"
-      aria-label="设置"
-      title="设置"
-      @click="emit('open-settings', $event)"
-    >
-      ⚙
-    </button>
+    <footer v-if="showSettings" class="sidebar-footer">
+      <button
+        class="settings-icon-btn"
+        type="button"
+        aria-label="设置"
+        title="设置"
+        @click="emit('open-settings', $event)"
+      >
+        ⚙
+      </button>
+      <button
+        v-if="user"
+        class="sidebar-user-chip"
+        type="button"
+        aria-label="账号菜单"
+        aria-haspopup="menu"
+        @click.stop="emit('open-settings', $event)"
+      >
+        <span class="header-user-avatar">{{ displayUserName.slice(0, 1).toUpperCase() }}</span>
+        <span class="header-user-text">
+          <span class="header-user-name">{{ displayUserName }}</span>
+          <span class="header-user-role">{{ displayRoleName }}</span>
+        </span>
+        <span class="header-user-caret">▾</span>
+      </button>
+    </footer>
   </aside>
 </template>

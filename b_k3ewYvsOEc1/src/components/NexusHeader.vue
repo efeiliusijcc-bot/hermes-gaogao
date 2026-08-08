@@ -28,6 +28,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  accountInSidebar: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-personal-settings', 'switch-workspace'])
@@ -528,6 +532,7 @@ defineExpose({ toggleSettingsMenu })
       <button
         v-else
         class="header-user-chip"
+        :class="{ 'header-user-chip-sidebar-mode': accountInSidebar }"
         type="button"
         :aria-expanded="showSettingsMenu"
         aria-haspopup="menu"

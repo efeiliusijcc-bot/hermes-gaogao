@@ -106,6 +106,12 @@ const selectedQaSessionId = ref('')
 const showUserManagement = ref(false)
 const showDraftAssistant = ref(false)
 const showDailyAwareness = ref(false)
+const accountInSidebar = computed(() => (
+  currentView.value === 'generator' &&
+  !showDraftAssistant.value &&
+  !showDailyAwareness.value &&
+  !showUserManagement.value
+))
 const showPersonalSettings = ref(false)
 const draftInitialEventId = ref('')
 const nexusHeaderRef = ref(null)
@@ -542,6 +548,7 @@ function jobActionLabel(status) {
       :auth-notice="authNotice"
       :current-workspace="currentWorkspace"
       :user-management-open="showUserManagement"
+      :account-in-sidebar="accountInSidebar"
       @return-home="returnHome"
       @login="handleLogin"
       @logout="handleLogout"
@@ -585,6 +592,7 @@ function jobActionLabel(status) {
 
     <div v-else-if="currentView === 'generator'" class="app-body">
       <ControlPanel
+        :user="authUser"
         :health="health"
         :mode="homeMode"
         :jobs="filteredJobs"
