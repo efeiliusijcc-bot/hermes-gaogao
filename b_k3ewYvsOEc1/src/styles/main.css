@@ -5649,6 +5649,7 @@ canvas {
   padding: 3px 8px;
   color: #475569;
   background: #f1f5f9;
+  border: 1px solid rgba(148, 163, 184, 0.26);
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
@@ -5657,16 +5658,19 @@ canvas {
 .source-type-web {
   color: #2563eb;
   background: #eff6ff;
+  border-color: rgba(37, 99, 235, 0.24);
 }
 
 .source-type-official {
-  color: #6d5a9c;
-  background: #f3f0f8;
+  color: #1d4ed8;
+  background: #dbeafe;
+  border-color: rgba(29, 78, 216, 0.30);
 }
 
 .source-type-database {
-  color: #0f766e;
-  background: #f0fdfa;
+  color: #166534;
+  background: #f0fdf4;
+  border-color: rgba(22, 163, 74, 0.26);
 }
 
 .source-publisher-cell strong,
