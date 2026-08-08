@@ -2566,9 +2566,10 @@ export class ReportsService implements OnModuleDestroy {
     if (!needsEvidence && currentChecks.length >= 8) return review;
 
     try {
-      const markdown = await this.readFinalMarkdownForQualityReview(job);
+      const markdown = (await this.reportMarkdown(job).catch(() => '')) ||
+        (await this.readFinalMarkdownForQualityReview(job).catch(() => ''));
       if (!markdown.trim()) return review;
-      const context = await this.collectQualityReviewContext(job);
+      const context = await this.collectQualityReviewContext(job).catch(() => ({}));
       const fallback = this.buildQualityReviewJson(job, markdown, context);
       const fallbackChecks = Array.isArray(fallback.checks) ? fallback.checks as Array<Record<string, unknown>> : [];
       if (!fallbackChecks.length) return review;
