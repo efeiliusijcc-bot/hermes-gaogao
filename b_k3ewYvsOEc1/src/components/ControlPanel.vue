@@ -263,15 +263,6 @@ function handleHistoryAction() {
 
     <footer v-if="showSettings" class="sidebar-footer">
       <button
-        class="settings-icon-btn"
-        type="button"
-        aria-label="设置"
-        title="设置"
-        @click="emit('open-settings', $event)"
-      >
-        ⚙
-      </button>
-      <button
         v-if="user"
         class="sidebar-user-chip"
         type="button"
