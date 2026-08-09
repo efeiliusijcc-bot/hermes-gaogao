@@ -4729,11 +4729,9 @@ canvas {
   font-weight: 700;
 }
 
-.planning-summary-grid strong {
-  color: #1d4ed8;
-  font-size: 13px;
-  line-height: 1.2;
-  white-space: nowrap;
+.planning-summary-grid button > svg {
+  flex-shrink: 0;
+  color: #2563eb;
 }
 
 .planning-selection-section {

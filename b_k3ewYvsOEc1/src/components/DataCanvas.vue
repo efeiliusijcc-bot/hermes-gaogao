@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
-import { Copy, ExternalLink, FileDown, FilePlus2, FileText, List, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
+import { ArrowDown, Copy, ExternalLink, FileDown, FilePlus2, FileText, List, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
@@ -5592,21 +5592,21 @@ function exportPdf() {
             </header>
 
             <div class="planning-summary-grid">
-              <button type="button" @click="scrollPlanningSection('planning-search-queries')">
+              <button type="button" aria-label="跳转到检索词选择" title="跳转到检索词选择" @click="scrollPlanningSection('planning-search-queries')">
                 <span>检索词</span>
-                <strong>查看选择</strong>
+                <ArrowDown :size="15" aria-hidden="true" />
               </button>
-              <button type="button" @click="scrollPlanningSection('planning-source-scope')">
+              <button type="button" aria-label="跳转到信源范围" title="跳转到信源范围" @click="scrollPlanningSection('planning-source-scope')">
                 <span>信源范围</span>
-                <strong>查看范围</strong>
+                <ArrowDown :size="15" aria-hidden="true" />
               </button>
-              <button type="button" @click="scrollPlanningSection('planning-modules')">
+              <button type="button" aria-label="跳转到章节与方向选择" title="跳转到章节与方向选择" @click="scrollPlanningSection('planning-modules')">
                 <span>编报模块</span>
-                <strong>查看章节</strong>
+                <ArrowDown :size="15" aria-hidden="true" />
               </button>
-              <button type="button" @click="scrollPlanningSection('planning-modules')">
+              <button type="button" aria-label="跳转到选择方向" title="跳转到选择方向" @click="scrollPlanningSection('planning-modules')">
                 <span>选择方向</span>
-                <strong>查看方向</strong>
+                <ArrowDown :size="15" aria-hidden="true" />
               </button>
             </div>
 
