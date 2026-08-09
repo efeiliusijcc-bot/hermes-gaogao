@@ -166,7 +166,7 @@ function removeChild(sectionIndex, childIndex) {
         <span>核心判断</span>
         <AutoResizeTextarea
           :model-value="modelValue.coreArgument || ''"
-          :min-height="100"
+          :min-height="88"
           :maxlength="2400"
           aria-label="核心判断"
           @update:model-value="patchRoot('coreArgument', $event)"
@@ -201,7 +201,7 @@ function removeChild(sectionIndex, childIndex) {
         </header>
         <AutoResizeTextarea
           :model-value="item.summary"
-          :min-height="72"
+          :min-height="56"
           :maxlength="1800"
           :aria-label="`第 ${index + 1} 章说明`"
           placeholder="章节说明"
@@ -220,7 +220,7 @@ function removeChild(sectionIndex, childIndex) {
               />
               <AutoResizeTextarea
                 :model-value="child.summary"
-                :min-height="62"
+                :min-height="50"
                 :maxlength="1200"
                 :aria-label="`第 ${index + 1} 章第 ${childIndex + 1} 节说明`"
                 placeholder="小节说明"
@@ -282,7 +282,7 @@ function removeChild(sectionIndex, childIndex) {
 </template>
 
 <style scoped>
-.draft-outline-editor { width: min(1040px, 100%); margin: 0 auto; padding: 18px 0; padding-bottom: 220px; }
+.draft-outline-editor { width: min(1040px, 100%); margin: 0 auto; padding: 18px 0; padding-bottom: 180px; }
 .draft-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 .draft-editor-head p { margin: 0 0 4px; color: #64748b; font-size: 12px; font-weight: 700; }
 .draft-editor-head h1 { margin: 0; color: #111827; font-size: 24px; letter-spacing: 0; }
@@ -292,29 +292,32 @@ function removeChild(sectionIndex, childIndex) {
 .draft-save-status.error { border-color: #f1b8b8; background: #fff7f7; color: #b42323; }
 .draft-save-status button { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: inherit; padding: 0 0 0 4px; cursor: pointer; font-weight: 700; }
 .draft-save-error { margin: -10px 0 18px; color: #b42323; font-size: 12px; text-align: right; }
-.draft-outline-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.draft-outline-fields label:last-child { grid-column: 1 / -1; }
+.draft-outline-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; border: 1px solid #e1e6ed; background: #fff; border-radius: 8px; padding: 16px; }
+.draft-outline-fields label:first-child { grid-column: 1 / -1; }
 .draft-outline-fields label, .draft-section-editor { min-width: 0; }
 .draft-outline-fields label > span { display: block; margin-bottom: 7px; color: #374151; font-size: 12px; font-weight: 750; }
 .draft-outline-fields input, .draft-outline-fields :deep(textarea), .draft-section-editor input, .draft-section-editor :deep(textarea), .draft-ai-revision :deep(textarea) { width: 100%; box-sizing: border-box; border: 1px solid #dce1e8; background: #fff; color: #1f2937; border-radius: 7px; padding: 10px 11px; font-size: 13px; line-height: 1.7; outline: 0; }
 .draft-outline-fields input:focus, .draft-outline-fields :deep(textarea:focus), .draft-section-editor input:focus, .draft-section-editor :deep(textarea:focus), .draft-ai-revision :deep(textarea:focus) { border-color: #8daedb; box-shadow: 0 0 0 3px rgba(49, 95, 157, 0.1); }
-.draft-directory-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 34px; padding-bottom: 10px; border-bottom: 1px solid #dfe4ea; }
+.draft-directory-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 28px; padding-bottom: 10px; border-bottom: 1px solid #dfe4ea; }
 .draft-directory-head h2, .draft-ai-revision h2 { margin: 0; color: #1f2937; font-size: 16px; }
 .draft-directory-head p, .draft-ai-revision p { margin: 4px 0 0; color: #89919d; font-size: 11px; }
 .draft-directory-head button, .draft-add-child, .draft-directory-empty button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #d6dde7; background: #fff; color: #3f4b5d; border-radius: 7px; padding: 8px 10px; cursor: pointer; font-size: 12px; font-weight: 700; }
-.draft-section-editor { padding: 20px 0; border-bottom: 1px solid #e4e8ed; }
-.draft-section-editor > header { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 10px; }
+.draft-directory-editor { display: grid; gap: 12px; margin-top: 12px; }
+.draft-section-editor { border: 1px solid #e1e6ed; background: #fff; border-radius: 8px; padding: 14px; }
+.draft-section-editor > header { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 8px; }
 .draft-section-editor > header > strong { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: #edf3fb; color: #315f9d; border-radius: 7px; font-size: 12px; }
+.draft-section-editor > header > input { font-weight: 700; }
 .draft-section-actions { display: flex; align-items: center; gap: 3px; }
 .draft-section-actions button, .draft-child-editor > button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; background: transparent; color: #697386; border-radius: 6px; cursor: pointer; }
 .draft-section-actions button:hover:not(:disabled), .draft-child-editor > button:hover { background: #eef1f5; color: #253047; }
 .draft-section-actions button:disabled { color: #c7ccd3; cursor: not-allowed; }
 .draft-section-actions button.danger:hover, .draft-child-editor > button:hover { background: #fff0f0; color: #b42323; }
-.draft-child-list { margin: 14px 0 0 30px; border-left: 2px solid #d9e5f7; padding-left: 14px; }
-.draft-child-editor { display: grid; grid-template-columns: 36px minmax(0, 1fr) 32px; gap: 8px; align-items: start; padding: 11px 0; }
+.draft-child-list { margin: 12px 0 0 38px; border-left: 1px solid #d9e5f7; padding: 2px 0 0 14px; }
+.draft-child-editor { display: grid; grid-template-columns: 36px minmax(0, 1fr) 32px; gap: 8px; align-items: start; padding: 8px 0; }
+.draft-child-editor + .draft-child-editor { border-top: 1px solid #eef2f7; }
 .draft-child-editor > span { padding-top: 9px; color: #788393; font-size: 11px; font-weight: 700; }
 .draft-child-editor > div { display: grid; gap: 7px; }
-.draft-add-child { margin: 12px 0 0 30px; border-style: dashed; }
+.draft-add-child { margin: 10px 0 0 38px; border-style: dashed; }
 .draft-directory-empty { padding: 32px 0; color: #7b8490; text-align: center; }
 .draft-directory-empty p { margin: 0 0 12px; }
 .draft-ai-revision { position: fixed; left: 50%; bottom: 16px; z-index: 30; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "back ai confirm"; align-items: center; gap: 12px; width: min(1040px, calc(100vw - 56px)); box-sizing: border-box; margin: 0; border: 1px solid #d8dee7; background: rgba(255, 255, 255, 0.97); border-radius: 8px; box-shadow: 0 10px 30px rgba(30, 41, 59, 0.14); padding: 12px; transform: translateX(-50%); backdrop-filter: blur(12px); }
@@ -339,8 +342,9 @@ function removeChild(sectionIndex, childIndex) {
   .draft-outline-editor { padding-bottom: 320px; }
   .draft-editor-head, .draft-directory-head { align-items: stretch; flex-direction: column; }
   .draft-save-status { align-self: flex-start; }
-  .draft-outline-fields { grid-template-columns: 1fr; }
-  .draft-outline-fields label:last-child { grid-column: auto; }
+  .draft-outline-fields { grid-template-columns: 1fr; padding: 12px; }
+  .draft-outline-fields label:first-child { grid-column: auto; }
+  .draft-section-editor { padding: 12px; }
   .draft-section-editor > header { grid-template-columns: 30px minmax(0, 1fr); }
   .draft-section-actions { grid-column: 2; justify-content: flex-start; }
   .draft-child-list, .draft-add-child { margin-left: 8px; }
