@@ -3,8 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { ArrowDown, Copy, ExternalLink, FileDown, FilePlus2, FileText, List, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
-import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
+import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getDraftOutline, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
+import { isDraftAssistantReportJob, normalizeReportDraftOutline } from '../lib/reportDraftOutline.js'
 import { buildReadableExecutionLogs, translateHermesExecutionLog } from '../lib/reportExecutionLogs.js'
 import { parseStructuredPlanningContext } from '../lib/reportPlanningContext.js'
 import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
@@ -185,6 +186,10 @@ const qualityReviewLoading = ref(false)
 const qualityReviewRunning = ref(false)
 const qualityReviewError = ref('')
 const qualityReviewNotice = ref('')
+const draftOutline = ref(null)
+const draftOutlineLoading = ref(false)
+const draftOutlineError = ref('')
+let draftOutlineRequestId = 0
 const activeSourceType = ref('all')
 const sourceSearchQuery = ref('')
 const sourceKindFilter = ref('全部')
@@ -711,6 +716,44 @@ const planningSelectionView = computed(() => {
     totalDirections: modules.reduce((sum, module) => sum + module.directions.length, 0),
   }
 })
+const isDraftAssistantResult = computed(() => isDraftAssistantReportJob(props.job))
+const draftOutlineView = computed(() => normalizeReportDraftOutline(draftOutline.value))
+
+function resetDraftOutlineState() {
+  draftOutlineRequestId += 1
+  draftOutline.value = null
+  draftOutlineLoading.value = false
+  draftOutlineError.value = ''
+}
+
+async function loadResultDraftOutline() {
+  const outlineId = String(props.job?.outlineId || '').trim()
+  if (!outlineId) {
+    resetDraftOutlineState()
+    return
+  }
+  const requestId = ++draftOutlineRequestId
+  draftOutlineLoading.value = true
+  draftOutlineError.value = ''
+  try {
+    const result = await getDraftOutline(outlineId)
+    if (requestId !== draftOutlineRequestId || outlineId !== String(props.job?.outlineId || '').trim()) return
+    draftOutline.value = result
+  } catch (error) {
+    if (requestId !== draftOutlineRequestId) return
+    draftOutline.value = null
+    draftOutlineError.value = error instanceof Error ? error.message : String(error || '最终大纲加载失败')
+  } finally {
+    if (requestId === draftOutlineRequestId) draftOutlineLoading.value = false
+  }
+}
+
+function draftOutlineEditTypeLabel(value) {
+  if (value === 'manual') return '手动确认版'
+  if (value === 'refine') return 'AI 修改确认版'
+  if (value === 'ai') return 'AI 生成确认版'
+  return '最终确认版'
+}
 const reportTypeOptions = [
   {
     value: 'write-hb-k',
@@ -3736,6 +3779,10 @@ watch(() => [props.phase, props.job?.jobId], () => {
   qualityReviewNotice.value = ''
   resetSourceListState()
 })
+watch(() => [props.job?.jobId, props.job?.outlineId], () => {
+  resetDraftOutlineState()
+  if (activeResultTab.value === 'planning' && isDraftAssistantResult.value) loadResultDraftOutline()
+})
 watch(() => activeResultTab.value, (tab) => {
   invalidateSourceListRequests()
   startSourceAutoRefresh()
@@ -3747,6 +3794,9 @@ watch(() => activeResultTab.value, (tab) => {
   }
   if (tab === 'quality' && props.job?.jobId && !qualityReview.value && !qualityReviewLoading.value) {
     loadQualityReview()
+  }
+  if (tab === 'planning' && isDraftAssistantResult.value && !draftOutline.value && !draftOutlineLoading.value) {
+    loadResultDraftOutline()
   }
 })
 watch(() => [props.job?.jobId, props.job?.status], () => {
@@ -5578,7 +5628,87 @@ function exportPdf() {
         </section>
 
         <section v-else-if="activeResultTab === 'planning'" class="result-tab-panel">
-          <div v-if="!planningSelectionView.available" class="planning-empty-state">
+          <div v-if="isDraftAssistantResult && draftOutlineLoading" class="planning-empty-state">
+            <strong>正在读取最终大纲</strong>
+            <p>正在加载本次编报实际采用的拟稿助手大纲版本。</p>
+          </div>
+          <div v-else-if="isDraftAssistantResult && draftOutlineError" class="planning-empty-state">
+            <strong>最终大纲暂时无法加载</strong>
+            <p>{{ draftOutlineError }}</p>
+            <button type="button" class="planning-outline-retry" @click="loadResultDraftOutline">
+              <RefreshCw :size="15" aria-hidden="true" />
+              重新加载
+            </button>
+          </div>
+          <div v-else-if="isDraftAssistantResult && draftOutlineView.available" class="planning-selection-page draft-outline-result-page">
+            <header class="planning-selection-hero draft-outline-hero">
+              <div>
+                <span>拟稿助手最终大纲</span>
+                <h2>{{ draftOutlineView.reportTitle || '本次编报大纲' }}</h2>
+                <p v-if="draftOutlineView.reportTheme">{{ draftOutlineView.reportTheme }}</p>
+              </div>
+              <div class="draft-outline-version">
+                <strong>{{ draftOutlineEditTypeLabel(draftOutlineView.editType) }}</strong>
+                <span v-if="draftOutlineView.versionNo">第 {{ draftOutlineView.versionNo }} 版</span>
+              </div>
+            </header>
+
+            <section v-if="draftOutlineView.coreArgument" class="draft-outline-argument">
+              <span>核心论点</span>
+              <p>{{ draftOutlineView.coreArgument }}</p>
+            </section>
+
+            <section class="planning-selection-section">
+              <div class="planning-section-heading">
+                <h3>最终确认目录</h3>
+                <p>以下内容是该编报任务实际绑定并用于生成报告的提纲版本。</p>
+              </div>
+              <div class="draft-outline-list">
+                <article v-for="(item, index) in draftOutlineView.outlineItems" :key="`${index}-${item.title}`" class="draft-outline-section">
+                  <span class="draft-outline-index">{{ index + 1 }}</span>
+                  <div>
+                    <h4>{{ item.title || `第 ${index + 1} 部分` }}</h4>
+                    <p v-if="item.summary">{{ item.summary }}</p>
+                    <ol v-if="item.children.length">
+                      <li v-for="(child, childIndex) in item.children" :key="`${childIndex}-${child.title}`">
+                        <strong>{{ child.title || `子项 ${childIndex + 1}` }}</strong>
+                        <p v-if="child.summary">{{ child.summary }}</p>
+                      </li>
+                    </ol>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section
+              v-if="draftOutlineView.writingFocus.length || draftOutlineView.sourceRequirements.length || draftOutlineView.uncertaintiesToVerify.length"
+              class="planning-selection-section"
+            >
+              <div class="planning-section-heading">
+                <h3>大纲附加要求</h3>
+                <p>拟稿阶段随最终大纲一并确认的写作重点、信源要求和待核事项。</p>
+              </div>
+              <div class="draft-outline-notes">
+                <section v-if="draftOutlineView.writingFocus.length">
+                  <h4>写作重点</h4>
+                  <ul><li v-for="item in draftOutlineView.writingFocus" :key="item">{{ item }}</li></ul>
+                </section>
+                <section v-if="draftOutlineView.sourceRequirements.length">
+                  <h4>信源要求</h4>
+                  <ul><li v-for="item in draftOutlineView.sourceRequirements" :key="item">{{ item }}</li></ul>
+                </section>
+                <section v-if="draftOutlineView.uncertaintiesToVerify.length">
+                  <h4>待核事项</h4>
+                  <ul><li v-for="item in draftOutlineView.uncertaintiesToVerify" :key="item">{{ item }}</li></ul>
+                </section>
+              </div>
+            </section>
+          </div>
+          <div v-else-if="isDraftAssistantResult" class="planning-empty-state">
+            <strong>最终大纲暂无可展示内容</strong>
+            <p>该任务已关联拟稿助手，但绑定的大纲版本没有返回有效目录。</p>
+          </div>
+          <div v-else-if="!planningSelectionView.available" class="planning-empty-state">
             <strong>暂无规划选择记录</strong>
             <p>当前任务没有保存可展示的规划勾选信息。新生成的编报任务会在这里展示规划阶段的选择结果。</p>
           </div>
