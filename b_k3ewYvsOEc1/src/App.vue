@@ -9,6 +9,7 @@ import UserManagement from './components/UserManagement.vue'
 import { useAuth } from './composables/useAuth.js'
 import { useReportJobs } from './composables/useReportJobs.js'
 import { deriveUserModules } from './lib/permissionModules.js'
+import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 
 const {
@@ -131,6 +132,14 @@ const selectedQaSession = computed(() => {
 
 const qaTotal = computed(() => {
   return qaSessions.value.reduce((total, session) => total + countQaSessionTurns(session), 0)
+})
+
+const archivePageNumbers = computed(() => {
+  const total = Math.max(1, Number(listTotalPages.value) || 1)
+  const current = Math.min(total, Math.max(1, Number(listPage.value) || 1))
+  const visibleCount = Math.min(5, total)
+  const start = Math.min(Math.max(1, current - 2), total - visibleCount + 1)
+  return Array.from({ length: visibleCount }, (_, index) => start + index)
 })
 
 const hasGeneratingWorkspace = computed(() => {
@@ -520,9 +529,9 @@ function jobStatusLabel(status) {
 
 function jobStatusClass(status) {
   const type = jobStatusType(status)
-  if (type === 'success') return 'text-neon-green'
-  if (type === 'failed') return 'text-red-300'
-  return 'text-cyber-yellow'
+  if (type === 'success') return 'archive-status-success'
+  if (type === 'failed') return 'archive-status-failed'
+  return 'archive-status-running'
 }
 
 function jobActionLabel(status) {
@@ -530,6 +539,13 @@ function jobActionLabel(status) {
   if (type === 'success') return '查看报告'
   if (type === 'failed') return '查看错误'
   return '查看状态'
+}
+
+function formatArchiveTime(value) {
+  const date = new Date(value || '')
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 </script>
 
@@ -686,80 +702,90 @@ function jobActionLabel(status) {
 
     <main v-else class="archive-main">
       <div class="archive-content">
-      <div class="archive-header flex items-center justify-between mb-6">
-        <div>
-          <div class="neon-text font-mono text-xl font-bold tracking-widest">报告档案库</div>
-          <div class="font-mono text-[10px] text-[#374151] mt-1">真实后端任务列表 / 点击查看已生成报告</div>
-        </div>
-        <div class="archive-actions flex gap-2">
-          <button
-            v-if="hasActiveWorkspace"
-            class="sci-btn text-[10px] px-3 py-2"
-            :class="hasGeneratingWorkspace ? 'border-neon-green text-neon-green shadow-[0_0_18px_rgba(0,255,159,0.18)]' : ''"
-            @click="showReportWorkspace"
-          >
-            {{ hasGeneratingWorkspace ? '返回生成编报' : '返回当前编报' }}
-          </button>
-          <button class="sci-btn text-[10px] px-3 py-2" @click="resetForNewReport">新建编报</button>
-          <button
-            v-if="canDeleteReports"
-            class="sci-btn text-[10px] px-3 py-2"
-            :class="listTrashMode ? 'border-red-300/50 text-red-600' : ''"
-            @click="loadJobList(false, { trash: !listTrashMode })"
-          >
-            {{ listTrashMode ? '返回报告列表' : '垃圾箱' }}
-          </button>
-          <button class="sci-btn text-[10px] px-3 py-2" @click="loadJobList(false, { trash: listTrashMode })">刷新列表</button>
-        </div>
-      </div>
-
-      <div class="panel p-4 mb-6 archive-filter-panel">
-        <div class="archive-search-only">
-          <div v-if="listTrashMode" class="trash-mode-banner">
-            当前为垃圾箱视图。恢复会回到报告列表，永久删除会清理服务器上的任务状态和报告文件。
+        <div class="archive-header">
+          <div>
+            <h1 class="archive-title">报告档案库</h1>
+            <p class="archive-subtitle">真实后端任务列表 / 点击查看已生成报告</p>
           </div>
-          <div class="relative flex-1">
-            <input
-              :value="listSearch"
-              class="sci-input w-full px-4 py-3 pr-10 font-mono text-sm focus:outline-none"
-              placeholder="搜索标题 / 任务编号 / 上下文关键词"
-              @input="updateListSearch($event.target.value)"
-            />
-            <span class="absolute right-3 top-1/2 -translate-y-1/2 font-mono text-[10px] text-slate-400">SEARCH</span>
+          <div class="archive-actions">
+            <button
+              v-if="hasActiveWorkspace"
+              class="sci-btn archive-action-btn"
+              :class="hasGeneratingWorkspace ? 'archive-action-active' : ''"
+              type="button"
+              @click="showReportWorkspace"
+            >
+              {{ hasGeneratingWorkspace ? '返回生成编报' : '返回当前编报' }}
+            </button>
+            <button class="sci-btn archive-action-btn archive-action-primary" type="button" @click="resetForNewReport">
+              <Plus :size="16" aria-hidden="true" /> 新建编报
+            </button>
+            <button
+              v-if="canDeleteReports"
+              class="sci-btn archive-action-btn"
+              :class="listTrashMode ? 'archive-action-danger' : ''"
+              type="button"
+              @click="loadJobList(false, { trash: !listTrashMode })"
+            >
+              <Trash2 :size="15" aria-hidden="true" />
+              {{ listTrashMode ? '返回报告列表' : '垃圾箱' }}
+            </button>
+            <button class="sci-btn archive-action-btn" type="button" @click="loadJobList(false, { trash: listTrashMode })">
+              <RefreshCw :size="15" aria-hidden="true" /> 刷新列表
+            </button>
           </div>
         </div>
-      </div>
 
-      <div class="panel overflow-hidden archive-table-panel">
-        <div class="archive-table-head grid grid-cols-12 gap-4 px-4 py-3 border-b border-border-glow bg-neon-cyan/5">
-          <div class="col-span-2 font-mono text-[10px] text-[#374151] font-bold tracking-widest" style="font-size: 13px">任务编号</div>
-          <div class="col-span-4 font-mono text-[10px] text-[#374151] font-bold tracking-widest" style="font-size: 13px">主题</div>
-          <div class="col-span-2 font-mono text-[10px] text-[#374151] font-bold tracking-widest" style="font-size: 13px">状态</div>
-          <div class="col-span-2 font-mono text-[10px] text-[#374151] font-bold tracking-widest" style="font-size: 13px">更新时间</div>
-          <div class="col-span-1 font-mono text-[10px] text-[#374151] font-bold tracking-widest" style="font-size: 13px">文件</div>
-          <div class="col-span-1 font-mono text-[10px] text-[#374151] font-bold tracking-widest" style="font-size: 13px">操作</div>
-        </div>
-
-        <div v-if="filteredJobs.length">
-          <div
-            v-for="item in filteredJobs"
-            :key="item.jobId"
-            class="archive-row grid grid-cols-12 gap-4 px-4 py-4 border-b border-neon-cyan/10 hover:bg-neon-cyan/5 transition-colors"
-          >
-            <div class="col-span-2 font-mono text-xs text-[#1f2937]" style="font-size: 14px; font-weight: 500; line-height: 1.7">{{ item.jobId.slice(0, 8) }}</div>
-            <div class="col-span-4 font-mono text-xs text-[#111827] font-semibold truncate" style="font-size: 14px; font-weight: 500; line-height: 1.7">{{ getJobTitle(item) }}</div>
-            <div class="col-span-2 font-mono text-xs" :class="jobStatusClass(item.status)">
-              {{ jobStatusLabel(item.status) }}
+        <div class="archive-filter-panel">
+          <div class="archive-search-only">
+            <div v-if="listTrashMode" class="trash-mode-banner">
+              当前为垃圾箱视图。恢复会回到报告列表，永久删除会清理服务器上的任务状态和报告文件。
             </div>
-            <div class="col-span-2 font-mono text-xs text-[#374151]" style="font-size: 14px; font-weight: 500; line-height: 1.7">{{ item.updatedAt || item.createdAt }}</div>
-            <div class="col-span-1 font-mono text-xs text-[#374151] truncate" style="font-size: 14px; font-weight: 500; line-height: 1.7">{{ item.resultPath ? '已生成' : '未生成' }}</div>
-            <div class="col-span-1">
-              <div class="archive-row-actions">
-                <button
-                  class="font-mono text-[10px] hover:text-neon-green disabled:opacity-30"
-                  style="color: #0369a1; font-weight: 700"
-                  @click="monitorJobFromList(item)"
-                >
+            <div class="archive-search-field">
+              <input
+                :value="listSearch"
+                class="sci-input archive-search-input"
+                aria-label="搜索报告"
+                placeholder="搜索标题 / 任务编号 / 上下文关键词"
+                @input="updateListSearch($event.target.value)"
+              />
+              <Search :size="18" aria-hidden="true" />
+            </div>
+          </div>
+        </div>
+
+        <section class="panel archive-table-panel" aria-label="报告任务列表">
+          <div class="archive-table-grid archive-table-head" role="row">
+            <div role="columnheader">任务编号</div>
+            <div role="columnheader">主题</div>
+            <div role="columnheader">状态</div>
+            <div role="columnheader">更新时间</div>
+            <div role="columnheader">文件</div>
+            <div role="columnheader">操作</div>
+          </div>
+
+          <div v-if="filteredJobs.length" class="archive-table-body">
+            <div
+              v-for="item in filteredJobs"
+              :key="item.jobId"
+              class="archive-table-grid archive-row"
+              role="row"
+            >
+              <div class="archive-job-id" role="cell">{{ item.jobId.slice(0, 8) }}</div>
+              <div class="archive-job-title" role="cell" :title="getJobTitle(item)">{{ getJobTitle(item) }}</div>
+              <div role="cell">
+                <span class="archive-status-badge" :class="jobStatusClass(item.status)">
+                  {{ jobStatusLabel(item.status) }}
+                </span>
+              </div>
+              <div role="cell">
+                <time class="archive-time" :datetime="item.updatedAt || item.createdAt" :title="item.updatedAt || item.createdAt">
+                  {{ formatArchiveTime(item.updatedAt || item.createdAt) }}
+                </time>
+              </div>
+              <div class="archive-file-status" role="cell">{{ item.resultPath ? '已生成' : '未生成' }}</div>
+              <div class="archive-row-actions" role="cell">
+                <button class="archive-view-btn" type="button" @click="monitorJobFromList(item)">
                   {{ jobActionLabel(item.status) }}
                 </button>
                 <button
@@ -790,35 +816,47 @@ function jobActionLabel(status) {
               </div>
             </div>
           </div>
-        </div>
 
-        <div v-else class="py-16 text-center">
-          <div class="font-mono text-4xl mb-4" style="color: #94a3b8">{{ listSearch ? 'NO MATCH' : 'NO DATA' }}</div>
-          <div class="font-mono text-sm text-slate-400">
-            {{ listTrashMode ? '垃圾箱为空' : (listSearch ? '未找到匹配编报' : '暂无报告任务') }}
+          <div v-else class="archive-empty-state">
+            <strong>{{ listSearch ? '未找到匹配编报' : (listTrashMode ? '垃圾箱为空' : '暂无报告任务') }}</strong>
+            <span>{{ listSearch ? '请尝试其他标题、任务编号或关键词' : '新建编报后，任务会显示在这里' }}</span>
           </div>
-        </div>
-      </div>
 
-      <div class="panel mt-4 p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div class="font-mono text-[10px] text-[#374151]">
-          第 {{ listPage }} / {{ listTotalPages }} 页 · 共 {{ listTotal }} 条
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <select
-            class="sci-input px-3 py-2 font-mono text-[10px] focus:outline-none"
-            :value="listPageSize"
-            @change="updateListPageSize($event.target.value)"
-          >
-            <option value="10">10 条/页</option>
-            <option value="20">20 条/页</option>
-            <option value="50">50 条/页</option>
-            <option value="100">100 条/页</option>
-          </select>
-          <button class="sci-btn text-[10px] px-3 py-2" :disabled="listPage <= 1" @click="updateListPage(listPage - 1)">上一页</button>
-          <button class="sci-btn text-[10px] px-3 py-2" :disabled="listPage >= listTotalPages" @click="updateListPage(listPage + 1)">下一页</button>
-        </div>
-      </div>
+          <footer class="archive-pagination">
+            <div class="archive-pagination-summary">
+              <span>共 {{ listTotal }} 条</span>
+              <select
+                class="archive-page-size"
+                aria-label="每页显示数量"
+                :value="listPageSize"
+                @change="updateListPageSize($event.target.value)"
+              >
+                <option value="10">10 条/页</option>
+                <option value="20">20 条/页</option>
+                <option value="50">50 条/页</option>
+                <option value="100">100 条/页</option>
+              </select>
+            </div>
+            <nav class="archive-page-nav" aria-label="报告列表分页">
+              <button type="button" aria-label="上一页" :disabled="listPage <= 1" @click="updateListPage(listPage - 1)">
+                <ChevronLeft :size="16" aria-hidden="true" />
+              </button>
+              <button
+                v-for="pageNumber in archivePageNumbers"
+                :key="pageNumber"
+                type="button"
+                :class="{ active: pageNumber === listPage }"
+                :aria-current="pageNumber === listPage ? 'page' : undefined"
+                @click="updateListPage(pageNumber)"
+              >
+                {{ pageNumber }}
+              </button>
+              <button type="button" aria-label="下一页" :disabled="listPage >= listTotalPages" @click="updateListPage(listPage + 1)">
+                <ChevronRight :size="16" aria-hidden="true" />
+              </button>
+            </nav>
+          </footer>
+        </section>
       </div>
     </main>
   </div>
