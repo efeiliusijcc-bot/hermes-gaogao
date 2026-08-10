@@ -535,7 +535,7 @@ async function confirmDeleteRole(role) {
     <aside class="user-management-sidebar" aria-label="系统管理导航">
       <header class="user-management-sidebar__intro">
         <h2>系统管理</h2>
-        <p>管理账号权限与每日动态感知运行状态。</p>
+        <p>管理账号权限与动态感知状态。</p>
       </header>
 
       <nav class="user-management-sidebar__nav" role="tablist" aria-label="系统管理功能">
@@ -2428,14 +2428,14 @@ async function confirmDeleteRole(role) {
 /* Compact administration layout aligned with the existing table workflows. */
 .user-management-sidebar {
   inset: var(--header-height) auto 0 0;
-  width: 274px;
+  width: 220px;
   border-right: 1px solid #e2e8f0;
   background: #fff;
 }
 
 .user-management-sidebar__intro {
   flex: 0 0 auto;
-  padding: 42px 28px 24px;
+  padding: 30px 18px 20px;
 }
 
 .user-management-sidebar__intro h2 {
@@ -2451,32 +2451,32 @@ async function confirmDeleteRole(role) {
   color: #7b899d;
   font-size: 11px;
   line-height: 1.7;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .user-management-sidebar__nav {
   gap: 6px;
-  padding: 10px 20px;
+  padding: 8px 12px;
 }
 
 .user-management-sidebar__nav button {
   min-height: 44px;
-  gap: 12px;
-  border-radius: 6px;
-  padding: 0 16px;
+  gap: 10px;
+  border-radius: 8px;
+  padding: 0 12px;
   color: #334155;
   font-size: 13px;
   font-weight: 650;
 }
 
 .user-management-sidebar__nav button:hover {
-  background: #f5f7fa;
-  color: #183153;
+  background: #f8fbff;
+  color: #1d4ed8;
 }
 
 .user-management-sidebar__nav button.active {
-  background: #f1f3f6;
-  color: #10213b;
+  background: #eff6ff;
+  color: #1d4ed8;
   font-weight: 750;
 }
 
@@ -2487,9 +2487,9 @@ async function confirmDeleteRole(role) {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  margin: 20px;
-  border: 1px solid #d9e0e9;
-  border-radius: 6px;
+  margin: 14px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
   background: #fff;
   color: #334155;
   font-size: 12px;
@@ -2497,18 +2497,19 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management-sidebar__back:hover {
-  border-color: #b9c7d8;
-  background: #f8fafc;
+  border-color: #93c5fd;
+  background: #f8fbff;
+  color: #1d4ed8;
 }
 
 .user-management-workspace {
-  background: #f8fafc;
+  background: #f7f9fc;
 }
 
 .user-management {
-  width: min(1600px, calc(100% - 72px));
+  width: min(1440px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 38px 0 40px;
+  padding: 28px 0 36px;
 }
 
 .user-management__header {
@@ -2526,8 +2527,8 @@ async function confirmDeleteRole(role) {
 
 .user-management__header h1 {
   margin: 0;
-  color: #10213b;
-  font-size: 25px;
+  color: #0f172a;
+  font-size: 24px;
   font-weight: 800;
   letter-spacing: 0;
 }
@@ -2537,7 +2538,7 @@ async function confirmDeleteRole(role) {
   align-items: center;
   gap: 7px;
   min-height: 38px;
-  border-radius: 6px !important;
+  border-radius: 8px !important;
   box-shadow: none !important;
 }
 
@@ -2551,16 +2552,17 @@ async function confirmDeleteRole(role) {
 
 .user-management__content.is-user-list {
   overflow: hidden;
-  border: 1px solid #dfe5ed;
-  border-radius: 7px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
   background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.035);
 }
 
 .user-management__toolbar {
-  min-height: 76px;
+  min-height: 68px;
   margin: 0;
-  border-bottom: 1px solid #e5eaf0;
-  padding: 14px 16px;
+  border-bottom: 1px solid #e8edf4;
+  padding: 11px 16px;
 }
 
 .user-management__search {
@@ -2568,49 +2570,56 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management__search .sci-input {
-  min-height: 40px;
-  border-radius: 6px !important;
+  min-height: 42px;
+  border-radius: 8px !important;
   background: #fff !important;
   box-shadow: none !important;
 }
 
 .user-management__toolbar-actions .sci-btn {
   min-height: 38px;
-  border-radius: 6px !important;
+  border-radius: 8px !important;
   background: #fff;
   box-shadow: none !important;
 }
 
 .user-management__toolbar-actions .sci-btn-primary {
-  border-color: #16345f !important;
-  background: #16345f !important;
+  border-color: #2563eb !important;
+  background: #2563eb !important;
+  color: #fff !important;
 }
 
 .user-management__table {
-  margin: 12px 16px 0;
-  border: 1px solid #e0e5ec;
+  margin: 0;
+  border: 0;
   border-radius: 0;
   background: #fff;
 }
 
 .user-management__table-head,
 .user-management__row {
-  grid-template-columns: minmax(220px, 1.35fr) minmax(110px, 0.7fr) minmax(220px, 1.25fr) minmax(90px, 0.62fr) minmax(155px, 0.9fr) minmax(230px, 1.35fr);
-  min-width: 1030px;
-  gap: 10px;
+  grid-template-columns: minmax(190px, 1.4fr) minmax(95px, 0.72fr) minmax(160px, 1.2fr) minmax(76px, 0.58fr) minmax(140px, 0.9fr) minmax(165px, 1.2fr);
+  min-width: 920px;
+  gap: 8px;
 }
 
 .user-management__table-head {
-  min-height: 46px;
+  min-height: 48px;
   background: #f8fafc;
-  padding: 10px 16px;
-  color: #334155;
+  padding: 10px 18px;
+  color: #475569;
   font-size: 12px;
 }
 
 .user-management__row {
-  min-height: 74px;
-  padding: 9px 16px;
+  min-height: 66px;
+  padding: 8px 18px;
+  border-bottom-color: #e8edf4;
+  transition: background-color 0.16s ease;
+}
+
+.user-management__row:hover {
+  background: #f8fbff;
 }
 
 .user-management__username {
@@ -2626,8 +2635,8 @@ async function confirmDeleteRole(role) {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  background: #f1f3f6;
-  color: #233955;
+  background: #eff6ff;
+  color: #1d4ed8;
   font-size: 12px;
   font-weight: 750;
 }
@@ -2660,21 +2669,38 @@ async function confirmDeleteRole(role) {
 .user-management__module {
   min-height: 22px;
   border: 1px solid #e2e7ee;
-  border-radius: 4px;
-  background: #f7f8fa;
+  border-radius: 6px;
+  background: #f8fafc;
   padding: 2px 7px;
-  color: #334155;
+  color: #475569;
   font-size: 10px;
 }
 
-.user-management__status-dot {
-  width: 7px;
-  height: 7px;
-  background: #16a765;
+.user-management__module {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 
-.user-management__status.is-disabled .user-management__status-dot {
-  background: #a8b2c2;
+.user-management__status {
+  min-width: 50px;
+  min-height: 26px;
+  justify-content: center;
+  gap: 0;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.user-management__status-dot {
+  display: none;
+}
+
+.user-management__status.is-disabled {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
 }
 
 .user-management__ops {
@@ -2686,8 +2712,8 @@ async function confirmDeleteRole(role) {
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
-  padding: 4px 10px;
-  color: #475569;
+  padding: 4px 8px;
+  color: #2563eb;
   box-shadow: none !important;
   font-size: 11px;
 }
@@ -2698,6 +2724,8 @@ async function confirmDeleteRole(role) {
 
 .user-management__ops .sci-btn:hover:not(:disabled) {
   color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 3px;
   transform: none;
 }
 
@@ -2706,21 +2734,50 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management__pagination {
-  min-height: 68px;
-  padding: 14px 18px;
+  min-height: 58px;
+  border-top: 0;
+  padding: 10px 18px;
 }
 
 .user-management__page-size {
   order: -1;
-  border-radius: 5px;
+  border-radius: 6px;
 }
 
 .user-management__page-controls button {
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .user-management__page-controls button.active {
-  background: #16345f;
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.user-management .sci-btn-primary,
+.role-management__new {
+  border-color: #2563eb !important;
+  background: #2563eb !important;
+  color: #fff !important;
+}
+
+.role-management__list,
+.role-management__detail {
+  border-color: #dbe3ee;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.035);
+}
+
+.role-management__item.active {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  box-shadow: none;
+}
+
+.role-management__badge {
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 
 @media (max-width: 920px) {
