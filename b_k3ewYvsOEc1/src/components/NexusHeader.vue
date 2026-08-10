@@ -35,7 +35,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-personal-settings', 'switch-workspace'])
+const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-personal-settings', 'switch-workspace', 'open-manual'])
 
 const canvasRef = ref(null)
 const settingsButtonRef = ref(null)
@@ -512,9 +512,8 @@ defineExpose({ toggleSettingsMenu })
       <button
         class="header-manual-entry"
         type="button"
-        disabled
-        aria-disabled="true"
-        title="使用手册即将上线"
+        title="打开使用手册"
+        @click="emit('open-manual', currentWorkspace)"
       >
         <BookOpenText :size="16" aria-hidden="true" />
         <span>使用手册</span>

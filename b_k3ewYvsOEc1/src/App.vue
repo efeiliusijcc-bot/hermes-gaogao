@@ -5,10 +5,12 @@ import DataCanvas from './components/DataCanvas.vue'
 import DailyAwareness from './components/DailyAwareness.vue'
 import DraftAssistant from './components/DraftAssistant.vue'
 import PersonalSettings from './components/PersonalSettings.vue'
+import UserManual from './components/UserManual.vue'
 import UserManagement from './components/UserManagement.vue'
 import { useAuth } from './composables/useAuth.js'
 import { useReportJobs } from './composables/useReportJobs.js'
 import { deriveUserModules } from './lib/permissionModules.js'
+import { normalizeManualSection } from './lib/userManualNavigation.js'
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 
@@ -112,6 +114,8 @@ const accountInSidebar = computed(() => (
   (showDraftAssistant.value || showDailyAwareness.value || currentView.value === 'generator')
 ))
 const showPersonalSettings = ref(false)
+const showUserManual = ref(false)
+const manualInitialSection = ref('report')
 const draftInitialEventId = ref('')
 const nexusHeaderRef = ref(null)
 const {
@@ -208,6 +212,11 @@ function handleLogout() {
 
 function openSidebarSettings(event) {
   nexusHeaderRef.value?.toggleSettingsMenu(event)
+}
+
+function openUserManual(section) {
+  manualInitialSection.value = normalizeManualSection(section)
+  showUserManual.value = true
 }
 
 function openUserManagement() {
@@ -569,6 +578,13 @@ function formatArchiveTime(value) {
       @open-user-management="openUserManagement"
       @open-personal-settings="openPersonalSettings"
       @switch-workspace="switchWorkspace"
+      @open-manual="openUserManual"
+    />
+
+    <UserManual
+      :open="showUserManual"
+      :initial-section="manualInitialSection"
+      @close="showUserManual = false"
     />
 
     <PersonalSettings
