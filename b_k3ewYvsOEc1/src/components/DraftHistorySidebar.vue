@@ -28,6 +28,16 @@ function formatHistoryTime(value) {
   if (Number.isNaN(date.getTime())) return ''
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit' }).format(date)
 }
+
+function prepareHistoryTitle(event) {
+  const viewport = event.currentTarget?.querySelector('.draft-history-title-viewport')
+  const track = viewport?.querySelector('.draft-history-title-track')
+  if (!viewport || !track) return
+  const distance = Math.max(0, track.scrollWidth - viewport.clientWidth)
+  track.classList.toggle('is-overflowing', distance > 0)
+  track.style.setProperty('--draft-title-shift', `-${distance}px`)
+  track.style.setProperty('--draft-title-duration', `${Math.max(3.6, distance / 32 + 1.2).toFixed(2)}s`)
+}
 </script>
 
 <template>
@@ -68,9 +78,13 @@ function formatHistoryTime(value) {
             :class="{ active: item.eventId === currentEventId }"
             type="button"
             :title="item.title || '未命名编报'"
+            @mouseenter="prepareHistoryTitle"
+            @focus="prepareHistoryTitle"
             @click="emit('select-event', item.eventId)"
           >
-            <span>{{ item.title || '未命名编报' }}</span>
+            <span class="draft-history-title-viewport">
+              <span class="draft-history-title-track">{{ item.title || '未命名编报' }}</span>
+            </span>
             <time>{{ formatHistoryTime(item.updatedAt || item.createdAt) }}</time>
           </button>
           <div v-if="!loading && !filteredEvents.length" class="draft-history-empty">没有匹配的拟稿记录</div>
@@ -116,7 +130,10 @@ function formatHistoryTime(value) {
 .draft-history-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 38px; border: 0; background: transparent; color: #343a44; border-radius: 7px; padding: 0 10px; cursor: pointer; text-align: left; }
 .draft-history-row:hover { background: #ededee; }
 .draft-history-row.active { background: #e4e4e6; color: #171a20; }
-.draft-history-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.draft-history-title-viewport { min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12px; }
+.draft-history-title-track { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; will-change: transform; }
+.draft-history-row:hover .draft-history-title-track.is-overflowing,
+.draft-history-row:focus-visible .draft-history-title-track.is-overflowing { max-width: none; overflow: visible; text-overflow: clip; animation: draft-history-title-scroll var(--draft-title-duration) linear infinite alternate; }
 .draft-history-row time { color: #9aa1ab; font-size: 10px; }
 .draft-history-empty { padding: 24px 10px; color: #8a929e; text-align: center; font-size: 12px; }
 .draft-history-account { flex: 0 0 auto; margin-top: 10px; border-top: 1px solid #e2e5ea; padding-top: 10px; }
@@ -124,6 +141,16 @@ function formatHistoryTime(value) {
 .draft-history-account .header-user-caret { display: inline; margin-left: auto; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .draft-history-head button:focus-visible, .draft-history-new:focus-visible, .draft-history-row:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.2); outline-offset: 1px; }
+
+@keyframes draft-history-title-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(var(--draft-title-shift)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .draft-history-row:hover .draft-history-title-track.is-overflowing,
+  .draft-history-row:focus-visible .draft-history-title-track.is-overflowing { animation: none; }
+}
 
 @media (max-width: 900px) {
   .draft-history-layer { position: fixed; inset: 0; z-index: 80; display: none; width: auto; min-width: 0; }
