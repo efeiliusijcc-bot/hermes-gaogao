@@ -22,6 +22,8 @@ const purifyConfig = {
   ALLOWED_ATTR: ['href','src','alt','title','class','id','target','rel'],
 }
 
+const REPORT_EDIT_ENABLED = false
+
 const props = defineProps({
   phase: String,
   loadingStep: String,
@@ -5310,7 +5312,7 @@ function exportPdf() {
             </div>
             <div class="result-actions">
               <button
-                v-if="job?.jobId && generatedHtml"
+                v-if="REPORT_EDIT_ENABLED && job?.jobId && generatedHtml"
                 @click="openReportEditPanel"
                 class="result-action-btn"
                 type="button"
@@ -5342,7 +5344,7 @@ function exportPdf() {
         </div>
 
         <section v-if="activeResultTab === 'report'" class="result-tab-panel report-result-panel">
-          <aside v-if="reportEditOpen" class="report-edit-panel">
+          <aside v-if="REPORT_EDIT_ENABLED && reportEditOpen" class="report-edit-panel">
             <div class="report-edit-head">
               <div>
                 <strong>局部段落修改</strong>
@@ -5921,7 +5923,7 @@ function exportPdf() {
                   <p><b>问题：</b>{{ issue.problem }}</p>
                   <p v-if="issue.evidence"><b>证据：</b>{{ issue.evidence }}</p>
                   <p><b>建议：</b>{{ issue.suggestion }}</p>
-                  <button type="button" class="result-action-btn" @click="openReportEditFromQualityIssue(issue)">
+                  <button v-if="REPORT_EDIT_ENABLED" type="button" class="result-action-btn" @click="openReportEditFromQualityIssue(issue)">
                     发起局部修改
                   </button>
                 </article>
