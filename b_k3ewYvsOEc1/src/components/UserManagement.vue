@@ -1,24 +1,15 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import {
-  Bot,
-  ChevronDown,
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  FileCheck2,
-  House,
-  MessageSquareText,
-  PenLine,
   Plus,
   Radio,
   RefreshCw,
   Search,
-  Settings,
   ShieldCheck,
-  UserRoundCheck,
-  UserRoundCog,
   Users,
-  UserX,
 } from '@lucide/vue'
 import DailyAwarenessAdmin from './DailyAwarenessAdmin.vue'
 import {
@@ -43,7 +34,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['back', 'open-daily-awareness', 'open-settings', 'open-workspace'])
+const emit = defineEmits(['back', 'open-daily-awareness'])
 
 const fallbackRoles = [
   { id: 'admin', name: 'admin', description: '管理员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
@@ -83,7 +74,6 @@ const createDialogError = ref('')
 const createUsernameInputRef = ref(null)
 const searchKeyword = ref('')
 const currentPage = ref(1)
-const sidebarCollapsed = ref(false)
 
 const createForm = reactive({
   username: '',
@@ -121,10 +111,6 @@ const filteredUsers = computed(() => filterUsers(users.value, searchKeyword.valu
 const userPagination = computed(() => paginateUsers(filteredUsers.value, currentPage.value))
 const paginatedUsers = computed(() => userPagination.value.items)
 const totalPages = computed(() => userPagination.value.totalPages)
-const activeUsersCount = computed(() => users.value.filter((user) => user?.isActive !== false).length)
-const disabledUsersCount = computed(() => users.value.filter((user) => user?.isActive === false).length)
-const adminUsersCount = computed(() => users.value.filter((user) => userRoleNames(user).includes('admin')).length)
-const currentUserModules = computed(() => deriveUserModules(props.currentUser))
 const visiblePageNumbers = computed(() => {
   const count = totalPages.value
   if (count <= 5) return Array.from({ length: count }, (_, index) => index + 1)
@@ -192,15 +178,6 @@ function formatTime(value) {
   if (Number.isNaN(date.getTime())) return String(value)
   const pad = (part) => String(part).padStart(2, '0')
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
-
-function canOpenWorkspace(module) {
-  return currentUserModules.value.includes(module)
-}
-
-function openWorkspace(module) {
-  if (!canOpenWorkspace(module)) return
-  emit('open-workspace', module)
 }
 
 function setError(error) {
@@ -554,123 +531,47 @@ async function confirmDeleteRole(role) {
 </script>
 
 <template>
-  <div class="user-management-layout" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
-    <aside class="user-management-sidebar" :class="{ 'is-collapsed': sidebarCollapsed }" aria-label="系统管理导航">
-      <div class="user-management-sidebar__brand">
-        <span class="user-management-sidebar__logo">A</span>
-        <span class="user-management-sidebar__brand-copy">
-          <strong>AI深度编报</strong>
-          <small>智能内容生产与管理平台</small>
-        </span>
-      </div>
+  <div class="user-management-layout">
+    <aside class="user-management-sidebar" aria-label="系统管理导航">
+      <header class="user-management-sidebar__intro">
+        <h2>系统管理</h2>
+        <p>管理账号权限与每日动态感知运行状态。</p>
+      </header>
 
-      <nav class="user-management-sidebar__nav">
-        <button type="button" title="工作台" @click="emit('back')">
-          <House :size="18" aria-hidden="true" />
-          <span>工作台</span>
+      <nav class="user-management-sidebar__nav" role="tablist" aria-label="系统管理功能">
+        <button v-if="canManageUsers" type="button" :class="{ active: activeTab === 'users' }" role="tab" :aria-selected="activeTab === 'users'" @click="switchTab('users')">
+          <Users :size="18" aria-hidden="true" />
+          <span>用户管理</span>
         </button>
-
-        <div class="user-management-sidebar__group">
-          <div class="user-management-sidebar__group-title">
-            <FileCheck2 :size="18" aria-hidden="true" />
-            <span>AI深度编报</span>
-            <ChevronDown :size="15" aria-hidden="true" />
-          </div>
-          <button v-if="canOpenWorkspace('report')" type="button" title="智能编报" @click="openWorkspace('report')">
-            <Bot :size="17" aria-hidden="true" />
-            <span>智能编报</span>
-          </button>
-          <button v-if="canOpenWorkspace('qa')" type="button" title="QA问答" @click="openWorkspace('qa')">
-            <MessageSquareText :size="17" aria-hidden="true" />
-            <span>QA问答</span>
-          </button>
-          <button v-if="canOpenWorkspace('daily')" type="button" title="动态感知" @click="openWorkspace('daily')">
-            <Radio :size="17" aria-hidden="true" />
-            <span>动态感知</span>
-          </button>
-          <button v-if="canOpenWorkspace('draft')" type="button" title="拟稿助手" @click="openWorkspace('draft')">
-            <PenLine :size="17" aria-hidden="true" />
-            <span>拟稿助手</span>
-          </button>
-        </div>
-
-        <div class="user-management-sidebar__group is-active">
-          <div class="user-management-sidebar__group-title">
-            <UserRoundCog :size="18" aria-hidden="true" />
-            <span>用户管理</span>
-            <ChevronDown :size="15" aria-hidden="true" />
-          </div>
-          <button v-if="canManageUsers" type="button" :class="{ active: activeTab === 'users' }" title="用户管理" @click="switchTab('users')">
-            <Users :size="17" aria-hidden="true" />
-            <span>用户管理</span>
-          </button>
-          <button v-if="canManageRoles" type="button" :class="{ active: activeTab === 'roles' }" title="角色管理" @click="switchTab('roles')">
-            <ShieldCheck :size="17" aria-hidden="true" />
-            <span>角色管理</span>
-          </button>
-          <button v-if="canManageDailyAwareness" type="button" :class="{ active: activeTab === 'daily-awareness' }" title="动态感知管理" @click="switchTab('daily-awareness')">
-            <Radio :size="17" aria-hidden="true" />
-            <span>动态感知</span>
-          </button>
-        </div>
-
-        <button type="button" title="系统设置" @click="emit('open-settings', $event)">
-          <Settings :size="18" aria-hidden="true" />
-          <span>系统设置</span>
+        <button v-if="canManageRoles" type="button" :class="{ active: activeTab === 'roles' }" role="tab" :aria-selected="activeTab === 'roles'" @click="switchTab('roles')">
+          <ShieldCheck :size="18" aria-hidden="true" />
+          <span>角色管理</span>
+        </button>
+        <button v-if="canManageDailyAwareness" type="button" :class="{ active: activeTab === 'daily-awareness' }" role="tab" :aria-selected="activeTab === 'daily-awareness'" @click="switchTab('daily-awareness')">
+          <Radio :size="18" aria-hidden="true" />
+          <span>动态感知</span>
         </button>
       </nav>
 
-      <button class="user-management-sidebar__collapse" type="button" :aria-label="sidebarCollapsed ? '展开菜单' : '收起菜单'" @click="sidebarCollapsed = !sidebarCollapsed">
-        <ChevronLeft :size="17" aria-hidden="true" />
-        <span>{{ sidebarCollapsed ? '展开菜单' : '收起菜单' }}</span>
+      <button class="user-management-sidebar__back" type="button" @click="emit('back')">
+        <ArrowLeft :size="17" aria-hidden="true" />
+        <span>返回工作台</span>
       </button>
     </aside>
 
     <section class="user-management-workspace">
-      <div class="user-management__breadcrumb"><span>系统管理</span><b>/</b><strong>{{ activeTab === 'users' ? '用户管理' : activeTab === 'roles' ? '角色管理' : '动态感知' }}</strong></div>
-
       <section class="user-management">
         <header class="user-management__header">
-          <div>
-            <div class="user-management__eyebrow">ACCESS CONTROL</div>
-            <h1>系统管理</h1>
-            <p>管理账号权限与每日动态感知运行状态。</p>
-          </div>
-          <ShieldCheck class="user-management__hero-mark" :size="124" stroke-width="1" aria-hidden="true" />
+          <h1>{{ activeTab === 'users' ? '用户管理' : activeTab === 'roles' ? '角色管理' : '动态感知' }}</h1>
+          <button v-if="activeTab === 'roles'" class="sci-btn user-management__header-action" type="button" :disabled="loading || !canManageRoles" @click="loadRoleData">
+            <RefreshCw :size="15" aria-hidden="true" />
+            {{ loading ? '刷新中...' : '刷新列表' }}
+          </button>
         </header>
-
-        <section v-if="canManageUsers" class="user-management__metrics" aria-label="用户概览">
-          <article>
-            <span class="user-management__metric-icon is-blue"><Users :size="25" aria-hidden="true" /></span>
-            <div><span>用户总数</span><strong>{{ loading ? '—' : users.length }}</strong></div>
-          </article>
-          <article>
-            <span class="user-management__metric-icon is-green"><UserRoundCheck :size="25" aria-hidden="true" /></span>
-            <div><span>启用用户</span><strong>{{ loading ? '—' : activeUsersCount }}</strong></div>
-          </article>
-          <article>
-            <span class="user-management__metric-icon is-blue"><ShieldCheck :size="25" aria-hidden="true" /></span>
-            <div><span>管理员</span><strong>{{ loading ? '—' : adminUsersCount }}</strong></div>
-          </article>
-          <article>
-            <span class="user-management__metric-icon is-red"><UserX :size="25" aria-hidden="true" /></span>
-            <div><span>禁用用户</span><strong>{{ loading ? '—' : disabledUsersCount }}</strong></div>
-          </article>
-        </section>
 
         <div v-if="!isLoggedIn" class="user-management__empty">请先登录后再访问用户管理。</div>
         <div v-else-if="!canAccessManagement" class="user-management__empty">无权限访问系统管理。</div>
-        <section v-else class="user-management__content">
-          <div class="user-management__tabs" role="tablist">
-        <button v-if="canManageUsers" type="button" :class="{ active: activeTab === 'users' }" @click="switchTab('users')">用户管理</button>
-        <button v-if="canManageRoles" type="button" :class="{ active: activeTab === 'roles' }" @click="switchTab('roles')">角色管理</button>
-        <button v-if="canManageDailyAwareness" type="button" :class="{ active: activeTab === 'daily-awareness' }" @click="switchTab('daily-awareness')">动态感知</button>
-            <button v-if="activeTab === 'roles'" class="user-management__tab-refresh" type="button" :disabled="loading || !canManageRoles" @click="loadRoleData">
-              <RefreshCw :size="15" aria-hidden="true" />
-              {{ loading ? '刷新中...' : '刷新列表' }}
-            </button>
-          </div>
-
+        <section v-else class="user-management__content" :class="{ 'is-user-list': activeTab === 'users' }">
           <div v-if="errorMessage" class="user-management__error">{{ errorMessage }}</div>
           <div v-if="noticeMessage" class="user-management__notice">{{ noticeMessage }}</div>
 
@@ -722,7 +623,13 @@ async function confirmDeleteRole(role) {
 
           <template v-else>
             <div v-for="user in paginatedUsers" :key="user.id" class="user-management__row">
-              <div class="user-management__cell user-management__username">{{ user.username }}</div>
+              <div class="user-management__cell user-management__username">
+                <span class="user-management__avatar">{{ String(user.username || '?').slice(0, 1).toUpperCase() }}</span>
+                <span class="user-management__identity">
+                  <strong>{{ user.username }}</strong>
+                  <small>{{ user.email || user.displayName || '—' }}</small>
+                </span>
+              </div>
               <div class="user-management__cell user-management__roles">
                 <span v-for="role in userRoleNames(user)" :key="role" class="user-management__role">{{ roleLabel(role) }}</span>
                 <span v-if="!userRoleNames(user).length" class="user-management__muted">暂无角色</span>
@@ -2515,6 +2422,340 @@ async function confirmDeleteRole(role) {
 
   .user-management__create-dialog .user-management__role-picker {
     grid-column: auto;
+  }
+}
+
+/* Compact administration layout aligned with the existing table workflows. */
+.user-management-sidebar {
+  inset: var(--header-height) auto 0 0;
+  width: 274px;
+  border-right: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+.user-management-sidebar__intro {
+  flex: 0 0 auto;
+  padding: 42px 28px 24px;
+}
+
+.user-management-sidebar__intro h2 {
+  margin: 0;
+  color: #0f213e;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.user-management-sidebar__intro p {
+  margin: 8px 0 0;
+  color: #7b899d;
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.user-management-sidebar__nav {
+  gap: 6px;
+  padding: 10px 20px;
+}
+
+.user-management-sidebar__nav button {
+  min-height: 44px;
+  gap: 12px;
+  border-radius: 6px;
+  padding: 0 16px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.user-management-sidebar__nav button:hover {
+  background: #f5f7fa;
+  color: #183153;
+}
+
+.user-management-sidebar__nav button.active {
+  background: #f1f3f6;
+  color: #10213b;
+  font-weight: 750;
+}
+
+.user-management-sidebar__back {
+  display: inline-flex;
+  min-height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 20px;
+  border: 1px solid #d9e0e9;
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.user-management-sidebar__back:hover {
+  border-color: #b9c7d8;
+  background: #f8fafc;
+}
+
+.user-management-workspace {
+  background: #f8fafc;
+}
+
+.user-management {
+  width: min(1600px, calc(100% - 72px));
+  margin: 0 auto;
+  padding: 38px 0 40px;
+}
+
+.user-management__header {
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 4px;
+  box-shadow: none;
+}
+
+.user-management__header h1 {
+  margin: 0;
+  color: #10213b;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.user-management__header-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+.user-management__content {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.user-management__content.is-user-list {
+  overflow: hidden;
+  border: 1px solid #dfe5ed;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.user-management__toolbar {
+  min-height: 76px;
+  margin: 0;
+  border-bottom: 1px solid #e5eaf0;
+  padding: 14px 16px;
+}
+
+.user-management__search {
+  width: min(316px, 100%);
+}
+
+.user-management__search .sci-input {
+  min-height: 40px;
+  border-radius: 6px !important;
+  background: #fff !important;
+  box-shadow: none !important;
+}
+
+.user-management__toolbar-actions .sci-btn {
+  min-height: 38px;
+  border-radius: 6px !important;
+  background: #fff;
+  box-shadow: none !important;
+}
+
+.user-management__toolbar-actions .sci-btn-primary {
+  border-color: #16345f !important;
+  background: #16345f !important;
+}
+
+.user-management__table {
+  margin: 12px 16px 0;
+  border: 1px solid #e0e5ec;
+  border-radius: 0;
+  background: #fff;
+}
+
+.user-management__table-head,
+.user-management__row {
+  grid-template-columns: minmax(220px, 1.35fr) minmax(110px, 0.7fr) minmax(220px, 1.25fr) minmax(90px, 0.62fr) minmax(155px, 0.9fr) minmax(230px, 1.35fr);
+  min-width: 1030px;
+  gap: 10px;
+}
+
+.user-management__table-head {
+  min-height: 46px;
+  background: #f8fafc;
+  padding: 10px 16px;
+  color: #334155;
+  font-size: 12px;
+}
+
+.user-management__row {
+  min-height: 74px;
+  padding: 9px 16px;
+}
+
+.user-management__username {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-management__avatar {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #f1f3f6;
+  color: #233955;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.user-management__identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.user-management__identity strong {
+  overflow: hidden;
+  color: #10213b;
+  font-size: 13px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-management__identity small {
+  overflow: hidden;
+  color: #718096;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-management__role,
+.user-management__module {
+  min-height: 22px;
+  border: 1px solid #e2e7ee;
+  border-radius: 4px;
+  background: #f7f8fa;
+  padding: 2px 7px;
+  color: #334155;
+  font-size: 10px;
+}
+
+.user-management__status-dot {
+  width: 7px;
+  height: 7px;
+  background: #16a765;
+}
+
+.user-management__status.is-disabled .user-management__status-dot {
+  background: #a8b2c2;
+}
+
+.user-management__ops {
+  gap: 0;
+}
+
+.user-management__ops .sci-btn {
+  min-height: 28px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 4px 10px;
+  color: #475569;
+  box-shadow: none !important;
+  font-size: 11px;
+}
+
+.user-management__ops .sci-btn + .sci-btn {
+  border-left: 1px solid #d8dee7 !important;
+}
+
+.user-management__ops .sci-btn:hover:not(:disabled) {
+  color: #1d4ed8;
+  transform: none;
+}
+
+.user-management__ops .user-management__danger {
+  color: #dc2626 !important;
+}
+
+.user-management__pagination {
+  min-height: 68px;
+  padding: 14px 18px;
+}
+
+.user-management__page-size {
+  order: -1;
+  border-radius: 5px;
+}
+
+.user-management__page-controls button {
+  border-radius: 4px;
+}
+
+.user-management__page-controls button.active {
+  background: #16345f;
+}
+
+@media (max-width: 920px) {
+  .user-management-sidebar {
+    display: none;
+  }
+
+  .user-management {
+    width: min(100% - 28px, 1400px);
+    padding-top: 24px;
+  }
+}
+
+@media (max-width: 760px) {
+  .user-management__header {
+    min-height: 44px;
+    flex-direction: row;
+    padding: 0;
+  }
+
+  .user-management__header h1 {
+    font-size: 22px;
+  }
+
+  .user-management__toolbar {
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .user-management__table {
+    margin: 10px 12px 0;
+  }
+
+  .user-management__pagination {
+    padding: 12px;
   }
 }
 </style>

@@ -583,8 +583,6 @@ function jobActionLabel(status) {
         :current-user="authUser"
         @back="returnHome"
         @open-daily-awareness="openDailyAwareness"
-        @open-settings="openSidebarSettings"
-        @open-workspace="switchWorkspace"
       />
     </main>
 
