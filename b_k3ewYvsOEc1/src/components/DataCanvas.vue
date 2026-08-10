@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
-import { ArrowDown, Copy, ExternalLink, FileDown, FilePlus2, FileText, List, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
+import { ArrowDown, Copy, ExternalLink, FileDown, FilePlus2, FileText, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getDraftOutline, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
@@ -5324,9 +5324,6 @@ function exportPdf() {
               </button>
               <button @click="exportPdf" :disabled="!canExport" class="result-action-btn" type="button">
                 <FileDown :size="15" aria-hidden="true" /> 导出 PDF
-              </button>
-              <button @click="emit('list')" class="result-action-btn" type="button">
-                <List :size="15" aria-hidden="true" /> 报告列表
               </button>
               <button
                 v-if="canDeleteReport && job?.jobId"
