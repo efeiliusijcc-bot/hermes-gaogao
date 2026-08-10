@@ -9,6 +9,7 @@ import {
   importDailyEventToDraft,
 } from '../lib/api.js'
 import { normalizePublishedDates, renderMarkdown } from '../lib/markdown.js'
+import { displayUserRoleNames } from '../lib/permissionModules.js'
 
 const props = defineProps({
   currentUser: {
@@ -17,7 +18,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['back', 'open-draft-event'])
+const emit = defineEmits(['back', 'open-draft-event', 'open-settings'])
 
 const MESSAGE_MAP = {
   TODAY_READY: { tone: 'success', text: '今日简报已就绪。' },
@@ -46,6 +47,8 @@ const viewMode = ref('current')
 const contentView = ref('document')
 
 const userPermissions = computed(() => Array.isArray(props.currentUser?.permissions) ? props.currentUser.permissions : [])
+const displayUserName = computed(() => props.currentUser?.displayName || props.currentUser?.username || '')
+const displayRoleName = computed(() => displayUserRoleNames(props.currentUser))
 const canView = computed(() => userPermissions.value.includes('daily-awareness:view'))
 const canImportToDraft = computed(() => canView.value && userPermissions.value.includes('draft_assistant:create'))
 const isHistoryMode = computed(() => viewMode.value === 'history')
@@ -344,6 +347,23 @@ watch(() => props.currentUser?.id, () => {
 
         <footer class="daily-history-footer">共 {{ historyItems.length }} 期简报</footer>
       </section>
+
+      <footer v-if="currentUser" class="daily-history-account">
+        <button
+          class="sidebar-user-chip"
+          type="button"
+          aria-label="账号菜单"
+          aria-haspopup="menu"
+          @click.stop="emit('open-settings', $event)"
+        >
+          <span class="header-user-avatar">{{ displayUserName.slice(0, 1).toUpperCase() }}</span>
+          <span class="header-user-text">
+            <span class="header-user-name">{{ displayUserName }}</span>
+            <span class="header-user-role">{{ displayRoleName }}</span>
+          </span>
+          <span class="header-user-caret">▾</span>
+        </button>
+      </footer>
     </aside>
 
     <section class="daily-awareness-page">
@@ -574,6 +594,7 @@ watch(() => props.currentUser?.id, () => {
 
 .daily-history-sidebar {
   display: flex;
+  flex-direction: column;
   width: 312px;
   min-width: 312px;
   min-height: 0;
@@ -581,6 +602,13 @@ watch(() => props.currentUser?.id, () => {
   border-right: 1px solid #e2e8f0;
   background: #f8fafc;
   box-sizing: border-box;
+}
+
+.daily-history-account {
+  flex: 0 0 auto;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .daily-history-panel {

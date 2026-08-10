@@ -107,10 +107,9 @@ const showUserManagement = ref(false)
 const showDraftAssistant = ref(false)
 const showDailyAwareness = ref(false)
 const accountInSidebar = computed(() => (
-  currentView.value === 'generator' &&
   !showDraftAssistant.value &&
-  !showDailyAwareness.value &&
-  !showUserManagement.value
+  !showUserManagement.value &&
+  (showDailyAwareness.value || currentView.value === 'generator')
 ))
 const showPersonalSettings = ref(false)
 const draftInitialEventId = ref('')
@@ -576,6 +575,7 @@ function jobActionLabel(status) {
       :current-user="authUser"
       @back="returnHome"
       @open-draft-event="openDraftFromDaily"
+      @open-settings="openSidebarSettings"
     />
 
     <main v-else-if="showUserManagement" class="user-management-main">
