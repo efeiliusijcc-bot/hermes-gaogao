@@ -151,6 +151,16 @@ function handleHistoryAction() {
   if (isQaMode.value) emit('start-qa')
   else emit('open-history-list')
 }
+
+function prepareRecentTitle(event) {
+  const viewport = event.currentTarget?.querySelector('.recent-title-viewport')
+  const track = viewport?.querySelector('.recent-title-track')
+  if (!viewport || !track) return
+  const distance = Math.max(0, track.scrollWidth - viewport.clientWidth)
+  track.classList.toggle('is-overflowing', distance > 0)
+  track.style.setProperty('--recent-title-shift', `-${distance}px`)
+  track.style.setProperty('--recent-title-duration', `${Math.max(2.8, distance / 42 + 0.7).toFixed(2)}s`)
+}
 </script>
 
 <template>
@@ -192,10 +202,15 @@ function handleHistoryAction() {
             :key="item.jobId"
             class="history-item recent-item w-full text-left rounded-xl px-3.5 py-3.5 transition-all"
             :class="{ active: item.jobId === currentJobId }"
+            :title="jobTitle(item)"
+            @mouseenter="prepareRecentTitle"
+            @focus="prepareRecentTitle"
             @click="emit('open-job', item)"
           >
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="recent-title font-mono text-xs truncate">{{ jobTitle(item) }}</span>
+            <div class="recent-title-line flex items-center gap-2 min-w-0">
+              <span class="recent-title-viewport">
+                <span class="recent-title recent-title-track font-mono text-xs">{{ jobTitle(item) }}</span>
+              </span>
               <span class="ml-auto text-[#64748b] shrink-0">›</span>
             </div>
             <div class="recent-time font-mono text-[10px] mt-2 flex items-center gap-1.5">

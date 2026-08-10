@@ -1803,6 +1803,47 @@ canvas {
   font-weight: 600;
 }
 
+.recent-title-line {
+  overflow: hidden;
+}
+
+.recent-title-viewport {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.recent-title-track {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.recent-item:hover .recent-title-track.is-overflowing,
+.recent-item:focus-visible .recent-title-track.is-overflowing {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: recent-title-scroll var(--recent-title-duration) linear infinite alternate;
+}
+
+@keyframes recent-title-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(var(--recent-title-shift)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recent-item:hover .recent-title-track.is-overflowing,
+  .recent-item:focus-visible .recent-title-track.is-overflowing {
+    animation: none;
+  }
+}
+
 .recent-time {
   color: #64748b;
 }
