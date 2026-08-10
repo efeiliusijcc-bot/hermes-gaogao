@@ -51,3 +51,14 @@ test('daily awareness switches between document and compact card views', () => {
   assert.match(component, /\.news-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit/u)
   assert.match(component, /\.news-card\.expanded\s*\{\s*grid-column:\s*1\s*\/\s*-1/u)
 })
+
+test('daily awareness keeps history in a desktop sidebar with a mobile drawer fallback', () => {
+  const component = readFileSync(new URL('../components/DailyAwareness.vue', import.meta.url), 'utf8')
+
+  assert.match(component, /class="daily-history-sidebar"/u)
+  assert.match(component, /v-for="item in historyItems"/u)
+  assert.match(component, /@click="openHistoryBrief\(item\.businessDate\)"/u)
+  assert.match(component, /\.history-button\s*\{\s*display:\s*none/u)
+  assert.match(component, /@media \(max-width: 900px\)[\s\S]*?\.daily-history-sidebar\s*\{[\s\S]*?display:\s*none/u)
+  assert.match(component, /@media \(max-width: 900px\)[\s\S]*?\.history-button\s*\{[\s\S]*?display:\s*inline-flex/u)
+})

@@ -1,5 +1,5 @@
 <script setup>
-import { FileText, LayoutGrid } from '@lucide/vue'
+import { FileText, LayoutGrid, RefreshCw } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   downloadDailyAwarenessByDate,
@@ -245,6 +245,19 @@ function formatTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function formatHistoryTime(value) {
+  if (!value) return '--'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '--'
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
 function eventTitle(event) {
   return event?.eventTitle || event?.title || '未命名新闻'
 }
@@ -282,7 +295,58 @@ watch(() => props.currentUser?.id, () => {
 </script>
 
 <template>
-  <main class="daily-awareness-page">
+  <main class="daily-awareness-shell">
+    <aside class="daily-history-sidebar" aria-label="历史简报">
+      <section class="daily-history-panel">
+        <header class="daily-history-header">
+          <div>
+            <strong>历史简报</strong>
+            <span>DAILY BRIEF HISTORY</span>
+          </div>
+          <button
+            type="button"
+            class="daily-history-refresh"
+            :disabled="historyLoading"
+            title="刷新历史简报"
+            aria-label="刷新历史简报"
+            @click="refreshHistory"
+          >
+            <RefreshCw :size="15" aria-hidden="true" />
+          </button>
+        </header>
+
+        <div class="daily-history-list">
+          <div v-if="historyLoading && !historyItems.length" class="daily-history-empty">正在读取历史简报...</div>
+          <div v-else-if="!historyItems.length" class="daily-history-empty">
+            <strong>暂无历史简报</strong>
+            <p>简报生成后会在这里显示。</p>
+          </div>
+          <template v-else>
+            <button
+              v-for="item in historyItems"
+              :key="item.briefId"
+              type="button"
+              class="daily-history-item"
+              :class="{ active: item.businessDate === displayedDate }"
+              :disabled="Boolean(openingDate)"
+              @click="openHistoryBrief(item.businessDate)"
+            >
+              <span class="daily-history-item__title">{{ item.title || `${item.businessDate} 每日动态简报` }}</span>
+              <span class="daily-history-item__meta">
+                <i aria-hidden="true"></i>
+                <span>{{ qualityLabel(item.qualityStatus) }}</span>
+                <b>·</b>
+                <time>{{ formatHistoryTime(item.generatedAt) }}</time>
+              </span>
+            </button>
+          </template>
+        </div>
+
+        <footer class="daily-history-footer">共 {{ historyItems.length }} 期简报</footer>
+      </section>
+    </aside>
+
+    <section class="daily-awareness-page">
     <header class="daily-header">
       <button type="button" class="icon-button back-button" title="返回" aria-label="返回" @click="emit('back')">‹</button>
       <div class="daily-title-block">
@@ -465,6 +529,8 @@ watch(() => props.currentUser?.id, () => {
       <p>{{ canView ? '可稍后刷新查看。' : '当前账号没有查看权限。' }}</p>
     </section>
 
+    </section>
+
     <div v-if="showHistoryDrawer" class="history-overlay" role="presentation" @click.self="closeHistoryDrawer">
       <aside class="history-drawer" role="dialog" aria-modal="true" aria-labelledby="history-title">
         <header>
@@ -497,8 +563,196 @@ watch(() => props.currentUser?.id, () => {
 </template>
 
 <style scoped>
+.daily-awareness-shell {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #f4f6f8;
+}
+
+.daily-history-sidebar {
+  display: flex;
+  width: 312px;
+  min-width: 312px;
+  min-height: 0;
+  padding: 16px;
+  border-right: 1px solid #e2e8f0;
+  background: #f8fafc;
+  box-sizing: border-box;
+}
+
+.daily-history-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.daily-history-header {
+  display: flex;
+  min-height: 68px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e5eaf0;
+  padding: 12px 14px;
+}
+
+.daily-history-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.daily-history-header strong {
+  color: #172133;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.daily-history-header span {
+  color: #718096;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.daily-history-refresh {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #d8dee7;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.daily-history-refresh:hover:not(:disabled) {
+  border-color: #9fb9ab;
+  background: #f1f8f4;
+  color: #1f6b48;
+}
+
+.daily-history-list {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 10px;
+  scrollbar-gutter: stable;
+}
+
+.daily-history-item {
+  display: grid;
+  width: 100%;
+  min-height: 78px;
+  gap: 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #fff;
+  padding: 12px;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.daily-history-item:hover:not(:disabled) {
+  border-color: #b7c9bf;
+  background: #f8fbf9;
+}
+
+.daily-history-item.active {
+  border-color: #7eae96;
+  background: #f1f8f4;
+  box-shadow: inset 3px 0 #1f6b48;
+}
+
+.daily-history-item__title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: #172133;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.daily-history-item__meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: #718096;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.daily-history-item__meta i {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #1f9d68;
+}
+
+.daily-history-item__meta b {
+  color: #c0c8d2;
+  font-weight: 500;
+}
+
+.daily-history-item__meta time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-history-empty {
+  display: grid;
+  min-height: 180px;
+  place-content: center;
+  gap: 6px;
+  padding: 20px;
+  color: #718096;
+  text-align: center;
+  font-size: 12px;
+}
+
+.daily-history-empty strong {
+  color: #475569;
+  font-size: 13px;
+}
+
+.daily-history-empty p {
+  margin: 0;
+}
+
+.daily-history-footer {
+  min-height: 42px;
+  flex: 0 0 auto;
+  border-top: 1px solid #e5eaf0;
+  padding: 13px 14px;
+  color: #718096;
+  font-size: 10px;
+  box-sizing: border-box;
+}
+
 .daily-awareness-page {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -579,6 +833,10 @@ button {
   border: 1px solid #cfd6df;
   cursor: pointer;
   font-weight: 700;
+}
+
+.history-button {
+  display: none;
 }
 
 .history-button,
@@ -1007,6 +1265,17 @@ button:disabled {
 .history-item strong { line-height: 1.4; overflow-wrap: anywhere; }
 .history-item small { color: #667085; }
 .history-empty { color: #667085; text-align: center; padding: 40px 0; }
+
+@media (max-width: 900px) {
+  .daily-history-sidebar {
+    display: none;
+  }
+
+  .history-button {
+    display: inline-flex;
+    align-items: center;
+  }
+}
 
 @media (max-width: 760px) {
   .daily-awareness-page { padding: 18px 14px 48px; }
