@@ -278,6 +278,17 @@ function updateSettingsMenuPosition() {
   const button = settingsButtonRef.value
   if (!button) return
   const rect = button.getBoundingClientRect()
+  const managementSidebar = button.closest('.user-management-sidebar')
+  if (managementSidebar) {
+    const sidebarRect = managementSidebar.getBoundingClientRect()
+    settingsMenuStyle.value = {
+      top: `${Math.max(12, Math.min(rect.top, window.innerHeight - 360))}px`,
+      right: 'auto',
+      bottom: 'auto',
+      left: `${sidebarRect.right + 8}px`,
+    }
+    return
+  }
   if (button.closest('.sidebar-shell')) {
     settingsMenuStyle.value = {
       top: 'auto',
@@ -478,7 +489,7 @@ defineExpose({ toggleSettingsMenu })
 </script>
 
 <template>
-  <header class="topbar flex items-center justify-between px-6">
+  <header class="topbar flex items-center justify-between px-6" :class="{ 'topbar--management': userManagementOpen }">
     <div class="header-brand flex items-center">
       <button
         class="header-home-btn"

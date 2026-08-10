@@ -579,7 +579,13 @@ function jobActionLabel(status) {
     />
 
     <main v-else-if="showUserManagement" class="user-management-main">
-      <UserManagement :current-user="authUser" @back="returnHome" @open-daily-awareness="openDailyAwareness" />
+      <UserManagement
+        :current-user="authUser"
+        @back="returnHome"
+        @open-daily-awareness="openDailyAwareness"
+        @open-settings="openSidebarSettings"
+        @open-workspace="switchWorkspace"
+      />
     </main>
 
     <main v-else-if="authUser && !hasAnyBusinessModule" class="module-empty-main">

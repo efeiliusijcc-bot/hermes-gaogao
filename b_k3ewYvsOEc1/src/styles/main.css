@@ -7686,10 +7686,51 @@ body {
 }
 
 .user-management-main {
-  min-height: calc(100vh - 80px);
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
-  padding-top: 80px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  margin-left: 258px;
+  overflow: hidden;
+  padding: 0;
+  transition: margin-left 0.18s ease;
+}
+
+.topbar--management {
+  padding-left: 282px !important;
+}
+
+.topbar--management .header-brand {
+  display: none;
+}
+
+.topbar--management .header-module-nav {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.app-shell:has(.user-management-layout.is-sidebar-collapsed) .user-management-main {
+  margin-left: 76px;
+}
+
+.app-shell:has(.user-management-layout.is-sidebar-collapsed) .topbar--management {
+  padding-left: 100px !important;
+}
+
+@media (max-width: 920px) {
+  .user-management-main,
+  .app-shell:has(.user-management-layout.is-sidebar-collapsed) .user-management-main {
+    margin-left: 0;
+  }
+
+  .topbar--management,
+  .app-shell:has(.user-management-layout.is-sidebar-collapsed) .topbar--management {
+    padding-left: 18px !important;
+  }
+
+  .topbar--management .header-brand {
+    display: flex;
+  }
 }
 
 .module-empty-main {

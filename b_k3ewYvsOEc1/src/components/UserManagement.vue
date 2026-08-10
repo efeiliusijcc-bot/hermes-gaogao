@@ -1,5 +1,25 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import {
+  Bot,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  FileCheck2,
+  House,
+  MessageSquareText,
+  PenLine,
+  Plus,
+  Radio,
+  RefreshCw,
+  Search,
+  Settings,
+  ShieldCheck,
+  UserRoundCheck,
+  UserRoundCog,
+  Users,
+  UserX,
+} from '@lucide/vue'
 import DailyAwarenessAdmin from './DailyAwarenessAdmin.vue'
 import {
   createRole,
@@ -23,7 +43,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['back', 'open-daily-awareness'])
+const emit = defineEmits(['back', 'open-daily-awareness', 'open-settings', 'open-workspace'])
 
 const fallbackRoles = [
   { id: 'admin', name: 'admin', description: '管理员', isSystem: true, modules: ['report', 'qa', 'draft', 'daily'], permissions: [] },
@@ -63,6 +83,7 @@ const createDialogError = ref('')
 const createUsernameInputRef = ref(null)
 const searchKeyword = ref('')
 const currentPage = ref(1)
+const sidebarCollapsed = ref(false)
 
 const createForm = reactive({
   username: '',
@@ -100,6 +121,16 @@ const filteredUsers = computed(() => filterUsers(users.value, searchKeyword.valu
 const userPagination = computed(() => paginateUsers(filteredUsers.value, currentPage.value))
 const paginatedUsers = computed(() => userPagination.value.items)
 const totalPages = computed(() => userPagination.value.totalPages)
+const activeUsersCount = computed(() => users.value.filter((user) => user?.isActive !== false).length)
+const disabledUsersCount = computed(() => users.value.filter((user) => user?.isActive === false).length)
+const adminUsersCount = computed(() => users.value.filter((user) => userRoleNames(user).includes('admin')).length)
+const currentUserModules = computed(() => deriveUserModules(props.currentUser))
+const visiblePageNumbers = computed(() => {
+  const count = totalPages.value
+  if (count <= 5) return Array.from({ length: count }, (_, index) => index + 1)
+  const start = Math.min(Math.max(1, currentPage.value - 2), count - 4)
+  return Array.from({ length: 5 }, (_, index) => start + index)
+})
 
 watch(searchKeyword, () => {
   currentPage.value = 1
@@ -156,10 +187,20 @@ function statusLabel(user) {
 }
 
 function formatTime(value) {
-  if (!value) return '--'
+  if (!value) return '—'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return String(value)
-  return date.toLocaleString('zh-CN', { hour12: false })
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function canOpenWorkspace(module) {
+  return currentUserModules.value.includes(module)
+}
+
+function openWorkspace(module) {
+  if (!canOpenWorkspace(module)) return
+  emit('open-workspace', module)
 }
 
 function setError(error) {
@@ -513,37 +554,130 @@ async function confirmDeleteRole(role) {
 </script>
 
 <template>
-  <section class="user-management">
-    <div class="user-management__header">
-      <div>
-        <div class="user-management__eyebrow">ACCESS CONTROL</div>
-        <h1>系统管理</h1>
-        <p>管理账号权限与每日动态感知运行状态。</p>
+  <div class="user-management-layout" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
+    <aside class="user-management-sidebar" :class="{ 'is-collapsed': sidebarCollapsed }" aria-label="系统管理导航">
+      <div class="user-management-sidebar__brand">
+        <span class="user-management-sidebar__logo">A</span>
+        <span class="user-management-sidebar__brand-copy">
+          <strong>AI深度编报</strong>
+          <small>智能内容生产与管理平台</small>
+        </span>
       </div>
-      <div class="user-management__actions">
-        <button class="sci-btn" type="button" @click="emit('back')">返回工作台</button>
-        <button v-if="activeTab === 'roles'" class="sci-btn sci-btn-primary" type="button" :disabled="loading || !canManageRoles" @click="loadRoleData">
-          {{ loading ? '刷新中...' : '刷新列表' }}
-        </button>
-      </div>
-    </div>
 
-    <div v-if="!isLoggedIn" class="user-management__empty">请先登录后再访问用户管理。</div>
-    <div v-else-if="!canAccessManagement" class="user-management__empty">无权限访问系统管理。</div>
-    <template v-else>
-      <div class="user-management__tabs" role="tablist">
+      <nav class="user-management-sidebar__nav">
+        <button type="button" title="工作台" @click="emit('back')">
+          <House :size="18" aria-hidden="true" />
+          <span>工作台</span>
+        </button>
+
+        <div class="user-management-sidebar__group">
+          <div class="user-management-sidebar__group-title">
+            <FileCheck2 :size="18" aria-hidden="true" />
+            <span>AI深度编报</span>
+            <ChevronDown :size="15" aria-hidden="true" />
+          </div>
+          <button v-if="canOpenWorkspace('report')" type="button" title="智能编报" @click="openWorkspace('report')">
+            <Bot :size="17" aria-hidden="true" />
+            <span>智能编报</span>
+          </button>
+          <button v-if="canOpenWorkspace('qa')" type="button" title="QA问答" @click="openWorkspace('qa')">
+            <MessageSquareText :size="17" aria-hidden="true" />
+            <span>QA问答</span>
+          </button>
+          <button v-if="canOpenWorkspace('daily')" type="button" title="动态感知" @click="openWorkspace('daily')">
+            <Radio :size="17" aria-hidden="true" />
+            <span>动态感知</span>
+          </button>
+          <button v-if="canOpenWorkspace('draft')" type="button" title="拟稿助手" @click="openWorkspace('draft')">
+            <PenLine :size="17" aria-hidden="true" />
+            <span>拟稿助手</span>
+          </button>
+        </div>
+
+        <div class="user-management-sidebar__group is-active">
+          <div class="user-management-sidebar__group-title">
+            <UserRoundCog :size="18" aria-hidden="true" />
+            <span>用户管理</span>
+            <ChevronDown :size="15" aria-hidden="true" />
+          </div>
+          <button v-if="canManageUsers" type="button" :class="{ active: activeTab === 'users' }" title="用户管理" @click="switchTab('users')">
+            <Users :size="17" aria-hidden="true" />
+            <span>用户管理</span>
+          </button>
+          <button v-if="canManageRoles" type="button" :class="{ active: activeTab === 'roles' }" title="角色管理" @click="switchTab('roles')">
+            <ShieldCheck :size="17" aria-hidden="true" />
+            <span>角色管理</span>
+          </button>
+          <button v-if="canManageDailyAwareness" type="button" :class="{ active: activeTab === 'daily-awareness' }" title="动态感知管理" @click="switchTab('daily-awareness')">
+            <Radio :size="17" aria-hidden="true" />
+            <span>动态感知</span>
+          </button>
+        </div>
+
+        <button type="button" title="系统设置" @click="emit('open-settings', $event)">
+          <Settings :size="18" aria-hidden="true" />
+          <span>系统设置</span>
+        </button>
+      </nav>
+
+      <button class="user-management-sidebar__collapse" type="button" :aria-label="sidebarCollapsed ? '展开菜单' : '收起菜单'" @click="sidebarCollapsed = !sidebarCollapsed">
+        <ChevronLeft :size="17" aria-hidden="true" />
+        <span>{{ sidebarCollapsed ? '展开菜单' : '收起菜单' }}</span>
+      </button>
+    </aside>
+
+    <section class="user-management-workspace">
+      <div class="user-management__breadcrumb"><span>系统管理</span><b>/</b><strong>{{ activeTab === 'users' ? '用户管理' : activeTab === 'roles' ? '角色管理' : '动态感知' }}</strong></div>
+
+      <section class="user-management">
+        <header class="user-management__header">
+          <div>
+            <div class="user-management__eyebrow">ACCESS CONTROL</div>
+            <h1>系统管理</h1>
+            <p>管理账号权限与每日动态感知运行状态。</p>
+          </div>
+          <ShieldCheck class="user-management__hero-mark" :size="124" stroke-width="1" aria-hidden="true" />
+        </header>
+
+        <section v-if="canManageUsers" class="user-management__metrics" aria-label="用户概览">
+          <article>
+            <span class="user-management__metric-icon is-blue"><Users :size="25" aria-hidden="true" /></span>
+            <div><span>用户总数</span><strong>{{ loading ? '—' : users.length }}</strong></div>
+          </article>
+          <article>
+            <span class="user-management__metric-icon is-green"><UserRoundCheck :size="25" aria-hidden="true" /></span>
+            <div><span>启用用户</span><strong>{{ loading ? '—' : activeUsersCount }}</strong></div>
+          </article>
+          <article>
+            <span class="user-management__metric-icon is-blue"><ShieldCheck :size="25" aria-hidden="true" /></span>
+            <div><span>管理员</span><strong>{{ loading ? '—' : adminUsersCount }}</strong></div>
+          </article>
+          <article>
+            <span class="user-management__metric-icon is-red"><UserX :size="25" aria-hidden="true" /></span>
+            <div><span>禁用用户</span><strong>{{ loading ? '—' : disabledUsersCount }}</strong></div>
+          </article>
+        </section>
+
+        <div v-if="!isLoggedIn" class="user-management__empty">请先登录后再访问用户管理。</div>
+        <div v-else-if="!canAccessManagement" class="user-management__empty">无权限访问系统管理。</div>
+        <section v-else class="user-management__content">
+          <div class="user-management__tabs" role="tablist">
         <button v-if="canManageUsers" type="button" :class="{ active: activeTab === 'users' }" @click="switchTab('users')">用户管理</button>
         <button v-if="canManageRoles" type="button" :class="{ active: activeTab === 'roles' }" @click="switchTab('roles')">角色管理</button>
         <button v-if="canManageDailyAwareness" type="button" :class="{ active: activeTab === 'daily-awareness' }" @click="switchTab('daily-awareness')">动态感知</button>
-      </div>
+            <button v-if="activeTab === 'roles'" class="user-management__tab-refresh" type="button" :disabled="loading || !canManageRoles" @click="loadRoleData">
+              <RefreshCw :size="15" aria-hidden="true" />
+              {{ loading ? '刷新中...' : '刷新列表' }}
+            </button>
+          </div>
 
-      <div v-if="errorMessage" class="user-management__error">{{ errorMessage }}</div>
-      <div v-if="noticeMessage" class="user-management__notice">{{ noticeMessage }}</div>
+          <div v-if="errorMessage" class="user-management__error">{{ errorMessage }}</div>
+          <div v-if="noticeMessage" class="user-management__notice">{{ noticeMessage }}</div>
 
-      <template v-if="activeTab === 'users'">
-        <div class="user-management__toolbar panel">
+          <template v-if="activeTab === 'users'">
+            <div class="user-management__toolbar">
           <div class="user-management__search">
-            <span class="user-management__search-icon" aria-hidden="true">⌕</span>
+            <Search class="user-management__search-icon" :size="16" aria-hidden="true" />
             <input
               v-model="searchKeyword"
               class="sci-input"
@@ -562,17 +696,17 @@ async function confirmDeleteRole(role) {
           </div>
           <div class="user-management__toolbar-actions">
             <button class="sci-btn" type="button" :disabled="loading" @click="loadUsers">
-              <span aria-hidden="true">↻</span>
+              <RefreshCw :size="15" aria-hidden="true" />
               {{ loading ? '刷新中...' : '刷新列表' }}
             </button>
             <button class="sci-btn sci-btn-primary" type="button" :disabled="saving" @click="openCreateUserDialog">
-              <span aria-hidden="true">+</span>
+              <Plus :size="16" aria-hidden="true" />
               新增用户
             </button>
           </div>
         </div>
 
-        <div class="user-management__table panel">
+        <div class="user-management__table">
           <div class="user-management__table-head">
             <div>用户名</div>
             <div>角色</div>
@@ -599,6 +733,7 @@ async function confirmDeleteRole(role) {
               </div>
               <div class="user-management__cell">
                 <span class="user-management__status" :class="{ 'is-disabled': !user.isActive }">
+                  <span class="user-management__status-dot" aria-hidden="true"></span>
                   {{ statusLabel(user) }}
                 </span>
               </div>
@@ -674,10 +809,13 @@ async function confirmDeleteRole(role) {
           </template>
 
           <footer v-if="!loading && users.length" class="user-management__pagination">
-            <span>第 {{ currentPage }} / {{ totalPages }} 页 · 共 {{ filteredUsers.length }} 条</span>
-            <div>
-              <button class="sci-btn" type="button" :disabled="currentPage <= 1" @click="setUserPage(currentPage - 1)">上一页</button>
-              <button class="sci-btn" type="button" :disabled="currentPage >= totalPages" @click="setUserPage(currentPage + 1)">下一页</button>
+            <span>共 {{ filteredUsers.length }} 条</span>
+            <span class="user-management__sr-only">第 {{ currentPage }} / {{ totalPages }} 页 · 共 {{ filteredUsers.length }} 条</span>
+            <div class="user-management__page-controls">
+              <span class="user-management__page-size">10 条 / 页</span>
+              <button type="button" aria-label="上一页" :disabled="currentPage <= 1" @click="setUserPage(currentPage - 1)"><ChevronLeft :size="16" /></button>
+              <button v-for="page in visiblePageNumbers" :key="page" type="button" :class="{ active: page === currentPage }" :aria-current="page === currentPage ? 'page' : undefined" @click="setUserPage(page)">{{ page }}</button>
+              <button type="button" aria-label="下一页" :disabled="currentPage >= totalPages" @click="setUserPage(currentPage + 1)"><ChevronRight :size="16" /></button>
             </div>
           </footer>
         </div>
@@ -847,7 +985,9 @@ async function confirmDeleteRole(role) {
         :current-user="currentUser"
         @open-daily-awareness="emit('open-daily-awareness')"
       />
-    </template>
+        </section>
+      </section>
+    </section>
 
     <Teleport to="body">
       <div
@@ -923,55 +1063,270 @@ async function confirmDeleteRole(role) {
         </section>
       </div>
     </Teleport>
-  </section>
+  </div>
 </template>
 
 <style scoped>
-.user-management {
-  width: min(1280px, calc(100vw - 48px));
-  min-height: calc(100vh - 96px);
-  max-height: calc(100vh - 96px);
+.user-management-layout {
+  height: 100%;
+  min-height: 0;
+  background: #f5f7fb;
+}
+
+.user-management-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 70;
+  display: flex;
+  width: 258px;
+  flex-direction: column;
+  border-right: 1px solid #e5eaf2;
+  background: #fff;
+  color: #183153;
+  transition: width 0.18s ease;
+}
+
+.user-management-sidebar__brand {
+  display: flex;
+  height: 68px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #eef1f5;
+  padding: 0 24px;
+}
+
+.user-management-sidebar__logo {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  background: #2157d5;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 850;
+  box-shadow: 0 7px 16px rgba(33, 87, 213, 0.2);
+}
+
+.user-management-sidebar__brand-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.user-management-sidebar__brand-copy strong {
+  color: #0f213e;
+  font-size: 18px;
+  font-weight: 850;
+}
+
+.user-management-sidebar__brand-copy small {
+  color: #8a98ac;
+  font-size: 11px;
+}
+
+.user-management-sidebar__nav {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
   overflow-y: auto;
+  padding: 20px 14px;
+}
+
+.user-management-sidebar__nav button,
+.user-management-sidebar__group-title,
+.user-management-sidebar__collapse {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 12px;
+  color: #405575;
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.user-management-sidebar__nav button {
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.user-management-sidebar__nav button:hover {
+  background: #f4f7fc;
+  color: #2157d5;
+}
+
+.user-management-sidebar__group {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  margin: 2px -14px;
+  padding: 5px 14px;
+}
+
+.user-management-sidebar__group.is-active::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #2563eb;
+  content: "";
+}
+
+.user-management-sidebar__group-title {
+  color: #263b5d;
+  font-weight: 750;
+}
+
+.user-management-sidebar__group-title svg:last-child {
+  margin-left: auto;
+}
+
+.user-management-sidebar__group > button {
+  padding-left: 36px;
+}
+
+.user-management-sidebar__group > button.active {
+  background: #eef4ff;
+  color: #2157d5;
+  font-weight: 750;
+}
+
+.user-management-sidebar__collapse {
+  flex: 0 0 auto;
+  border-top: 1px solid #eef1f5;
+  border-radius: 0;
+  padding: 0 24px;
+  cursor: pointer;
+}
+
+.user-management-sidebar__collapse:hover {
+  background: #f8fafc;
+  color: #2157d5;
+}
+
+.user-management-sidebar.is-collapsed {
+  width: 76px;
+}
+
+.user-management-sidebar.is-collapsed .user-management-sidebar__brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.user-management-sidebar.is-collapsed .user-management-sidebar__brand-copy,
+.user-management-sidebar.is-collapsed .user-management-sidebar__nav button span,
+.user-management-sidebar.is-collapsed .user-management-sidebar__group-title span,
+.user-management-sidebar.is-collapsed .user-management-sidebar__group-title svg:last-child,
+.user-management-sidebar.is-collapsed .user-management-sidebar__collapse span {
+  display: none;
+}
+
+.user-management-sidebar.is-collapsed .user-management-sidebar__nav button,
+.user-management-sidebar.is-collapsed .user-management-sidebar__group-title,
+.user-management-sidebar.is-collapsed .user-management-sidebar__collapse {
+  justify-content: center;
+  padding: 0;
+}
+
+.user-management-sidebar.is-collapsed .user-management-sidebar__group > button {
+  padding-left: 0;
+}
+
+.user-management-sidebar.is-collapsed .user-management-sidebar__collapse svg {
+  transform: rotate(180deg);
+}
+
+.user-management-workspace {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  background: #f5f7fb;
+}
+
+.user-management__breadcrumb {
+  display: flex;
+  width: min(1520px, calc(100% - 64px));
+  min-height: 52px;
+  align-items: center;
+  gap: 12px;
   margin: 0 auto;
-  padding: 28px 0 80px;
+  color: #8593a8;
+  font-size: 12px;
+}
+
+.user-management__breadcrumb b {
+  color: #b1bccb;
+  font-weight: 500;
+}
+
+.user-management__breadcrumb strong {
+  color: #405575;
+  font-weight: 700;
+}
+
+.user-management {
+  width: min(1520px, calc(100% - 64px));
+  min-height: 0;
+  margin: 0 auto;
+  padding: 0 0 32px;
   color: #111827;
-  scrollbar-gutter: stable;
 }
 
 .user-management__header,
-.user-management__toolbar,
-.user-management__table,
 .role-management__list,
 .role-management__detail {
-  background: rgba(255, 255, 255, 0.94);
+  background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 5px 16px rgba(30, 50, 80, 0.04);
 }
 
 .user-management__header {
+  position: relative;
   display: flex;
-  align-items: flex-start;
+  min-height: 128px;
+  align-items: center;
   justify-content: space-between;
+  overflow: hidden;
   gap: 24px;
-  margin-bottom: 16px;
-  padding: 20px;
+  margin-bottom: 14px;
+  padding: 22px 26px;
+}
+
+.user-management__hero-mark {
+  position: absolute;
+  right: 24px;
+  bottom: -20px;
+  color: #edf3fb;
+  opacity: 0.9;
 }
 
 .user-management__eyebrow {
-  margin-bottom: 8px;
-  color: #0369a1;
-  font-family: "Fira Code", monospace;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
+  margin-bottom: 6px;
+  color: #8090a8;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.14em;
 }
 
 .user-management h1,
 .role-management__summary h2 {
   color: #0f172a;
-  font-size: 24px;
-  font-weight: 800;
+  font-size: 27px;
+  font-weight: 850;
   line-height: 1.2;
 }
 
@@ -980,7 +1335,76 @@ async function confirmDeleteRole(role) {
   margin-top: 8px;
   color: #64748b;
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 1.6;
+}
+
+.user-management__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.user-management__metrics article {
+  display: flex;
+  min-height: 92px;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  padding: 17px 20px;
+  box-shadow: 0 5px 16px rgba(30, 50, 80, 0.04);
+}
+
+.user-management__metric-icon {
+  display: grid;
+  width: 50px;
+  height: 50px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.user-management__metric-icon.is-blue {
+  background: #edf3ff;
+  color: #2563eb;
+}
+
+.user-management__metric-icon.is-green {
+  background: #eaf8f2;
+  color: #18a66a;
+}
+
+.user-management__metric-icon.is-red {
+  background: #fff1f1;
+  color: #dc4955;
+}
+
+.user-management__metrics article > div {
+  display: grid;
+  gap: 4px;
+}
+
+.user-management__metrics article span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.user-management__metrics article strong {
+  color: #0f213e;
+  font-size: 25px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.user-management__content {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 5px 16px rgba(30, 50, 80, 0.04);
 }
 
 .user-management__actions,
@@ -1000,19 +1424,20 @@ async function confirmDeleteRole(role) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
-  padding: 14px 16px;
+  border-bottom: 0;
+  padding: 16px 18px;
 }
 
 .user-management__search {
   position: relative;
-  width: min(420px, 100%);
+  width: min(300px, 100%);
 }
 
 .user-management__search .sci-input {
   width: 100%;
-  padding-left: 36px;
-  padding-right: 36px;
+  min-height: 40px;
+  padding-left: 40px !important;
+  padding-right: 36px !important;
 }
 
 .user-management__search input::-webkit-search-cancel-button {
@@ -1029,7 +1454,6 @@ async function confirmDeleteRole(role) {
 .user-management__search-icon {
   left: 13px;
   color: #64748b;
-  font-size: 16px;
   pointer-events: none;
 }
 
@@ -1056,38 +1480,88 @@ async function confirmDeleteRole(role) {
   flex: 0 0 auto;
 }
 
-.user-management__tabs {
+.user-management__toolbar-actions .sci-btn {
   display: inline-flex;
-  gap: 4px;
-  margin-bottom: 14px;
-  border: 1px solid #dbeafe;
-  border-radius: 8px;
-  background: #eff6ff;
-  padding: 4px;
+  min-width: 108px;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 6px !important;
+  padding: 0 14px;
+  box-shadow: none !important;
+  white-space: nowrap;
+}
+
+.user-management__toolbar-actions .sci-btn-primary {
+  border-color: #2563eb !important;
+  background: #2563eb !important;
+  color: #fff !important;
+}
+
+.user-management__toolbar-actions .sci-btn-primary:hover:not(:disabled) {
+  border-color: #1d4ed8 !important;
+  background: #1d4ed8 !important;
+  color: #fff !important;
+}
+
+.user-management__tabs {
+  display: flex;
+  min-height: 46px;
+  align-items: stretch;
+  gap: 6px;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 0 18px;
 }
 
 .user-management__tabs button {
+  position: relative;
   border: 0;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
-  padding: 8px 14px;
-  color: #1e40af;
-  font-size: 13px;
-  font-weight: 800;
+  padding: 0 14px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
   cursor: pointer;
 }
 
 .user-management__tabs button.active {
-  background: #fff;
-  color: #0f172a;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+  color: #2563eb;
+}
+
+.user-management__tabs button.active::after {
+  position: absolute;
+  right: 8px;
+  bottom: -1px;
+  left: 8px;
+  height: 2px;
+  background: #2563eb;
+  content: "";
+}
+
+.user-management__tabs .user-management__tab-refresh {
+  display: inline-flex;
+  min-height: 32px;
+  align-self: center;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  border: 1px solid #d7e0ec;
+  border-radius: 6px;
+  padding: 0 11px;
+  color: #405575;
+}
+
+.user-management__tabs .user-management__tab-refresh::after {
+  display: none;
 }
 
 .user-management__error,
 .user-management__notice,
 .user-management__empty {
-  margin-bottom: 12px;
-  border-radius: 8px;
+  margin: 12px 18px;
+  border-radius: 6px;
   padding: 12px 14px;
   font-size: 13px;
 }
@@ -1209,21 +1683,25 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management__table {
-  overflow: hidden;
+  overflow-x: auto;
+  margin: 0 18px;
+  border: 1px solid #dfe5ee;
+  border-radius: 6px;
 }
 
 .user-management__table-head,
 .user-management__row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(180px, 1.4fr) minmax(88px, 0.7fr) minmax(150px, 1.1fr) minmax(240px, 1.7fr);
-  gap: 12px;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(105px, 0.7fr) minmax(250px, 1.8fr) minmax(90px, 0.65fr) minmax(160px, 1fr) minmax(228px, 1.45fr);
+  min-width: 1010px;
+  gap: 10px;
   align-items: center;
 }
 
 .user-management__table-head {
   border-bottom: 1px solid #e2e8f0;
   background: #f8fafc;
-  padding: 12px 16px;
+  padding: 11px 16px;
   color: #475569;
   font-size: 12px;
   font-weight: 800;
@@ -1231,7 +1709,12 @@ async function confirmDeleteRole(role) {
 
 .user-management__row {
   border-bottom: 1px solid #edf2f7;
-  padding: 14px 16px;
+  padding: 9px 16px;
+  transition: background 0.15s ease;
+}
+
+.user-management__row:hover {
+  background: #f8fbff;
 }
 
 .user-management__row:last-child {
@@ -1243,17 +1726,66 @@ async function confirmDeleteRole(role) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border-top: 1px solid #e2e8f0;
-  background: #f8fafc;
-  padding: 12px 16px;
+  border-top: 0;
+  background: #fff;
+  padding: 14px 18px 18px;
   color: #64748b;
   font-size: 12px;
   font-weight: 700;
 }
 
-.user-management__pagination > div {
+.user-management__page-controls {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 5px;
+}
+
+.user-management__page-size {
+  min-width: 96px;
+  margin-right: 6px;
+  border: 1px solid #d7e0ec;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #fff;
+  color: #405575;
+  text-align: center;
+}
+
+.user-management__page-controls button {
+  display: grid;
+  min-width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #334155;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.user-management__page-controls button:hover:not(:disabled) {
+  background: #eff4fb;
+  color: #2563eb;
+}
+
+.user-management__page-controls button.active {
+  background: #2563eb;
+  color: #fff;
+}
+
+.user-management__page-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.user-management__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 .user-management__cell {
@@ -1278,22 +1810,21 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management__role,
-.user-management__module,
-.user-management__status {
+.user-management__module {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
-  border-radius: 999px;
-  padding: 4px 10px;
+  min-height: 23px;
+  border-radius: 5px;
+  padding: 3px 8px;
   background: #eff6ff;
   color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .user-management__module {
-  background: #f0f9ff;
-  color: #0369a1;
+  background: #eff6ff;
+  color: #2563eb;
 }
 
 .user-management__muted {
@@ -1302,18 +1833,46 @@ async function confirmDeleteRole(role) {
 }
 
 .user-management__status {
-  background: #ecfdf5;
-  color: #047857;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.user-management__status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #20b766;
 }
 
 .user-management__status.is-disabled {
-  background: #f1f5f9;
-  color: #64748b;
+  color: #475569;
+}
+
+.user-management__status.is-disabled .user-management__status-dot {
+  background: #ef4444;
 }
 
 .user-management__danger {
   border-color: #fecaca !important;
   color: #be123c !important;
+}
+
+.user-management__ops {
+  flex-wrap: nowrap;
+}
+
+.user-management__ops .sci-btn {
+  min-height: 31px;
+  border-radius: 6px !important;
+  padding: 6px 11px;
+  box-shadow: none !important;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .user-management__inline-form {
@@ -1842,17 +2401,8 @@ async function confirmDeleteRole(role) {
 }
 
 @media (max-width: 1100px) {
-  .user-management__table-head {
-    display: none;
-  }
-
-  .user-management__row {
+  .user-management__metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .user-management__ops,
-  .user-management__inline-form {
-    grid-column: 1 / -1;
   }
 
   .role-management {
@@ -1869,9 +2419,38 @@ async function confirmDeleteRole(role) {
   }
 }
 
+@media (max-width: 920px) {
+  .user-management-sidebar {
+    display: none;
+  }
+
+  .user-management__breadcrumb,
+  .user-management {
+    width: min(100% - 32px, 1520px);
+  }
+}
+
 @media (max-width: 760px) {
   .user-management {
-    width: min(100% - 28px, 1280px);
+    width: min(100% - 24px, 1520px);
+  }
+
+  .user-management__breadcrumb {
+    width: min(100% - 24px, 1520px);
+  }
+
+  .user-management__metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .user-management__header {
+    min-height: 118px;
+    padding: 20px;
+  }
+
+  .user-management__hero-mark {
+    right: -20px;
+    opacity: 0.55;
   }
 
   .user-management__header,
@@ -1895,7 +2474,6 @@ async function confirmDeleteRole(role) {
   .user-management__form-grid,
   .user-management__inline-form,
   .user-management__inline-form.is-password,
-  .user-management__row,
   .role-management__meta,
   .role-module-grid {
     grid-template-columns: 1fr;
@@ -1917,9 +2495,8 @@ async function confirmDeleteRole(role) {
     flex-direction: column;
   }
 
-  .user-management__pagination > div,
-  .user-management__pagination .sci-btn {
-    flex: 1;
+  .user-management__page-controls {
+    overflow-x: auto;
   }
 
   .user-management__create-backdrop {
