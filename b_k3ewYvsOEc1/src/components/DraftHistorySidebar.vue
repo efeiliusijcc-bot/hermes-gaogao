@@ -120,6 +120,8 @@ function formatHistoryTime(value) {
 .draft-history-row time { color: #9aa1ab; font-size: 10px; }
 .draft-history-empty { padding: 24px 10px; color: #8a929e; text-align: center; font-size: 12px; }
 .draft-history-account { flex: 0 0 auto; margin-top: 10px; border-top: 1px solid #e2e5ea; padding-top: 10px; }
+.draft-history-account .header-user-text { display: grid; flex: 1; }
+.draft-history-account .header-user-caret { display: inline; margin-left: auto; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .draft-history-head button:focus-visible, .draft-history-new:focus-visible, .draft-history-row:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.2); outline-offset: 1px; }
 
