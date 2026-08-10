@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+
+const appSource = readFileSync(new URL('../App.vue', import.meta.url), 'utf8')
+const assistantSource = readFileSync(new URL('../components/DraftAssistant.vue', import.meta.url), 'utf8')
+const historySource = readFileSync(new URL('../components/DraftHistorySidebar.vue', import.meta.url), 'utf8')
+const headerSource = readFileSync(new URL('../components/NexusHeader.vue', import.meta.url), 'utf8')
+
+test('draft assistant keeps history and the existing account menu in its desktop sidebar', () => {
+  assert.match(appSource, /showDraftAssistant\.value \|\| showDailyAwareness\.value/)
+  assert.match(appSource, /<DraftAssistant[\s\S]*@open-settings="openSidebarSettings"/)
+  assert.match(assistantSource, /class="draft-assistant-workspace"/)
+  assert.match(assistantSource, /:current-user="currentUser"/)
+  assert.match(historySource, /class="draft-history-layer draft-history-sidebar"/)
+  assert.match(historySource, /class="draft-history-account"/)
+  assert.match(historySource, /aria-label="账号菜单"/)
+  assert.match(headerSource, /\.draft-history-sidebar/)
+})
+
+test('draft history becomes a drawer and the header account returns on mobile', () => {
+  assert.match(historySource, /@media \(max-width: 900px\)[\s\S]*\.draft-history-layer\.open\s*{\s*display: block;/)
+  assert.match(assistantSource, /@media \(max-width: 900px\)[\s\S]*\.draft-history-mobile-button\s*{\s*visibility: visible;/)
+})

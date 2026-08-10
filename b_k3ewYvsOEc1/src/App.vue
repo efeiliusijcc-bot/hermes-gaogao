@@ -107,9 +107,8 @@ const showUserManagement = ref(false)
 const showDraftAssistant = ref(false)
 const showDailyAwareness = ref(false)
 const accountInSidebar = computed(() => (
-  !showDraftAssistant.value &&
   !showUserManagement.value &&
-  (showDailyAwareness.value || currentView.value === 'generator')
+  (showDraftAssistant.value || showDailyAwareness.value || currentView.value === 'generator')
 ))
 const showPersonalSettings = ref(false)
 const draftInitialEventId = ref('')
@@ -568,6 +567,7 @@ function jobActionLabel(status) {
       @back="returnHome"
       @request-login="requestDraftLogin"
       @report-job-created="openDraftReportJob"
+      @open-settings="openSidebarSettings"
     />
 
     <DailyAwareness

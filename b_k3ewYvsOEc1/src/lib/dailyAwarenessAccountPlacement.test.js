@@ -8,12 +8,12 @@ const headerSource = readFileSync(new URL('../components/NexusHeader.vue', impor
 const stylesSource = readFileSync(new URL('../styles/main.css', import.meta.url), 'utf8')
 
 test('daily awareness moves the existing account menu into its desktop sidebar', () => {
-  assert.match(appSource, /showDailyAwareness\.value \|\| currentView\.value === 'generator'/)
+  assert.match(appSource, /showDraftAssistant\.value \|\| showDailyAwareness\.value \|\| currentView\.value === 'generator'/)
   assert.match(appSource, /<DailyAwareness[\s\S]*@open-settings="openSidebarSettings"/)
   assert.match(dailySource, /class="daily-history-account"/)
   assert.match(dailySource, /aria-label="账号菜单"/)
   assert.match(dailySource, /emit\('open-settings', \$event\)/)
-  assert.match(headerSource, /closest\('\.sidebar-shell, \.daily-history-sidebar'\)/)
+  assert.match(headerSource, /closest\('\.sidebar-shell, \.daily-history-sidebar, \.draft-history-sidebar'\)/)
 })
 
 test('the header account remains available when the daily sidebar is hidden on mobile', () => {

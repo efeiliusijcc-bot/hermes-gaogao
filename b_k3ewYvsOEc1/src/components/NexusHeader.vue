@@ -277,7 +277,7 @@ function updateSettingsMenuPosition() {
     }
     return
   }
-  if (button.closest('.sidebar-shell, .daily-history-sidebar')) {
+  if (button.closest('.sidebar-shell, .daily-history-sidebar, .draft-history-sidebar')) {
     settingsMenuStyle.value = {
       top: 'auto',
       right: 'auto',

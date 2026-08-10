@@ -132,8 +132,8 @@ assert.match(analysisSource, /\.draft-analysis-actions\s*\{[^}]*position:\s*fixe
 assert.match(analysisSource, /width:\s*min\(840px,\s*calc\(100vw - 56px\)\)/);
 assert.match(analysisSource, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 assert.match(analysisSource, /\.draft-analysis-view\s*\{[^}]*padding:\s*26px 0 160px/);
-assert.match(historySource, /role="dialog"/);
-assert.match(historySource, /搜索历史编报/);
+assert.match(historySource, /:role="open \? 'dialog' : 'complementary'"/);
+assert.match(historySource, /搜索拟稿历史/);
 assert.match(historySource, /新建编报/);
 assert.doesNotMatch(historySource, /删除/);
 assert.doesNotMatch(historySource, /history-sidebar-tabs|最近编辑|全部事件/);
@@ -188,7 +188,7 @@ assert.match(assistantSource, /\.draft-confirmation\s*\{[^}]*padding:\s*24px 0 1
 assert.doesNotMatch(assistantSource, /返回工作台/);
 assert.doesNotMatch(assistantSource, /canShowHistory/);
 assert.doesNotMatch(assistantSource, /handleBack/);
-assert.match(assistantSource, /aria-label="查看历史编报"/);
+assert.match(assistantSource, /aria-label="查看拟稿历史"/);
 assert.equal((assistantSource.match(/<History/g) || []).length, 1);
 assert.match(assistantSource, /<span class="draft-bar-spacer"/);
 assert.doesNotMatch(assistantSource, /<DraftStepNavigation/);

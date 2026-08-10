@@ -30,7 +30,7 @@ const props = defineProps({
   initialEventId: { type: String, default: '' },
 })
 
-const emit = defineEmits(['back', 'request-login', 'report-job-created'])
+const emit = defineEmits(['back', 'request-login', 'report-job-created', 'open-settings'])
 
 const stage = ref('input')
 const sourceInput = ref('')
@@ -458,7 +458,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main ref="mainRef" class="draft-assistant-main">
+  <main class="draft-assistant-main">
     <div v-if="!currentUser" class="draft-login-gate">
       <h1>请先登录</h1>
       <p>登录后可使用拟稿助手并保存当前进度。</p>
@@ -466,11 +466,25 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-else>
+      <DraftHistorySidebar
+        :open="historyOpen"
+        :current-event-id="currentEventId"
+        :events="eventList"
+        :loading="isLoadingEvents"
+        :current-user="currentUser"
+        @close="historyOpen = false"
+        @select-event="openEvent"
+        @create-event="startNewEvent"
+        @open-settings="emit('open-settings', $event)"
+      />
+
+      <section ref="mainRef" class="draft-assistant-workspace">
       <header class="draft-assistant-bar">
         <button
+          class="draft-history-mobile-button"
           type="button"
-          aria-label="查看历史编报"
-          title="历史编报"
+          aria-label="查看拟稿历史"
+          title="拟稿历史"
           :disabled="stage === 'importing'"
           @click="historyOpen = true"
         >
@@ -545,28 +559,21 @@ onBeforeUnmount(() => {
           <LoaderCircle :size="22" class="draft-spin" aria-hidden="true" />正在加载...
         </div>
       </div>
-
-      <DraftHistorySidebar
-        :open="historyOpen"
-        :current-event-id="currentEventId"
-        :events="eventList"
-        :loading="isLoadingEvents"
-        @close="historyOpen = false"
-        @select-event="openEvent"
-        @create-event="startNewEvent"
-      />
+      </section>
     </template>
   </main>
 </template>
 
 <style scoped>
-.draft-assistant-main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; background: #fbfbfc; color: #1f2937; }
+.draft-assistant-main { --draft-sidebar-offset: 130px; --draft-sidebar-space: 260px; display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #fbfbfc; color: #1f2937; }
+.draft-assistant-workspace { min-width: 0; min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .draft-assistant-bar { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: center; min-height: 56px; border-bottom: 1px solid #e5e7eb; background: rgba(251, 251, 252, 0.96); padding: 0 18px; backdrop-filter: blur(12px); }
 .draft-assistant-bar strong { overflow: hidden; color: #292e37; font-size: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .draft-assistant-bar button { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; background: transparent; color: #586171; border-radius: 7px; cursor: pointer; }
 .draft-assistant-bar button:hover:not(:disabled) { background: #eef0f3; color: #20252d; }
 .draft-assistant-bar button:disabled { color: #b9bec6; cursor: not-allowed; }
 .draft-assistant-bar button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.2); outline-offset: 1px; }
+.draft-history-mobile-button { visibility: hidden; }
 .draft-bar-spacer { width: 36px; }
 .draft-assistant-content { width: 100%; min-width: 0; box-sizing: border-box; padding: 0 28px; }
 .draft-page-error { width: min(1040px, 100%); box-sizing: border-box; margin: 16px auto 0; border-left: 3px solid #d14343; background: #fff4f4; color: #9f2424; padding: 11px 13px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -575,7 +582,12 @@ onBeforeUnmount(() => {
 .draft-confirmation > header p { margin: 0 0 4px; color: #64748b; font-size: 12px; font-weight: 700; }
 .draft-confirmation > header h1 { margin: 0; color: #111827; font-size: 24px; line-height: 1.4; letter-spacing: 0; }
 .draft-confirmation > header span { display: block; margin-top: 7px; color: #737d8b; font-size: 12px; line-height: 1.7; }
-.draft-confirm-actions { position: fixed; left: 50%; bottom: 16px; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: min(920px, calc(100vw - 56px)); box-sizing: border-box; margin: 0; border: 1px solid #d8dee7; background: rgba(255, 255, 255, 0.97); border-radius: 8px; box-shadow: 0 10px 30px rgba(30, 41, 59, 0.14); padding: 12px; transform: translateX(-50%); backdrop-filter: blur(12px); }
+.draft-confirm-actions { position: fixed; left: calc(50% + var(--draft-sidebar-offset)); bottom: 16px; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: min(920px, calc(100vw - var(--draft-sidebar-space) - 56px)); box-sizing: border-box; margin: 0; border: 1px solid #d8dee7; background: rgba(255, 255, 255, 0.97); border-radius: 8px; box-shadow: 0 10px 30px rgba(30, 41, 59, 0.14); padding: 12px; transform: translateX(-50%); backdrop-filter: blur(12px); }
+.draft-assistant-workspace :deep(.draft-analysis-actions),
+.draft-assistant-workspace :deep(.draft-ai-revision) {
+  left: calc(50% + var(--draft-sidebar-offset));
+  width: min(840px, calc(100vw - var(--draft-sidebar-space) - 56px));
+}
 .draft-confirm-actions button, .draft-login-gate button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 700; }
 .draft-confirmation .secondary { border: 1px solid #d5dbe3; background: #fff; color: #4b5563; }
 .draft-confirmation .primary, .draft-login-gate button { border: 1px solid #1f2937; background: #1f2937; color: #fff; }
@@ -585,6 +597,11 @@ onBeforeUnmount(() => {
 .draft-route-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 420px; color: #6b7280; font-size: 13px; }
 .draft-spin { animation: draft-spin 800ms linear infinite; }
 @keyframes draft-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 900px) {
+  .draft-assistant-main { --draft-sidebar-offset: 0px; --draft-sidebar-space: 0px; }
+  .draft-history-mobile-button { visibility: visible; }
+}
 
 @media (max-width: 640px) {
   .draft-assistant-bar { padding: 0 10px; }
