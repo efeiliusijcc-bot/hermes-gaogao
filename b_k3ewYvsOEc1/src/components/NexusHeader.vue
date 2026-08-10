@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { BookOpenText } from '@lucide/vue'
 import { fetchResearchKeys, fetchVectorSourceStatus, switchVectorSourceProfile, updateResearchKeys } from '../lib/api.js'
 import { deriveUserModules, displayUserRoleNames } from '../lib/permissionModules.js'
 
@@ -36,7 +37,6 @@ const props = defineProps({
 
 const emit = defineEmits(['return-home', 'login', 'logout', 'open-user-management', 'open-personal-settings', 'switch-workspace'])
 
-const currentTime = ref('')
 const canvasRef = ref(null)
 const settingsButtonRef = ref(null)
 const settingsMenuRef = ref(null)
@@ -137,18 +137,6 @@ const emptyKeyClears = () => ({
   firecrawlApiKey: false,
   openaiEmbeddingApiKey: false,
 })
-
-function updateTime() {
-  currentTime.value = new Date().toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-}
 
 async function loadResearchKeys() {
   keyLoading.value = true
@@ -383,7 +371,6 @@ async function saveResearchKeys() {
   }
 }
 
-let timeInterval = null
 let vectorStatusInterval = null
 let animFrameId = null
 const barCount = 40
@@ -453,8 +440,6 @@ function stopVectorStatusPolling() {
 }
 
 onMounted(() => {
-  updateTime()
-  timeInterval = window.setInterval(updateTime, 1000)
   document.addEventListener('click', handleDocumentClick)
   document.addEventListener('keydown', handleDocumentKeydown)
   window.addEventListener('resize', handleWindowResize)
@@ -462,7 +447,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.clearInterval(timeInterval)
   stopVectorStatusPolling()
   document.removeEventListener('click', handleDocumentClick)
   document.removeEventListener('keydown', handleDocumentKeydown)
@@ -525,10 +509,16 @@ defineExpose({ toggleSettingsMenu })
     </div>
 
     <div class="header-right-actions">
-      <div class="header-time flex flex-col items-end">
-        <span class="font-mono text-[8px] text-slate-400 tracking-widest mb-1">系统时间</span>
-        <span class="font-mono text-xs text-slate-700 tracking-wider">{{ currentTime }}</span>
-      </div>
+      <button
+        class="header-manual-entry"
+        type="button"
+        disabled
+        aria-disabled="true"
+        title="使用手册即将上线"
+      >
+        <BookOpenText :size="16" aria-hidden="true" />
+        <span>使用手册</span>
+      </button>
 
       <button
         v-if="!user"
