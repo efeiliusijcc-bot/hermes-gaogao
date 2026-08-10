@@ -4132,6 +4132,14 @@ function exportPdf() {
             导出 PDF
           </button>
           <button @click="emit('list')" class="sci-btn text-[10px] px-3 py-2">报告列表</button>
+          <button
+            v-if="phase === 'error' && canDeleteReport && job?.jobId"
+            @click="emit('delete-report', job)"
+            class="sci-btn text-[10px] px-3 py-2 border-red-400/40 text-red-200"
+            type="button"
+          >
+            <Trash2 :size="15" aria-hidden="true" /> 删除编报
+          </button>
         </template>
       </div>
     </div>
