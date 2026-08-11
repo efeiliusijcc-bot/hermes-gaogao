@@ -1,5 +1,6 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { CheckCircle2, ChevronDown, ChevronUp, Circle, CircleAlert, LoaderCircle } from '@lucide/vue'
 import { defaultExpandedTimelineKeys, formatTimelineDuration } from '../lib/reportTechnicalTimeline.js'
 
 const props = defineProps({
@@ -71,6 +72,17 @@ function statusLabel(status) {
   return '未开始'
 }
 
+function statusIcon(status) {
+  if (status === 'done') return CheckCircle2
+  if (status === 'current') return LoaderCircle
+  if (status === 'error') return CircleAlert
+  return Circle
+}
+
+function stageNumber(index) {
+  return String(index + 1).padStart(2, '0')
+}
+
 function formatClock(value) {
   if (!value) return '时间未记录'
   const parsed = new Date(value)
@@ -85,6 +97,15 @@ function timeRange(group) {
   return group.endedAt && group.endedAt !== group.startedAt
     ? `${start} - ${formatClock(group.endedAt)}`
     : start
+}
+
+function stageClock(value) {
+  return value ? formatClock(value) : '—'
+}
+
+function stageEndClock(group) {
+  if (group.status === 'current' && props.taskStatus === 'current') return '至今'
+  return stageClock(group.endedAt)
 }
 
 function durationLabel(group) {
@@ -113,8 +134,18 @@ function actorLabel(actor) {
 
 <template>
   <div v-if="groups.length" class="technical-timeline">
+    <div class="technical-timeline-table-header" aria-hidden="true">
+      <span>步骤</span>
+      <span>阶段名称</span>
+      <span>状态</span>
+      <span>开始时间</span>
+      <span>结束时间</span>
+      <span>耗时</span>
+      <span>日志</span>
+      <span></span>
+    </div>
     <section
-      v-for="group in groups"
+      v-for="(group, index) in groups"
       :key="group.key"
       class="technical-timeline-stage"
       :class="`technical-timeline-stage-${group.status}`"
@@ -125,54 +156,64 @@ function actorLabel(actor) {
         :aria-expanded="expandedStageKeys.has(group.key)"
         @click="toggleStage(group.key)"
       >
-        <span class="technical-timeline-stage-marker" aria-hidden="true"></span>
-        <span class="technical-timeline-stage-copy">
+        <span class="technical-timeline-stage-index">{{ stageNumber(index) }}</span>
+        <span class="technical-timeline-stage-name">
           <strong>{{ group.title }}</strong>
-          <span>{{ group.desc }}</span>
         </span>
-        <span class="technical-timeline-stage-metrics">
-          <span>{{ group.eventCount }} 条事件</span>
-          <span>{{ timeRange(group) }}</span>
-          <span v-if="durationLabel(group)">耗时 {{ durationLabel(group) }}</span>
+        <span class="technical-timeline-stage-status">
+          <component :is="statusIcon(group.status)" :size="13" aria-hidden="true" />
+          <span>{{ statusLabel(group.status) }}</span>
         </span>
-        <span class="technical-timeline-stage-status">{{ statusLabel(group.status) }}</span>
+        <time class="technical-timeline-stage-time">{{ stageClock(group.startedAt) }}</time>
+        <time class="technical-timeline-stage-time">{{ stageEndClock(group) }}</time>
+        <span class="technical-timeline-stage-duration">{{ durationLabel(group) || '—' }}</span>
+        <span class="technical-timeline-stage-count">{{ group.eventCount ? `${group.eventCount} 条` : '—' }}</span>
         <span class="technical-timeline-chevron" aria-hidden="true">
-          {{ expandedStageKeys.has(group.key) ? '⌃' : '⌄' }}
+          <ChevronUp v-if="expandedStageKeys.has(group.key)" :size="16" />
+          <ChevronDown v-else :size="16" />
         </span>
       </button>
 
-      <div v-if="expandedStageKeys.has(group.key)" class="technical-timeline-events">
-        <article
-          v-for="event in group.events"
-          :key="event.id"
-          class="technical-timeline-event"
-          :class="`technical-timeline-event-${event.status}`"
-        >
-          <div class="technical-timeline-event-rail" aria-hidden="true"></div>
-          <div class="technical-timeline-event-body">
-            <header>
-              <div>
-                <span v-if="event.toolDisplayName" class="technical-timeline-event-tool">
-                  {{ event.toolDisplayName }}
-                </span>
-                <span v-if="event.reconstructed" class="technical-timeline-event-reconstructed">状态还原</span>
-                <span class="technical-timeline-event-actor">执行角色：{{ actorLabel(event.actor) }}</span>
-                <strong>{{ event.title }}</strong>
-              </div>
-              <div class="technical-timeline-event-meta">
-                <time>{{ formatClock(event.occurredAt || event.time) }}</time>
-                <span v-if="event.durationLabel">耗时 {{ event.durationLabel }}</span>
-                <span>{{ eventStatusLabel(event.status) }}</span>
-              </div>
-            </header>
-            <p>{{ event.description }}</p>
-            <details v-if="event.raw" class="technical-timeline-event-raw">
-              <summary>原始记录</summary>
-              <pre>{{ event.raw }}</pre>
-            </details>
-          </div>
-        </article>
-        <div v-if="!group.events.length" class="technical-timeline-stage-empty">阶段内暂无技术事件</div>
+      <div v-if="expandedStageKeys.has(group.key)" class="technical-timeline-stage-content">
+        <div class="technical-timeline-stage-detail">
+          <strong>步骤详情</strong>
+          <span>{{ group.desc }}</span>
+          <span>{{ timeRange(group) }}</span>
+          <span v-if="durationLabel(group)">耗时 {{ durationLabel(group) }}</span>
+        </div>
+        <div class="technical-timeline-events">
+          <article
+            v-for="event in group.events"
+            :key="event.id"
+            class="technical-timeline-event"
+            :class="`technical-timeline-event-${event.status}`"
+          >
+            <div class="technical-timeline-event-rail" aria-hidden="true"></div>
+            <div class="technical-timeline-event-body">
+              <header>
+                <div>
+                  <span v-if="event.toolDisplayName" class="technical-timeline-event-tool">
+                    {{ event.toolDisplayName }}
+                  </span>
+                  <span v-if="event.reconstructed" class="technical-timeline-event-reconstructed">状态还原</span>
+                  <span class="technical-timeline-event-actor">执行角色：{{ actorLabel(event.actor) }}</span>
+                  <strong>{{ event.title }}</strong>
+                </div>
+                <div class="technical-timeline-event-meta">
+                  <time>{{ formatClock(event.occurredAt || event.time) }}</time>
+                  <span v-if="event.durationLabel">耗时 {{ event.durationLabel }}</span>
+                  <span>{{ eventStatusLabel(event.status) }}</span>
+                </div>
+              </header>
+              <p>{{ event.description }}</p>
+              <details v-if="event.raw" class="technical-timeline-event-raw">
+                <summary>原始记录</summary>
+                <pre>{{ event.raw }}</pre>
+              </details>
+            </div>
+          </article>
+          <div v-if="!group.events.length" class="technical-timeline-stage-empty">阶段内暂无技术事件</div>
+        </div>
       </div>
     </section>
   </div>
@@ -182,24 +223,37 @@ function actorLabel(actor) {
 <style scoped>
 .technical-timeline {
   display: grid;
-  gap: 8px;
+  overflow: hidden;
+  border: 1px solid #dfe6ef;
+  border-radius: 8px;
+  background: #fff;
 }
 
 .technical-timeline-stage {
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 8px;
-  background: #fff;
-  overflow: hidden;
+  border-top: 1px solid #e5eaf0;
+}
+
+.technical-timeline-table-header,
+.technical-timeline-stage-header {
+  display: grid;
+  grid-template-columns: 58px minmax(150px, 1.3fr) 90px 92px 92px 84px 64px 24px;
+  align-items: center;
+  gap: 10px;
+}
+
+.technical-timeline-table-header {
+  min-height: 34px;
+  padding: 0 14px;
+  background: #f8fafc;
+  color: #475467;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .technical-timeline-stage-header {
-  display: grid;
-  grid-template-columns: 10px minmax(180px, 1fr) minmax(220px, auto) auto 18px;
-  align-items: center;
-  gap: 12px;
   width: 100%;
-  min-height: 64px;
-  padding: 10px 12px;
+  min-height: 44px;
+  padding: 0 14px;
   border: 0;
   color: #0f172a;
   background: transparent;
@@ -211,72 +265,101 @@ function actorLabel(actor) {
   background: #f8fafc;
 }
 
-.technical-timeline-stage-marker {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #94a3b8;
-  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+.technical-timeline-stage-current {
+  position: relative;
+  box-shadow: inset 0 0 0 1px #2563eb;
 }
 
-.technical-timeline-stage-current .technical-timeline-stage-marker {
-  background: #2563eb;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+.technical-timeline-stage-current .technical-timeline-stage-header {
+  background: #f8fbff;
 }
 
-.technical-timeline-stage-done .technical-timeline-stage-marker {
-  background: #16a34a;
-  box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.1);
-}
-
-.technical-timeline-stage-error .technical-timeline-stage-marker {
-  background: #dc2626;
-  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.1);
-}
-
-.technical-timeline-stage-copy {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.technical-timeline-stage-copy strong {
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-.technical-timeline-stage-copy span {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.technical-timeline-stage-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px 12px;
-  color: #64748b;
+.technical-timeline-stage-index {
+  color: #475467;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
   font-size: 10px;
+  font-weight: 700;
+}
+
+.technical-timeline-stage-current .technical-timeline-stage-index { color: #2563eb; }
+
+.technical-timeline-stage-name {
+  min-width: 0;
+}
+
+.technical-timeline-stage-name strong {
+  display: block;
+  overflow: hidden;
+  color: #25324a;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .technical-timeline-stage-status {
-  min-width: 44px;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 700;
-  text-align: right;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #667085;
+  font-size: 10px;
+  font-weight: 650;
 }
 
+.technical-timeline-stage-status svg { flex: 0 0 auto; }
 .technical-timeline-stage-current .technical-timeline-stage-status { color: #2563eb; }
+.technical-timeline-stage-current .technical-timeline-stage-status svg { animation: technical-timeline-spin 1.2s linear infinite; }
 .technical-timeline-stage-done .technical-timeline-stage-status { color: #15803d; }
 .technical-timeline-stage-error .technical-timeline-stage-status { color: #dc2626; }
 
+.technical-timeline-stage-time,
+.technical-timeline-stage-duration,
+.technical-timeline-stage-count {
+  color: #667085;
+  font-family: 'Fira Code', 'Microsoft YaHei', monospace;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .technical-timeline-chevron {
-  color: #64748b;
-  font-size: 16px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #667085;
+}
+
+.technical-timeline-stage-content {
+  border-top: 1px solid #e5eaf0;
+  background: #fbfcfe;
+}
+
+.technical-timeline-stage-detail {
+  display: flex;
+  align-items: center;
+  gap: 8px 18px;
+  min-height: 42px;
+  margin: 12px 12px 10px;
+  padding: 8px 12px;
+  border: 1px solid #e1e7ef;
+  border-radius: 6px;
+  background: #fff;
+  color: #667085;
+  font-size: 10px;
+}
+
+.technical-timeline-stage-detail strong {
+  color: #25324a;
+  font-size: 11px;
+}
+
+.technical-timeline-stage-detail span:first-of-type {
+  min-width: 0;
+  flex: 1;
+}
+
+@keyframes technical-timeline-spin {
+  to { transform: rotate(360deg); }
 }
 
 .technical-timeline-events {
@@ -417,15 +500,20 @@ function actorLabel(actor) {
 }
 
 @media (max-width: 760px) {
+  .technical-timeline-table-header { display: none; }
+
   .technical-timeline-stage-header {
-    grid-template-columns: 10px minmax(0, 1fr) auto 18px;
+    grid-template-columns: 42px minmax(0, 1fr) auto 20px;
     gap: 8px;
+    min-height: 52px;
+    padding-inline: 12px;
   }
 
-  .technical-timeline-stage-metrics {
-    grid-column: 2 / -1;
-    justify-content: flex-start;
-  }
+  .technical-timeline-stage-time,
+  .technical-timeline-stage-duration,
+  .technical-timeline-stage-count { display: none; }
+
+  .technical-timeline-stage-detail { align-items: flex-start; flex-direction: column; gap: 4px; }
 
   .technical-timeline-events {
     padding-left: 12px;
@@ -438,5 +526,9 @@ function actorLabel(actor) {
   .technical-timeline-event-meta {
     justify-content: space-between;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .technical-timeline-stage-current .technical-timeline-stage-status svg { animation: none; }
 }
 </style>

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { ArrowDown, Copy, ExternalLink, FileDown, FilePlus2, FileText, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
+import ReportProgressStageFlow from './ReportProgressStageFlow.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getDraftOutline, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
 import { isDraftAssistantReportJob, normalizeReportDraftOutline } from '../lib/reportDraftOutline.js'
@@ -5073,21 +5074,7 @@ function exportPdf() {
           </div>
 
           <div class="task-progress-panel execution-progress-timeline">
-            <div class="task-stage-flow">
-              <article
-                v-for="stage in progressStageFlow"
-                :key="stage.key"
-                class="task-stage-card"
-                :class="`task-stage-${stage.status}`"
-              >
-                <div class="task-stage-badge">{{ stage.status === 'done' ? '✓' : stage.number }}</div>
-                <div class="task-stage-copy">
-                  <strong>{{ stage.title }}</strong>
-                  <span>{{ stage.desc }}</span>
-                </div>
-                <em>{{ progressStatusLabel(stage.status) }}</em>
-              </article>
-            </div>
+            <ReportProgressStageFlow :stages="progressStageFlow" />
 
             <div v-if="false" class="ai-process-panel">
               <header class="ai-process-header">
@@ -5951,21 +5938,7 @@ function exportPdf() {
 
         <section v-else class="result-tab-panel">
           <div class="task-progress-panel">
-            <div class="task-stage-flow">
-              <article
-                v-for="stage in progressStageFlow"
-                :key="stage.key"
-                class="task-stage-card"
-                :class="`task-stage-${stage.status}`"
-              >
-                <div class="task-stage-badge">{{ stage.status === 'done' ? '✓' : stage.number }}</div>
-                <div class="task-stage-copy">
-                  <strong>{{ stage.title }}</strong>
-                  <span>{{ stage.desc }}</span>
-                </div>
-                <em>{{ progressStatusLabel(stage.status) }}</em>
-              </article>
-            </div>
+            <ReportProgressStageFlow :stages="progressStageFlow" />
 
             <div v-if="false" class="ai-process-panel">
               <header class="ai-process-header">
