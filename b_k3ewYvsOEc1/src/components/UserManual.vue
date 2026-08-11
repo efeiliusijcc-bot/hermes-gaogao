@@ -170,7 +170,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="manual-figure" role="img" aria-label="深度编报页面结构示意图">
-                <div class="manual-figure-bar"><i></i><strong>深度编报工作区</strong><span>使用手册</span></div>
+                <div class="manual-figure-bar"><strong>深度编报工作区</strong><span>使用手册</span></div>
                 <div class="report-figure-grid">
                   <div class="figure-sidebar">
                     <b>历史编报</b>
@@ -241,7 +241,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="manual-figure" role="img" aria-label="QA问答页面结构示意图">
-                <div class="manual-figure-bar"><i></i><strong>QA问答</strong><span>使用手册</span></div>
+                <div class="manual-figure-bar"><strong>QA问答</strong><span>使用手册</span></div>
                 <div class="qa-figure-grid">
                   <div class="figure-sidebar"><b>问答历史</b><span class="figure-line wide"></span><span class="figure-line"></span><span class="figure-line wide"></span></div>
                   <div class="qa-thread"><div class="question-bubble">提出包含时间与范围的问题</div><div class="answer-block"><b>回答</b><span></span><span></span><span class="short"></span></div><div class="qa-input">继续追问… <b>发送</b></div></div>
@@ -298,7 +298,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="manual-figure" role="img" aria-label="每日动态感知页面结构示意图">
-                <div class="manual-figure-bar"><i></i><strong>每日动态感知</strong><span>使用手册</span></div>
+                <div class="manual-figure-bar"><strong>每日动态感知</strong><span>使用手册</span></div>
                 <div class="daily-figure-grid">
                   <div class="figure-sidebar"><b>历史简报</b><span class="figure-line wide"></span><span class="figure-line"></span><span class="figure-line wide"></span></div>
                   <div class="daily-main"><div class="daily-toolbar"><b>业务日期</b><span>文档视图</span><span>卡片视图</span></div><div class="daily-filter"><span>全部</span><span>政治</span><span>经济</span><span>安全</span></div><div class="daily-event"><i></i><div><b>重点事件标题</b><span>事件摘要与影响判断</span></div></div><div class="daily-event"><i></i><div><b>重点事件标题</b><span>事件摘要与影响判断</span></div></div></div>
@@ -349,7 +349,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="manual-figure" role="img" aria-label="拟稿助手页面结构示意图">
-                <div class="manual-figure-bar"><i></i><strong>拟稿助手</strong><span>使用手册</span></div>
+                <div class="manual-figure-bar"><strong>拟稿助手</strong><span>使用手册</span></div>
                 <div class="draft-figure-grid">
                   <div class="figure-sidebar"><b>拟稿历史</b><span class="figure-line wide"></span><span class="figure-line"></span><span class="figure-line wide"></span></div>
                   <div class="draft-flow"><div><b>1</b><span>输入材料</span></div><em></em><div><b>2</b><span>事件分析</span></div><em></em><div><b>3</b><span>编辑提纲</span></div><em></em><div><b>4</b><span>导入编报</span></div></div>
@@ -505,7 +505,6 @@ onBeforeUnmount(() => {
 
 .manual-figure { overflow: hidden; margin: 0 0 30px; border: 1px solid #dfe5ec; border-radius: 7px; background: #f8fafc; }
 .manual-figure-bar { height: 38px; display: flex; align-items: center; gap: 9px; padding: 0 13px; border-bottom: 1px solid #dfe5ec; background: #fff; color: #475467; font-size: 10px; }
-.manual-figure-bar i { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 13px 0 #cbd5e1, 26px 0 #cbd5e1; margin-right: 26px; }
 .manual-figure-bar strong { color: #344054; }
 .manual-figure-bar span { margin-left: auto; color: #2563eb; }
 .manual-figure > p { margin: 0; padding: 10px 14px; border-top: 1px solid #e5eaf0; background: #fff; color: #667085; font-size: 11px; }
