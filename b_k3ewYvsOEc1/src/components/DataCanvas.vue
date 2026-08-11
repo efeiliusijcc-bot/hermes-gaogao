@@ -5966,7 +5966,7 @@ function exportPdf() {
             </div>
           </div>
 
-          <details class="source-technical-details result-technical-details">
+          <details class="source-technical-details result-technical-details" open>
             <summary>查看技术详情</summary>
             <div ref="liveLogListRef" class="source-technical-log" @scroll="handleLogScroll('live', $event)">
               <ReportTechnicalTimeline

@@ -65,7 +65,7 @@ function statusIcon(status) {
   border: 1px solid #dfe6ef;
   border-radius: 8px;
   background: #fff;
-  padding: 18px 20px;
+  padding: 22px 20px;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
 }
@@ -76,18 +76,18 @@ function statusIcon(status) {
 
 .report-progress-flow-list {
   display: grid;
-  grid-template-columns: repeat(var(--stage-count), minmax(118px, 1fr));
-  gap: 24px;
-  min-width: calc(var(--stage-count) * 118px + (var(--stage-count) - 1) * 24px);
+  grid-template-columns: repeat(var(--stage-count), minmax(132px, 1fr));
+  gap: 18px;
+  min-width: calc(var(--stage-count) * 132px + (var(--stage-count) - 1) * 18px);
 }
 
 .report-progress-stage {
   position: relative;
   display: grid;
-  min-height: 66px;
+  min-height: 84px;
   align-content: space-between;
-  gap: 9px;
-  padding: 11px 10px 10px;
+  gap: 12px;
+  padding: 14px 10px 13px;
   border: 1px solid #d8e0ea;
   border-radius: 6px;
   background: #fff;
@@ -97,28 +97,28 @@ function statusIcon(status) {
 .report-progress-stage-title {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
 }
 
 .report-progress-stage-title > span {
   display: grid;
-  width: 23px;
-  height: 23px;
+  width: 26px;
+  height: 26px;
   flex: 0 0 auto;
   place-items: center;
   border-radius: 4px;
   background: #eff6ff;
   color: #2563eb;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 750;
 }
 
 .report-progress-stage-title strong {
   overflow: hidden;
   color: #25324a;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 750;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -129,9 +129,9 @@ function statusIcon(status) {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding-left: 27px;
+  padding-left: 32px;
   color: #98a2b3;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 650;
 }
 
@@ -140,7 +140,7 @@ function statusIcon(status) {
 .report-progress-stage-connector {
   position: absolute;
   top: 50%;
-  right: -21px;
+  right: -18px;
   color: #2563eb;
   transform: translateY(-50%);
 }
@@ -168,8 +168,8 @@ function statusIcon(status) {
 @keyframes report-progress-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 760px) {
-  .report-progress-flow { padding: 14px; }
-  .report-progress-flow-list { grid-template-columns: repeat(var(--stage-count), 132px); }
+  .report-progress-flow { padding: 16px; }
+  .report-progress-flow-list { grid-template-columns: repeat(var(--stage-count), 150px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

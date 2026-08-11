@@ -15,6 +15,12 @@ test('the same horizontal stage flow is used for live and completed reports', ()
   assert.match(flowSource, /overflow-x: auto/)
 })
 
+test('completed report progress opens technical details and uses a fuller stage scale', () => {
+  assert.match(dataCanvasSource, /<details class="source-technical-details result-technical-details" open>/)
+  assert.match(flowSource, /min-height: 84px/)
+  assert.match(flowSource, /font-size: 13px/)
+})
+
 test('stage summaries follow the reference table hierarchy', () => {
   assert.match(timelineSource, /class="technical-timeline-table-header"/)
   assert.match(timelineSource, /<span>开始时间<\/span>/)

@@ -10,6 +10,9 @@
 - Focused expanded-log capture: `/tmp/hermes-progress-final-logs.png`
 - Mobile capture: `/tmp/hermes-progress-final-mobile.png`, 390 x 844 CSS px at device scale factor 1.
 - State: completed report `17c21860`, task progress selected; focused capture has technical details and report-writing logs expanded.
+- Density follow-up source: production browser annotation at `https://hermes-gaogao.vercel.app/`, viewport 1040 x 994, selected region x=259, y=290, width=780, height=180.
+- Density follow-up implementation capture: `/tmp/hermes-progress-density-after-v2.png`, actual Vue progress and timeline components at 1040 x 994 and device scale factor 1.
+- Density follow-up mobile capture: `/tmp/hermes-progress-density-mobile.png`, 390 x 844 and device scale factor 1.
 
 ## Findings
 
@@ -19,7 +22,7 @@
 - Colors and tokens: the implementation uses restrained blue for structure/current state, green for completion, red for error, and neutral gray for waiting state, matching the source direction and the product's existing blue-white palette.
 - Images and icons: the reference contains no content imagery. Existing Lucide UI icons are used; no placeholder, custom SVG, CSS drawing, or decorative asset was introduced.
 - Copy and content: the seven report stages and their status labels match the real pipeline. Existing report metadata and technical event wording remain unchanged.
-- Intentional product constraint: the existing collapsible technical-log container and its internal vertical scrolling remain in place because the requested scope explicitly preserves the original log presentation. The stage summary above it adopts the reference table hierarchy.
+- Intentional product constraint: the technical-log container remains collapsible and keeps its internal vertical scrolling because the requested scope explicitly preserves the original log presentation. It now starts expanded on completed reports.
 
 ## Interaction And Runtime Checks
 
@@ -30,6 +33,8 @@
 - Verified mobile table headers and desktop-only time columns collapse at the responsive breakpoint.
 - Enabled browser runtime/log collection and repeated the primary flow; 0 error-like events were captured.
 - Running tasks use the same `ReportProgressStageFlow` component as completed reports. A new production task was not triggered for QA.
+- Density follow-up at 1040 px: progress flow height is 130 px, each card is 132 x 84 px, technical details start expanded at 402 px high, and no stage title is truncated.
+- Density follow-up at 390 px: cards remain 150 x 84 px, the flow scrolls internally from 0 to 810 px, and the document itself has no horizontal overflow.
 
 ## Comparison History
 
@@ -38,6 +43,11 @@
    - Fix: reduced card horizontal padding from 12 px to 10 px, number width from 25 px to 23 px, title gap from 5 px to 4 px, and realigned the status inset.
 2. Post-fix capture: `/tmp/hermes-progress-final-desktop-v2.png`.
    - All stage titles fit, the stage container has no overflow at 1672 x 941, and no further P0/P1/P2 findings remain.
+3. Density follow-up first capture: `/tmp/hermes-progress-density-after.png`.
+   - P2: the enlarged 130 px minimum card width left `资料深度采集` approximately 2 px short.
+   - Fix: raised the minimum desktop card width to 132 px without changing the page width or responsive behavior.
+4. Density follow-up post-fix capture: `/tmp/hermes-progress-density-after-v2.png`.
+   - All titles fit, the details are expanded by default, and no further P0/P1/P2 findings remain.
 
 ## Follow-up Polish
 
@@ -48,6 +58,7 @@
 - [x] Shared horizontal stage component for live and completed reports.
 - [x] Reference-style stage summary table.
 - [x] Original technical event cards, raw records, and new-log affordance retained.
+- [x] Completed-report technical details expanded by default and progress scale increased.
 - [x] Desktop, expanded-log, mobile, runtime-error, test, and build verification completed.
 
 final result: passed
