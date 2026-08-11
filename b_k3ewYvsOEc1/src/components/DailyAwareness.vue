@@ -595,8 +595,8 @@ watch(() => props.currentUser?.id, () => {
 .daily-history-sidebar {
   display: flex;
   flex-direction: column;
-  width: 312px;
-  min-width: 312px;
+  width: 240px;
+  min-width: 240px;
   min-height: 0;
   padding: 16px;
   border-right: 1px solid #e2e8f0;

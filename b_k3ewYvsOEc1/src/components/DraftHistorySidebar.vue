@@ -112,7 +112,7 @@ function prepareHistoryTitle(event) {
 </template>
 
 <style scoped>
-.draft-history-layer { position: relative; z-index: 10; width: 260px; min-width: 260px; min-height: 0; flex: 0 0 260px; }
+.draft-history-layer { position: relative; z-index: 10; width: 240px; min-width: 240px; min-height: 0; flex: 0 0 240px; }
 .draft-history-backdrop { display: none; }
 .draft-history-drawer { display: flex; width: 100%; height: 100%; min-height: 0; flex-direction: column; border-right: 1px solid #e2e5ea; background: #f8f8f8; padding: 12px 8px; }
 .draft-history-content { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }

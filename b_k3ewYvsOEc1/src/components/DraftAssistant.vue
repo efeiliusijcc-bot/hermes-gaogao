@@ -565,7 +565,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.draft-assistant-main { --draft-sidebar-offset: 130px; --draft-sidebar-space: 260px; display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #fbfbfc; color: #1f2937; }
+.draft-assistant-main { --draft-sidebar-offset: 120px; --draft-sidebar-space: 240px; display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #fbfbfc; color: #1f2937; }
 .draft-assistant-workspace { min-width: 0; min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .draft-assistant-bar { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: center; min-height: 56px; border-bottom: 1px solid #e5e7eb; background: rgba(251, 251, 252, 0.96); padding: 0 18px; backdrop-filter: blur(12px); }
 .draft-assistant-bar strong { overflow: hidden; color: #292e37; font-size: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
