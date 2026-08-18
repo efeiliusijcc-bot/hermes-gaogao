@@ -4309,11 +4309,7 @@ function exportPdf() {
         </div>
 
         <div v-if="isPlanning" class="plan-modal-scroll px-6 py-14 text-center">
-          <div class="nexus-loader scale-75 mx-auto">
-            <div class="loader-ring ring-a"></div>
-            <div class="loader-ring ring-b"></div>
-            <div class="loader-core"></div>
-          </div>
+          <ReportOrbLoader />
           <div class="font-mono text-[#0f172a] mt-6">正在生成编报规划</div>
           <div class="font-mono text-[11px] text-[#374151] mt-2">系统正在识别主题、拆解任务并生成采集方向。</div>
         </div>

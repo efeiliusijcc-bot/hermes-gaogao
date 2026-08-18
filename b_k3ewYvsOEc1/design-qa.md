@@ -70,5 +70,6 @@
 - Reduced motion: the renderer produced one static frame; isolated screenshots taken 800 ms apart produced identical hashes.
 - No WebGPU: the canvas remained hidden, the Lucide fallback was visible, and the existing stage flow and technical details remained available.
 - Visual direction: the opal form is retained with a restrained blue, cyan, and green palette suited to the existing Hermes interface.
+- Planning stage: the same orb now replaces the legacy ring while the plan is generated; it rendered at 188 px on desktop and 132 px on mobile with no page or modal overflow.
 
 final result: passed

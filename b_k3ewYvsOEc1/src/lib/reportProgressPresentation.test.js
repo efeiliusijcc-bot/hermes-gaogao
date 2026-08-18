@@ -44,10 +44,15 @@ test('existing execution log cards and raw record details remain available', () 
 
 test('live report progress uses the liquid orb loader without replacing stage or log content', () => {
   assert.match(dataCanvasSource, /const ReportOrbLoader = defineAsyncComponent\(\(\) => import\('\.\/ReportOrbLoader\.vue'\)\)/)
-  assert.match(dataCanvasSource, /<ReportOrbLoader \/>/)
+  assert.equal((dataCanvasSource.match(/<ReportOrbLoader \/>/g) || []).length, 2)
   assert.doesNotMatch(dataCanvasSource, /class="source-status-orbit"/)
   assert.match(dataCanvasSource, /<ReportProgressStageFlow :stages="progressStageFlow" \/>/)
   assert.match(dataCanvasSource, /<details class="source-technical-details" open>/)
+})
+
+test('report planning uses the same liquid orb instead of the legacy ring loader', () => {
+  assert.match(dataCanvasSource, /<div v-if="isPlanning"[\s\S]*?<ReportOrbLoader \/>[\s\S]*?正在生成编报规划/)
+  assert.doesNotMatch(dataCanvasSource, /<div v-if="isPlanning"[\s\S]*?class="nexus-loader scale-75 mx-auto"/)
 })
 
 test('the report orb loader is responsive, accessible, and keeps a non-WebGPU fallback', () => {
