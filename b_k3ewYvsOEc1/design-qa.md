@@ -61,4 +61,14 @@
 - [x] Completed-report technical details expanded by default and progress scale increased.
 - [x] Desktop, expanded-log, mobile, runtime-error, test, and build verification completed.
 
+## Liquid Orb Follow-up
+
+- Scope: replaced the live report loading ring with the adapted WebGPU liquid orb while preserving task copy, actions, progress stages, and technical logs.
+- Desktop (1440 x 1000): WebGPU reached `ready`; the loader measured 188 x 188 CSS pixels and rendered at 282 x 282 device pixels with DPR capped at 1.5.
+- Motion: isolated orb screenshots taken 600 ms apart produced different hashes, confirming that the effect animates.
+- Mobile (390 x 844): the loader measured 132 x 132 CSS pixels, technical details remained open, and horizontal overflow was 0.
+- Reduced motion: the renderer produced one static frame; isolated screenshots taken 800 ms apart produced identical hashes.
+- No WebGPU: the canvas remained hidden, the Lucide fallback was visible, and the existing stage flow and technical details remained available.
+- Visual direction: the opal form is retained with a restrained blue, cyan, and green palette suited to the existing Hermes interface.
+
 final result: passed

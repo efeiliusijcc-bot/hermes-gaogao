@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { ArrowDown, Copy, ExternalLink, FileDown, FilePlus2, FileText, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
@@ -12,6 +12,8 @@ import { parseStructuredPlanningContext } from '../lib/reportPlanningContext.js'
 import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, hasDistinctSourceDetail, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 import { getTruthfulSourceStats } from '../lib/sourceStats.js'
+
+const ReportOrbLoader = defineAsyncComponent(() => import('./ReportOrbLoader.vue'))
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -5057,9 +5059,7 @@ function exportPdf() {
       <div v-else-if="phase === 'loading'" class="source-workspace">
         <section class="source-collection-panel">
           <div class="source-status-area">
-            <div class="source-status-orbit" :class="`source-status-${taskProgressView.tone}`">
-              <span></span>
-            </div>
+            <ReportOrbLoader />
             <h1>正在执行编报任务</h1>
             <p>系统正在按计划执行任务，请稍候。您可以离开页面，任务将继续在后台运行。</p>
             <div class="source-task-pill">{{ taskSummaryText }}</div>

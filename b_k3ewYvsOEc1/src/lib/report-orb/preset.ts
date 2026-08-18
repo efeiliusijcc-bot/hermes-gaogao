@@ -1,0 +1,89 @@
+export type ReportOrbParams = {
+  style: 'opal'
+  glassEnabled: boolean
+  speed: number
+  radius: number
+  contourDeform: number
+  bandDensity: number
+  chromaticShift: number
+  metalScale: number
+  metalStretch: number
+  metalAngle: number
+  metalOffset: number
+  metalPhase: number
+  metalEvolution: number
+  metalRoughness: number
+  metalDepth: number
+  zoom: number
+  warp: number
+  ridgeAmt: number
+  sharp: number
+  shade: number
+  sheen: number
+  gloss: number
+  glassOpacity: number
+  shellMidAlpha: number
+  shellEdgeAlpha: number
+  exposure: number
+  edgeSoftness: number
+  edgeGlow: number
+  colorA: string
+  colorB: string
+  colorC: string
+  colorD: string
+  highlightColor: string
+  shellInner: string
+  shellMid: string
+  shellEdge: string
+  sheenColor: string
+  specColor: string
+  canvasColor: string
+  glowColor: string
+}
+
+export const styleFlowIndexes: Record<ReportOrbParams['style'], number> = {
+  opal: 13,
+}
+
+export const reportOrbParams: ReportOrbParams = {
+  style: 'opal',
+  glassEnabled: true,
+  speed: 0.72,
+  radius: 0.88,
+  contourDeform: 0,
+  bandDensity: 2,
+  chromaticShift: 0.3,
+  metalScale: 0.77,
+  metalStretch: 0.23,
+  metalAngle: 65,
+  metalOffset: 0,
+  metalPhase: 0,
+  metalEvolution: 1,
+  metalRoughness: 0.22,
+  metalDepth: 0.25,
+  zoom: 0.3,
+  warp: 2.8,
+  ridgeAmt: 0.36,
+  sharp: 2,
+  shade: 0.1,
+  sheen: 0.3,
+  gloss: 0.26,
+  glassOpacity: 0.38,
+  shellMidAlpha: 0.2,
+  shellEdgeAlpha: 0.2,
+  exposure: 1.12,
+  edgeSoftness: 0.005,
+  edgeGlow: 0,
+  colorA: '#ECFEFF',
+  colorB: '#34D399',
+  colorC: '#38BDF8',
+  colorD: '#2563EB',
+  highlightColor: '#FFFFFF',
+  shellInner: '#FFFFFF',
+  shellMid: '#67E8F9',
+  shellEdge: '#34D399',
+  sheenColor: '#E0F2FE',
+  specColor: '#D1FAE5',
+  canvasColor: '#07131F',
+  glowColor: '#2DD4BF',
+}
