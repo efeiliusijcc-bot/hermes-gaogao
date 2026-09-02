@@ -73,7 +73,7 @@ export class ReportsRetrievalAdapter {
   }
 
   private lookbackTimeRange(lookbackDays: number | undefined): { start: string; end: string } | undefined {
-    const days = lookbackDays ?? 30;
+    const days = lookbackDays ?? 90;
     if (!Number.isFinite(days) || days <= 0) return undefined;
     const end = new Date();
     return {

@@ -1403,7 +1403,7 @@ export class HermesService {
     return {
       enabled: options.enabled === true || String(options.enabled).toLowerCase() === 'true',
       mode: 'summary_first',
-      lookbackDays: boundedInt(options.lookbackDays, 30, 1, 90),
+      lookbackDays: boundedInt(options.lookbackDays, 90, 1, 90),
       maxMetadataRows: boundedInt(options.maxMetadataRows, 50, 1, 100),
       maxContentRows: boundedInt(options.maxContentRows, 8, 0, 20),
       mcpServer: 'pg-sources',

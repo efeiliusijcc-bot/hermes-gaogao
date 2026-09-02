@@ -105,7 +105,7 @@ async function testMissingDatabaseLimitsUseDefaults() {
 
   assert.equal(searchRequests.length, 1);
   assert.equal(searchRequests[0].maxRows, 50);
-  assert.equal(searchRequests[0].lookbackDays, 30);
+  assert.equal(searchRequests[0].lookbackDays, 90);
 }
 
 async function testPreRecallFiltersMismatch() {

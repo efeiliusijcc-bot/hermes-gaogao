@@ -1583,7 +1583,7 @@ export class ReportsService implements OnModuleDestroy {
     if (!databaseEnabled) return payload;
 
     const maxRows = this.boundInt(databaseOptions.maxMetadataRows, 50, 1, 100);
-    const lookbackDays = this.boundInt(databaseOptions.lookbackDays, 30, 0, 365);
+    const lookbackDays = this.boundInt(databaseOptions.lookbackDays, 90, 0, 365);
     if (this.hybridRetrievalEnabled() && this.reportsRetrieval) {
       try {
         return await this.enrichPayloadWithHybridDatabaseSources(
@@ -3199,7 +3199,7 @@ export class ReportsService implements OnModuleDestroy {
       ...context,
       databaseSourceOptions: {
         enabled: true,
-        lookbackDays: 30,
+        lookbackDays: 90,
         maxMetadataRows: 50,
         maxContentRows: 8,
       },

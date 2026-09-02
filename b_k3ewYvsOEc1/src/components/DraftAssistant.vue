@@ -336,7 +336,7 @@ function buildDraftReportPayload(imported, reportTitle) {
     planId: imported.planId,
     databaseSourceOptions: {
       enabled: true,
-      lookbackDays: 30,
+      lookbackDays: 90,
       maxMetadataRows: 50,
       maxContentRows: 8,
     },

@@ -27,7 +27,7 @@ const preferenceForm = reactive({
   defaultRegion: '',
   writingStyle: '',
   tone: '',
-  defaultSourceOptionsText: '{\n  "databaseSourceEnabled": true,\n  "lookbackDays": 30,\n  "maxMetadataRows": 50,\n  "maxContentRows": 8\n}',
+  defaultSourceOptionsText: '{\n  "databaseSourceEnabled": true,\n  "lookbackDays": 90,\n  "maxMetadataRows": 50,\n  "maxContentRows": 8\n}',
   defaultOutlineOptionsText: '{\n  "includeAttitudes": true,\n  "includeRiskToUs": true,\n  "includeTrend": true\n}',
 })
 

@@ -86,7 +86,7 @@ async function testDraftAssistantImportDefaultsToPgVectorRecall() {
 
   assert.equal(vectorSearchCalls.length, 1);
   assert.equal(context.databaseSourceOptions.enabled, true);
-  assert.equal(context.databaseSourceOptions.lookbackDays, 30);
+  assert.equal(context.databaseSourceOptions.lookbackDays, 90);
   assert.equal(context.databaseSourceOptions.maxMetadataRows, 50);
   assert.equal(context.databaseSourceOptions.maxContentRows, 8);
   assert.ok(writes.some((item) => item.path.endsWith('/database/vector_sources.json')));

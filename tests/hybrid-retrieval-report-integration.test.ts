@@ -213,7 +213,7 @@ async function testDeepReportUsesHybridButNormalReportDoesNot() {
 
     assert.equal(hybridCalls, 1);
     assert.equal(legacyCalls, 0);
-    assert.equal(hybridInputs[0]?.lookbackDays, 30);
+    assert.equal(hybridInputs[0]?.lookbackDays, 90);
     const databaseWrite = writes.find((write) => write.path.endsWith('/deep-hybrid/database/database_sources.json'));
     assert.ok(databaseWrite);
     const databaseSources = JSON.parse(databaseWrite.content) as Array<Record<string, unknown>>;

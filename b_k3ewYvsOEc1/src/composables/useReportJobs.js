@@ -1272,7 +1272,7 @@ export function useReportJobs() {
       databaseSourceOptions: {
         enabled: Boolean(databaseSourceEnabled.value && isVectorSourceUsable()),
         mode: 'summary_first',
-        lookbackDays: 30,
+        lookbackDays: 90,
         maxMetadataRows: 50,
         maxContentRows: 8,
         mcpServer: 'pg-sources',
