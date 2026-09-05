@@ -10,9 +10,4 @@ RUN apt-get update \
       firecrawl-py \
       tavily-python \
       exa-py \
-    && /opt/hermes/.venv/bin/python -m ensurepip --upgrade \
-    && /opt/hermes/.venv/bin/python -m pip install --no-cache-dir \
-      firecrawl-py \
-      tavily-python \
-      exa-py \
     && rm -rf /var/lib/apt/lists/*
