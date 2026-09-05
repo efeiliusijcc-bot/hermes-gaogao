@@ -361,6 +361,8 @@ async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
   assert.match(skill, /This skill is only available after Deep Report is enabled\./);
   assert.match(runtimeWriteHb, /harness_cli\.py orchestrate --job-id \{jobId\}/);
   assert.match(runtimeWriteHb, /不得再次调用 `pg-sources__query`/);
+  assert.match(runtimeWriteHb, /chmod 0644 \/opt\/data\/workspace\/report-agent\/reports\/\{jobId\}\/final\/report\.md/);
+  assert.match(runtimeWriteHb, /test -r \/opt\/data\/workspace\/report-agent\/reports\/\{jobId\}\/final\/report\.md/);
   assert.doesNotMatch(runtimeWriteHb, /必须启动 .*Sub-Agent/);
 }
 
