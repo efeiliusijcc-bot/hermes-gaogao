@@ -6037,8 +6037,67 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private async renderMarkdownToHtml(markdown: string): Promise<string> {
-    const parsed = marked(this.normalizeMarkdownStrongMarkers(markdown || ''));
+    const normalizedReferences = this.normalizeMarkdownReferenceSpacing(markdown || '');
+    const parsed = marked(this.normalizeMarkdownStrongMarkers(normalizedReferences));
     return typeof parsed === 'string' ? parsed : await parsed;
+  }
+
+  private normalizeMarkdownReferenceSpacing(markdown: string): string {
+    const lines = markdown.split(/\r?\n/);
+    const normalized: string[] = [];
+    let inFence = false;
+    let inReferenceSection = false;
+
+    const isReferenceHeading = (line: string): boolean => {
+      const match = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/);
+      if (!match) return false;
+      const heading = match[1].replace(/\*\*|__/g, '').trim();
+      return /^(?:(?:[一二三四五六七八九十]+|\d+)[、.．]\s*)?(?:参考资料|参考来源|引用来源|references?)$/i.test(heading);
+    };
+    const isAnyHeading = (line: string): boolean => /^\s{0,3}#{1,6}\s+/.test(line);
+    const isReferenceEntry = (line: string): boolean =>
+      /^\s*(?:〔\d+〕|【\d+】|\[\d+\])\s*/.test(line);
+    const isReferenceBoundary = (line: string): boolean =>
+      /^\s*(?:\*\*|__)?\s*(?:来源可信度评估|信息缺口|source credibility assessment|information gaps?)\s*[：:]?\s*(?:\*\*|__)?\s*$/i.test(line);
+    const ensureBlankLine = () => {
+      if (normalized.length > 0 && normalized[normalized.length - 1].trim()) {
+        normalized.push('');
+      }
+    };
+
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        normalized.push(line);
+        continue;
+      }
+      if (inFence) {
+        normalized.push(line);
+        continue;
+      }
+
+      if (isReferenceHeading(line)) {
+        inReferenceSection = true;
+        normalized.push(line);
+        continue;
+      }
+      if (inReferenceSection && isAnyHeading(line)) {
+        inReferenceSection = false;
+      }
+      if (inReferenceSection && isReferenceBoundary(line)) {
+        ensureBlankLine();
+        inReferenceSection = false;
+        normalized.push(line);
+        continue;
+      }
+      if (inReferenceSection && isReferenceEntry(line)) {
+        ensureBlankLine();
+      }
+
+      normalized.push(line);
+    }
+
+    return normalized.join('\n');
   }
 
   private normalizeMarkdownStrongMarkers(markdown: string): string {
