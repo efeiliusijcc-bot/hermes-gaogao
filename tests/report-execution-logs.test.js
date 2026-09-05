@@ -41,6 +41,27 @@ test('translates database, public research and unknown tools into readable Chine
   assert.doesNotMatch(unknown.description, /当前编报步骤/)
 })
 
+test('distinguishes live PG recall from reading prepared database source artifacts', () => {
+  const recall = translateHermesExecutionLog({
+    type: 'tool_start',
+    status: 'started',
+    toolName: 'pg-sources__query',
+    summary: 'PG向量信源召回进行中。',
+  })
+  const artifactRead = translateHermesExecutionLog({
+    type: 'tool_start',
+    status: 'started',
+    toolName: 'execute_code',
+    command: 'python read_sources.py database/vector_sources.json database/database_sources.json',
+  })
+
+  assert.equal(recall.title, '数据库检索')
+  assert.match(recall.description, /召回|检索/)
+  assert.equal(artifactRead.title, '读取数据库信源材料')
+  assert.match(artifactRead.description, /正在读取/)
+  assert.doesNotMatch(artifactRead.description, /召回|检索/)
+})
+
 test('shows concrete Hermes actions for common run tools', () => {
   const cases = [
     ['skill_view', '读取编报能力'],

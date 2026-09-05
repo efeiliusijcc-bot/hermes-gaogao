@@ -2538,14 +2538,24 @@ export class HermesService {
     const haystack = `${name} ${phase} ${command} ${output} ${sessionLabel}`.toLowerCase();
     const completed = status === 'completed' ? '已完成' : status === 'failed' ? '失败' : '进行中';
 
-    if (this.isDatabaseMcpTool(name) || /pg-sources__query|pg_sources__query|mysql-test__mysql_query|mysql_test__mysql_query|database_sources|vector_sources|database_query_plan|database_source_fallback_reason/.test(haystack)) {
-      const pgSourceEvent = this.isPgSourceTool(name) || /pg-sources__query|pg_sources__query|vector_sources|pg_vector|pgvector/.test(haystack);
+    if (this.isDatabaseMcpTool(name) || /pg-sources__query|pg_sources__query|mysql-test__mysql_query|mysql_test__mysql_query|pg_vector|pgvector/.test(haystack)) {
+      const pgSourceEvent = this.isPgSourceTool(name) || /pg-sources__query|pg_sources__query|pg_vector|pgvector/.test(haystack);
       return {
         phase: 'research_collecting',
         actor: 'main-agent',
         label: pgSourceEvent ? 'PG向量信源检索' : '数据库信源检索',
         summary: `${pgSourceEvent ? 'PG向量信源召回' : '数据库信源检索'}${completed}。`,
         detail: pgSourceEvent ? 'pg-sources__query PostgreSQL vector source lookup' : this.describeDatabaseMcpTool(name),
+      };
+    }
+
+    if (/database_sources(?:_diagnostics)?\.json|vector_sources\.json|database_query_plan\.json|database_source_fallback_reason/.test(haystack)) {
+      return {
+        phase: 'research_collecting',
+        actor: 'main-agent',
+        label: '读取数据库信源材料',
+        summary: `数据库信源材料读取${completed}。`,
+        detail: 'Read backend-prepared database source artifacts',
       };
     }
 

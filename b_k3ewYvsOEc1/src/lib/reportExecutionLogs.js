@@ -52,8 +52,11 @@ const TOOL_ACTION_VIEWS = [
 function classifyToolDisplayName(rawValue) {
   const raw = String(rawValue || '').toLowerCase()
   if (!raw.trim()) return ''
+  if (/database_sources(?:_diagnostics)?\.json|database_query_plan\.json|vector_sources\.json|database_source_fallback_reason/.test(raw)) {
+    return '数据库信源材料读取'
+  }
   if (
-    /pg-sources__query|mysql-test__mysql_query|database_sources\.json|database_query_plan\.json|vector_sources\.json/.test(raw) ||
+    /pg-sources__query|mysql-test__mysql_query/.test(raw) ||
     /\b(pg|postgres|postgresql|mysql|sql|vector|embedding|database|db)\b/.test(raw) ||
     /数据库|向量|召回/.test(raw)
   ) return '数据库检索工具'
@@ -272,7 +275,17 @@ export function translateHermesExecutionLog(log) {
   if (isDeepCollection && toolAction) {
     return { ...base, stage: 'DEEP_COLLECTION', ...toolAction }
   }
-  if (/pg-sources__query|pg_sources__query|pg hybrid sources recalled|vector_sources\.json|database_sources(?:\.json|$)|database_query_plan\.json|pgvector|数据库|向量信源/.test(lower) || String(log?.phase || '').toLowerCase() === 'database_sources') {
+  if (/database_sources(?:_diagnostics)?\.json|vector_sources\.json|database_query_plan\.json|database_source_fallback_reason/.test(lower)) {
+    return {
+      ...base,
+      stage: 'PG_RECALL',
+      title: '读取数据库信源材料',
+      description: status === 'done'
+        ? '后端已准备并校验的数据库信源材料读取完成。'
+        : '编报智能体正在读取后端已准备并校验的数据库信源材料。',
+    }
+  }
+  if (/pg-sources__query|pg_sources__query|pg hybrid sources recalled|pgvector|数据库检索|向量信源召回/.test(lower) || String(log?.phase || '').toLowerCase() === 'database_sources') {
     const recalledCount = String(log?.summary || '').match(/recalled:\s*(\d+)\s+items?/i)?.[1]
     return {
       ...base,

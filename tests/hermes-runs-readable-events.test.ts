@@ -27,6 +27,8 @@ globalThis.fetch = async (input) => {
     { event: 'message.delta', run_id: 'run-readable', delta: 'private report fragment' },
     { event: 'tool.started', run_id: 'run-readable', tool: 'pg-sources__query', preview: 'lookup vector sources' },
     { event: 'tool.completed', run_id: 'run-readable', tool: 'pg-sources__query', duration: 1.5, error: false },
+    { event: 'tool.started', run_id: 'run-readable', tool: 'execute_code', preview: 'python read_sources.py database/vector_sources.json' },
+    { event: 'tool.completed', run_id: 'run-readable', tool: 'execute_code', duration: 0.1, error: false },
     { event: 'tool.started', run_id: 'run-readable', tool: 'web_search', preview: 'find current policy updates' },
     { event: 'tool.completed', run_id: 'run-readable', tool: 'web_search', duration: 0.5, error: false },
     { event: 'tool.started', run_id: 'run-readable', tool: 'custom_internal_tool', preview: 'internal --secret-operation' },
@@ -53,6 +55,8 @@ try {
   assert.ok(events.some((event) => event.type === 'tool_start'));
   assert.ok(events.some((event) => event.type === 'tool_end'));
   assert.ok(events.some((event) => /PG向量信源召回.*(?:进行中|正在召回)/.test(JSON.stringify(event))));
+  assert.ok(events.some((event) => /读取数据库信源材料|数据库信源材料读取/.test(JSON.stringify(event))));
+  assert.ok(!events.some((event) => event.name === 'execute_code' && /PG向量信源检索|PG向量信源召回/.test(JSON.stringify(event))));
   assert.ok(events.some((event) => /公开资料检索/.test(JSON.stringify(event))));
   assert.ok(events.some((event) => /custom_internal_tool/.test(JSON.stringify(event))));
   assert.doesNotMatch(JSON.stringify(events), /编报步骤(?:正在执行|执行失败|已完成)/);
