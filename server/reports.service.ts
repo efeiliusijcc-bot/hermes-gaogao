@@ -2685,14 +2685,26 @@ export class ReportsService implements OnModuleDestroy {
   private async collectQualityReviewContext(job: JobRecord): Promise<Record<string, unknown>> {
     const payloadContext = this.contextObjectFromPayload(this.plainObject(job.payload));
     const dir = await this.resolveHermesJobDir(job) || this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
-    const contextJson = await this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json'));
-    const databaseSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'database_sources.json'));
-    const vectorSources = await this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'vector_sources.json'));
+    const [contextJson, databaseSources, vectorSources, synthesisPacket, consolidatedResearch] = await Promise.all([
+      this.readJsonFile(this.remoteFs.joinPath(dir, 'context.json')),
+      this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'database_sources.json')),
+      this.readJsonFile(this.remoteFs.joinPath(dir, 'database', 'vector_sources.json')),
+      this.readJsonFile(this.remoteFs.joinPath(dir, 'research', 'synthesis_packet.json')),
+      this.readJsonFile(this.remoteFs.joinPath(dir, 'research', 'consolidated.json')),
+    ]);
+    const synthesisSources = this.plainObject(synthesisPacket).sources;
+    const consolidatedSources = this.plainObject(consolidatedResearch).sources;
+    const researchSources = Array.isArray(synthesisSources) && synthesisSources.length
+      ? synthesisSources
+      : Array.isArray(consolidatedSources)
+        ? consolidatedSources
+        : [];
     return {
       ...payloadContext,
       ...(contextJson && !Array.isArray(contextJson) ? contextJson : {}),
       database_sources: Array.isArray(databaseSources) ? databaseSources : payloadContext.database_sources,
       vector_sources: Array.isArray(vectorSources) ? vectorSources : payloadContext.vector_sources,
+      research_sources: researchSources,
     };
   }
 
@@ -2759,7 +2771,7 @@ export class ReportsService implements OnModuleDestroy {
     const payload = this.plainObject(job.payload);
     const topic = String(payload.topic || payload.title || payload.target_country || context.topic || '').trim();
     const reportTitle = this.qualityEvidenceFirstHeading(markdown);
-    const hasTopic = !topic || markdown.includes(topic) || topic.split(/\s+/).some((part) => part && markdown.includes(part));
+    const hasTopic = !topic || this.qualityTopicAligned(topic, reportTitle, markdown);
     const mainContentSnippet = this.qualityEvidenceSnippet(markdown, /发生|推动|宣布|涉及|影响|进展/);
     const attitudeSnippet = this.qualityEvidenceSnippet(
       markdown,
@@ -2841,8 +2853,35 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private qualityEvidenceFirstHeading(markdown: string): string {
-    const match = markdown.match(/^#{1,6}\s+(.+?)\s*$/m);
-    return match ? match[1].trim() : '';
+    const centered = markdown.match(/<center>([\s\S]*?)<\/center>/i)?.[1] || '';
+    const centeredTitle = centered
+      .split(/\r?\n/)
+      .map((line) => this.stripMarkdownMarkers(line))
+      .find(Boolean);
+    if (centeredTitle) return centeredTitle;
+    const h1 = markdown.match(/^#\s+(.+?)\s*$/m)?.[1];
+    if (h1) return this.stripMarkdownMarkers(h1);
+    const heading = markdown.match(/^#{2,6}\s+(.+?)\s*$/m)?.[1];
+    return heading ? this.stripMarkdownMarkers(heading) : '';
+  }
+
+  private qualityTopicAligned(topic: string, reportTitle: string, markdown: string): boolean {
+    if (markdown.includes(topic)) return true;
+    const normalize = (value: string) => String(value || '')
+      .toLowerCase()
+      .replace(/^验收\s*\d*\s*[:：、,，.。\-—]*\s*/i, '')
+      .replace(/涉我风险研判报告|涉我风险研判|风险研判报告|调研报告|报告/g, '')
+      .replace(/[^\p{L}\p{N}]+/gu, '');
+    const normalizedTopic = normalize(topic);
+    const normalizedTitle = normalize(reportTitle);
+    if (!normalizedTopic || !normalizedTitle) return false;
+    if (normalizedTitle.includes(normalizedTopic) || normalizedTopic.includes(normalizedTitle)) return true;
+    const bigrams = (value: string) => new Set(Array.from({ length: Math.max(0, value.length - 1) }, (_, index) => value.slice(index, index + 2)));
+    const topicBigrams = bigrams(normalizedTopic);
+    const titleBigrams = bigrams(normalizedTitle);
+    if (!topicBigrams.size || !titleBigrams.size) return normalizedTopic === normalizedTitle;
+    const overlap = [...topicBigrams].filter((item) => titleBigrams.has(item)).length;
+    return (2 * overlap) / (topicBigrams.size + titleBigrams.size) >= 0.45;
   }
 
   private qualityEvidenceSnippet(markdown: string, keywords?: RegExp): string {
@@ -2985,18 +3024,38 @@ export class ReportsService implements OnModuleDestroy {
       ...(Array.isArray(context.vector_sources) ? context.vector_sources : []),
       ...(Array.isArray(context.vectorDatabaseSources) ? context.vectorDatabaseSources : []),
     ];
-    const webSources = Array.isArray(context.webSources) ? context.webSources : [];
+    const webSources = [
+      ...(Array.isArray(context.webSources) ? context.webSources : []),
+      ...(Array.isArray(context.research_sources) ? context.research_sources : []),
+    ];
     const draftContext = this.plainObject(context.draftAssistantContext);
     const draftSources = Array.isArray(draftContext.sources) ? draftContext.sources : [];
     const referenceCount = this.countQualityReferenceMarkers(markdown);
     const judgementCount = (markdown.match(/可能|预计|或将|风险|影响|认为/g) || []).length;
+    const databaseSourceCount = this.qualityDistinctSourceCount(databaseSources);
+    const webSourceCount = this.qualityDistinctSourceCount(webSources);
     return {
-      databaseSourcesUsed: Math.min(databaseSources.length, referenceCount || databaseSources.length),
-      internetSourcesUsed: Math.min(webSources.length, referenceCount || webSources.length),
+      databaseSourcesUsed: Math.min(databaseSourceCount, referenceCount || databaseSourceCount),
+      internetSourcesUsed: Math.min(webSourceCount, referenceCount || webSourceCount),
       draftAssistantSourcesUsed: draftSources.length,
       userProvidedSourcesUsed: Array.isArray(context.userProvidedSources) ? context.userProvidedSources.length : 0,
-      unverifiedClaims: Math.max(0, judgementCount - referenceCount - databaseSources.length - webSources.length),
+      unverifiedClaims: Math.max(0, judgementCount - referenceCount - databaseSourceCount - webSourceCount),
     };
+  }
+
+  private qualityDistinctSourceCount(sources: unknown[]): number {
+    const keys = new Set<string>();
+    for (const source of sources) {
+      if (typeof source === 'string') {
+        if (source.trim()) keys.add(source.trim().toLowerCase());
+        continue;
+      }
+      const item = this.plainObject(source);
+      const key = this.firstString(item, ['url', 'source_url', 'data_source_url']) ||
+        this.firstString(item, ['title', 'ch_title', 'headline', 'name']);
+      if (key) keys.add(key.trim().toLowerCase());
+    }
+    return keys.size;
   }
 
   private countChineseReportCharacters(markdown: string): number {

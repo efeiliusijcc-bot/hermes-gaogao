@@ -183,6 +183,8 @@ function createService(pool = createPool(), files: Record<string, string> = {}) 
       wordCount: number,
       sourceUsage: Record<string, number>,
     ) => Array<Record<string, unknown>>;
+    collectQualityReviewContext: (job: ReturnType<typeof makeJob>) => Promise<Record<string, unknown>>;
+    estimateQualitySourceUsage: (markdown: string, context: Record<string, unknown>) => Record<string, number>;
   };
   service.getPool = async () => pool.pool;
   service.jobs.set('quality-job-1', makeJob());
@@ -380,6 +382,53 @@ function testMissingContentEvidenceDoesNotReuseUnrelatedParagraph() {
   }
 }
 
+function testCenteredKReportTitleAndCanaryPrefixAreHandledTruthfully() {
+  const { service } = createService();
+  const currentJob = makeJob();
+  currentJob.payload.topic = '验收2：欧盟人工智能法执法进展与涉我风险研判';
+  const markdown = [
+    '<center>',
+    '**欧盟《人工智能法》执法扩围与规则调整——涉我风险研判报告**',
+    '</center>',
+    '',
+    '## **一、基本情况**',
+    '欧盟人工智能法进入执法阶段并推动配套规则调整。',
+  ].join('\n');
+  const checks = service.buildQualityChecks(
+    currentJob,
+    markdown,
+    {},
+    100,
+    { databaseSourcesUsed: 1, internetSourcesUsed: 1 },
+  );
+  const topicCheck = checks.find((item) => item.key === 'topic_alignment');
+  assert.equal(topicCheck?.status, 'pass');
+  assert.match(String(topicCheck?.evidence), /成稿标题「欧盟《人工智能法》执法扩围与规则调整——涉我风险研判报告」/);
+  assert.doesNotMatch(String(topicCheck?.evidence), /成稿标题「一、基本情况」/);
+}
+
+async function testHarnessSourcesAreIncludedAndSourcesAreDeduplicated() {
+  const { service } = createService(createPool(), {
+    '/tmp/hermes-reports/quality-job-1/database/vector_sources.json': JSON.stringify([
+      { title: '数据库材料', url: 'https://db.example/source' },
+    ]),
+    '/tmp/hermes-reports/quality-job-1/database/database_sources.json': JSON.stringify([
+      { title: '数据库材料', url: 'https://db.example/source' },
+    ]),
+    '/tmp/hermes-reports/quality-job-1/research/synthesis_packet.json': JSON.stringify({
+      sources: [
+        { title: '公开材料一', url: 'https://web.example/one' },
+        { title: '公开材料一重复', url: 'https://web.example/one' },
+        { title: '公开材料二', url: 'https://web.example/two' },
+      ],
+    }),
+  });
+  const context = await service.collectQualityReviewContext(makeJob());
+  const usage = service.estimateQualitySourceUsage('正文〔1〕〔2〕〔3〕', context);
+  assert.equal(usage.databaseSourcesUsed, 1);
+  assert.equal(usage.internetSourcesUsed, 3);
+}
+
 function testQualityIssueCanBecomeReportEditPayload() {
   const { service } = createService();
   const payload = service.buildReportEditPayloadFromQualityIssue({
@@ -451,6 +500,8 @@ await testRunQualityReviewWritesStructuredResultAndDoesNotOverwriteReport();
 await testQualityReviewFailureDoesNotChangeSucceededJob();
 testMissingPlanSectionProducesWarningWithEvidence();
 testMissingContentEvidenceDoesNotReuseUnrelatedParagraph();
+testCenteredKReportTitleAndCanaryPrefixAreHandledTruthfully();
+await testHarnessSourcesAreIncludedAndSourcesAreDeduplicated();
 testQualityIssueCanBecomeReportEditPayload();
 await testHttpEndpoints();
 
