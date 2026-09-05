@@ -38,7 +38,7 @@ description: 生成 K 报或 HB 报。消费后端已准备的任务上下文和
 7. 优先读取 `research/synthesis_packet.json` 撰写。仅当某个必写章节缺少证据细节时，按需读取 `research/consolidated.json` 或对应 `research_*.json`，不得把全部长制品重复塞入上下文。
 8. 由当前主 Agent 直接把完整 Markdown 成稿写入 `{jobId}/final/report.md`。
 9. 运行现有 `scripts/validate_report.py` 校验最终文件。若失败，只修复成稿中对应问题并复验，不得重跑完整研究流程。
-10. 校验通过后执行 `chmod 0644 /opt/data/workspace/report-agent/reports/{jobId}/final/report.md /opt/data/workspace/report-agent/reports/{jobId}/final/summary.json`，并用 `test -r /opt/data/workspace/report-agent/reports/{jobId}/final/report.md` 确认后端可读取成稿。不得跳过此步骤，也不得把任务目录或配置文件改成宽松权限。
+10. 校验通过并生成 `references/report_references.json` 后，将这三个交付文件及引用目录交给后端运行账户：先执行 `chown 1000:1000 /opt/data/workspace/report-agent/reports/{jobId}/final/report.md /opt/data/workspace/report-agent/reports/{jobId}/final/summary.json /opt/data/workspace/report-agent/reports/{jobId}/references /opt/data/workspace/report-agent/reports/{jobId}/references/report_references.json`，再执行 `chmod 0755 /opt/data/workspace/report-agent/reports/{jobId}/references` 和 `chmod 0644 /opt/data/workspace/report-agent/reports/{jobId}/final/report.md /opt/data/workspace/report-agent/reports/{jobId}/final/summary.json /opt/data/workspace/report-agent/reports/{jobId}/references/report_references.json`。最后用 `test -r /opt/data/workspace/report-agent/reports/{jobId}/final/report.md && test -w /opt/data/workspace/report-agent/reports/{jobId}/references/report_references.json` 确认后端可读取成稿并更新引用清单。不得跳过此步骤，也不得把任务目录或配置文件改成宽松权限。
 11. 最终响应只能是一行：`REPORT_FILE: /opt/data/workspace/report-agent/reports/{jobId}/final/report.md`
 
 ## 研究与信源约束

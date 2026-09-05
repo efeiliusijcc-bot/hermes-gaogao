@@ -363,6 +363,8 @@ async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
   assert.match(runtimeWriteHb, /不得再次调用 `pg-sources__query`/);
   assert.match(runtimeWriteHb, /chmod 0644 \/opt\/data\/workspace\/report-agent\/reports\/\{jobId\}\/final\/report\.md/);
   assert.match(runtimeWriteHb, /test -r \/opt\/data\/workspace\/report-agent\/reports\/\{jobId\}\/final\/report\.md/);
+  assert.match(runtimeWriteHb, /chown 1000:1000 .*references\/report_references\.json/);
+  assert.match(runtimeWriteHb, /test -w \/opt\/data\/workspace\/report-agent\/reports\/\{jobId\}\/references\/report_references\.json/);
   assert.doesNotMatch(runtimeWriteHb, /必须启动 .*Sub-Agent/);
 }
 
@@ -419,6 +421,7 @@ function testOrdinaryReportPromptIsByteForByteUnchangedByFalseFlag() {
   });
   assert.match(databasePrompt, /读取后端已生成的 database\/database_query_plan\.json/);
   assert.match(databasePrompt, /不得再次调用 pg-sources__query/);
+  assert.match(databasePrompt, /"referenceGuardVersion":2/);
 }
 
 await testServerGuardRejectsNonDeepReportContexts();
