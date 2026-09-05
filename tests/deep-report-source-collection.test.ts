@@ -365,6 +365,7 @@ async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
   assert.match(runtimeWriteHb, /test -r \/opt\/data\/workspace\/report-agent\/reports\/\{jobId\}\/final\/report\.md/);
   assert.match(runtimeWriteHb, /chown 1000:1000 .*references\/report_references\.json/);
   assert.match(runtimeWriteHb, /test -w \/opt\/data\/workspace\/report-agent\/reports\/\{jobId\}\/references\/report_references\.json/);
+  assert.match(runtimeWriteHb, /锚点在目标文件中只出现一次/);
   assert.doesNotMatch(runtimeWriteHb, /必须启动 .*Sub-Agent/);
 }
 
