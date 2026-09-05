@@ -35,11 +35,19 @@ const PHASE_VIEWS = {
   quality_review_failed: ['QUALITY_REVIEW_FAILED', '成稿自检', '成稿自检出现异常，可稍后重试。'],
   approval_required: ['DETAIL', '等待工具授权', '编报智能体正在等待必要的工具授权。'],
   execution_log_unavailable: ['DETAIL', '执行记录降级', '执行记录通道暂不可用，编报任务仍在继续。'],
+  system_heartbeat: ['RUNNING', '系统心跳', '编报任务仍在运行，最近暂无新的可公开技术事件。'],
   hermes_run_completed: ['SAVING', '整理报告产物', '编报智能体已完成核心执行，正在整理报告产物。'],
   hermes_run_cancelled: ['ERROR', '编报任务已取消', '编报智能体执行已取消。'],
   done: ['COMPLETED', '编报任务已完成', '报告已生成，可以查看或导出。'],
   error: ['ERROR', '任务执行出现异常', '系统执行过程中出现异常，请查看技术详情或重试。'],
 }
+
+const TOOL_ACTION_VIEWS = [
+  { pattern: /^skill_view$/i, title: '读取编报能力', action: '读取编报所需能力' },
+  { pattern: /^search_files$/i, title: '检索任务文件', action: '检索任务文件' },
+  { pattern: /^execute_code$/i, title: '执行编报脚本', action: '执行编报脚本' },
+  { pattern: /^web_search$/i, title: '检索公开资料', action: '检索公开资料' },
+]
 
 function classifyToolDisplayName(rawValue) {
   const raw = String(rawValue || '').toLowerCase()
@@ -114,9 +122,102 @@ function readableStatus(log) {
 }
 
 function readableDuration(log) {
+  if (Number.isFinite(Number(log?.durationMs)) && Number(log.durationMs) >= 0) {
+    const durationMs = Number(log.durationMs)
+    if (durationMs < 1000) return `${Math.round(durationMs)} 毫秒`
+    if (durationMs < 60000) return `${(durationMs / 1000).toFixed(durationMs < 10000 ? 1 : 0)} 秒`
+    return `${(durationMs / 60000).toFixed(1)} 分钟`
+  }
   const text = [log?.durationLabel, log?.detail, log?.summary].filter(Boolean).join(' ')
   const match = text.match(/耗时\s*([0-9]+(?:\.[0-9]+)?\s*(?:毫秒|秒|分钟|分|小时))/)
   return match?.[1] || ''
+}
+
+function executionToolAction(log, status) {
+  if (!String(log?.type || '').startsWith('tool_')) return null
+  const rawName = String(log?.toolName || log?.toolDisplayName || '').trim()
+  if (!rawName) return null
+  const safeName = sanitizeReportExecutionText(rawName).slice(0, 80) || '未知工具'
+  const matched = TOOL_ACTION_VIEWS.find((item) => item.pattern.test(rawName))
+  const title = matched?.title || `执行 ${safeName}`
+  const action = matched ? `${matched.action}（${safeName}）` : `执行 ${safeName}`
+
+  if (status === 'error') {
+    return {
+      title: `${title}失败`,
+      description: `编报智能体${action}时失败，失败原因可在原始记录中查看。`,
+    }
+  }
+  if (status === 'done') {
+    return {
+      title: `${title}完成`,
+      description: `编报智能体已完成${action}。`,
+    }
+  }
+  return {
+    title,
+    description: `编报智能体正在${action}。`,
+  }
+}
+
+export function executionLogIdentity(entry) {
+  const type = String(entry?.type || '')
+  const status = String(entry?.status || '')
+  if (entry?.origin && Number.isFinite(Number(entry?.sequence))) {
+    return `${entry.origin}:${entry.sequence}:${entry.runEvent || type}`
+  }
+  if (type.startsWith('tool_')) {
+    const toolId = entry?.eventId || entry?.toolId || entry?.id
+    if (toolId) return `tool:${toolId}:${type}:${status}`
+  }
+  if (type === 'stage') {
+    return `stage:${entry?.phase || ''}:${status}:${entry?.summary || ''}`
+  }
+  if (type === 'done' || type === 'error') {
+    return `${type}:${entry?.phase || ''}:${status}:${entry?.summary || ''}`
+  }
+  const identity = entry?.eventId || entry?.toolId || entry?.id || entry?.occurredAt || entry?.time
+  if (identity) return `${identity}:${type}:${status}`
+  return `${type}:${status}:${entry?.toolName || ''}:${entry?.summary || ''}:${entry?.command || ''}`
+}
+
+export function mergeExecutionLogEntries(current = [], incoming = [], limit = 500) {
+  const merged = []
+  const indexByIdentity = new Map()
+
+  for (const entry of [...current, ...incoming]) {
+    if (!entry || typeof entry !== 'object') continue
+    const identity = executionLogIdentity(entry)
+    const existingIndex = indexByIdentity.get(identity)
+    if (existingIndex === undefined) {
+      indexByIdentity.set(identity, merged.length)
+      merged.push(entry)
+      continue
+    }
+
+    const existing = merged[existingIndex]
+    const meaningfulIncoming = Object.fromEntries(
+      Object.entries(entry).filter(([, value]) => value !== '' && value !== null && value !== undefined),
+    )
+    merged[existingIndex] = {
+      ...existing,
+      ...meaningfulIncoming,
+      id: existing.id || entry.id,
+      occurredAt: entry.occurredAt || existing.occurredAt || '',
+      time: entry.time || existing.time || '',
+    }
+  }
+
+  return merged
+    .map((entry, index) => ({ entry, index, timestamp: Date.parse(entry.occurredAt || '') }))
+    .sort((left, right) => {
+      if (Number.isFinite(left.timestamp) && Number.isFinite(right.timestamp)) {
+        return left.timestamp - right.timestamp || left.index - right.index
+      }
+      return left.index - right.index
+    })
+    .map(({ entry }) => entry)
+    .slice(-Math.max(1, limit))
 }
 
 export function translateHermesExecutionLog(log) {
@@ -127,19 +228,49 @@ export function translateHermesExecutionLog(log) {
     .join('\n')
   const lower = classificationText.toLowerCase()
   const status = readableStatus(log)
+  const toolAction = executionToolAction(log, status)
+  const isDeepCollection = log?.origin === 'research_harness' || /deep_source_collection|research_harness|research_group|research_gap_supplement|深度资料采集/.test(lower)
+  const fallbackTitle = sanitizeReportExecutionText(log?.label || log?.phase || '执行事件') || '执行事件'
+  const fallbackDescription = sanitizeReportExecutionText(log?.summary || '智能体已上报一条执行事件。')
   const base = {
     time: log?.time || '',
     stage: 'RUNNING',
-    title: '正在推进编报任务',
-    description: '系统正在执行当前编报步骤。',
+    title: fallbackTitle,
+    description: fallbackDescription,
     raw: sanitizeReportExecutionText(rawLog),
     status,
     toolDisplayName,
     durationLabel: readableDuration(log),
   }
 
+  if (log?.origin === 'system_heartbeat' || String(log?.runEvent || '') === 'system.heartbeat') {
+    return { ...base, stage: 'RUNNING', title: '系统心跳', description: '编报任务仍在运行，最近暂无新的可公开技术事件。' }
+  }
+  if (log?.origin === 'research_harness') {
+    const complete = /research_harness_done_completed/.test(String(log?.phase || ''))
+    const failed = /research_harness_done_failed/.test(String(log?.phase || ''))
+    return {
+      ...base,
+      stage: failed ? 'DEEP_COLLECTION_FAILED' : complete ? 'DEEP_COLLECTION_DONE' : 'DEEP_COLLECTION',
+      title: '资料深度采集',
+      description: fallbackDescription,
+      status: failed ? 'error' : complete ? 'done' : 'running',
+    }
+  }
+
   if (status === 'error' || /\b(error|failed|timed out|timeout exceeded)\b|超时/.test(lower)) {
+    if (toolAction) {
+      return {
+        ...base,
+        stage: isDeepCollection ? 'DEEP_COLLECTION' : 'ERROR',
+        ...toolAction,
+        status: 'error',
+      }
+    }
     return { ...base, stage: 'ERROR', title: '任务执行出现异常', description: '系统执行过程中出现异常，请查看技术详情或重试。', status: 'error' }
+  }
+  if (isDeepCollection && toolAction) {
+    return { ...base, stage: 'DEEP_COLLECTION', ...toolAction }
   }
   if (/pg-sources__query|pg_sources__query|pg hybrid sources recalled|vector_sources\.json|database_sources(?:\.json|$)|database_query_plan\.json|pgvector|数据库|向量信源/.test(lower) || String(log?.phase || '').toLowerCase() === 'database_sources') {
     const recalledCount = String(log?.summary || '').match(/recalled:\s*(\d+)\s+items?/i)?.[1]
@@ -154,7 +285,7 @@ export function translateHermesExecutionLog(log) {
         : '系统正在优先召回 PG 向量库和数据库信源。',
     }
   }
-  if (/deep_source_collection|深度资料采集/.test(lower)) {
+  if (isDeepCollection) {
     return { ...base, stage: status === 'done' ? 'DEEP_COLLECTION_DONE' : 'DEEP_COLLECTION', title: '资料深度采集', description: status === 'done' ? '深度资料采集与核验已完成。' : '系统正在补充并核验公开资料。' }
   }
   if (/sessions_spawn.*(?:research|调研)|research-group|research_agent/.test(lower)) {
@@ -181,8 +312,16 @@ export function translateHermesExecutionLog(log) {
   }
 
   const phaseView = PHASE_VIEWS[String(log?.phase || log?.status || '').toLowerCase()]
-  if (phaseView) return { ...base, stage: phaseView[0], title: phaseView[1], description: phaseView[2] }
+  if (phaseView) {
+    return {
+      ...base,
+      stage: phaseView[0],
+      title: toolAction?.title || phaseView[1],
+      description: toolAction?.description || phaseView[2],
+    }
+  }
   if (lower.includes('succeeded')) return { ...base, stage: 'COMPLETED', title: '编报任务已完成', description: '报告已生成，可查看或导出。', status: 'done' }
+  if (toolAction) return { ...base, stage: 'DETAIL', ...toolAction }
   return base
 }
 

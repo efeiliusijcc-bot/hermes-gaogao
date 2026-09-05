@@ -67,6 +67,9 @@ const service = new ReportsService({} as never, remoteFs as never, {} as never) 
     events: unknown[];
     eventLog: unknown[];
   }, reason: string): Promise<boolean>;
+  reconcileEligibleLateArtifacts(): Promise<void>;
+  runQualityReviewForJob(job: unknown): Promise<unknown>;
+  jobs: Map<string, unknown>;
   sleep(ms: number): Promise<void>;
 };
 
@@ -120,5 +123,48 @@ assert.equal(failedJob.status, 'succeeded');
 assert.equal(failedJob.stage, 'done');
 assert.equal(failedJob.resultPath, failedReportPath);
 assert.equal(failedJob.errorMessage, undefined);
+
+const unrelatedLateJob = {
+  ...failedJob,
+  jobId: 'late-job-without-own-report',
+  status: 'failed',
+  stage: 'failed',
+  resultPath: undefined,
+  markdown: undefined,
+  errorMessage: 'Hermes runs API failed and no final report file was recovered. run_missing timed out.',
+  artifacts: {},
+  events: [],
+  eventLog: [],
+};
+const unrelatedRestored = await service.recoverJobFromExistingReport(unrelatedLateJob, 'background_reconciliation');
+assert.equal(unrelatedRestored, false);
+assert.equal(unrelatedLateJob.status, 'failed');
+
+const backgroundJobId = 'background-late-report-job';
+const backgroundReportPath = path.join(root, backgroundJobId, 'final', 'report.md');
+fs.mkdirSync(path.dirname(backgroundReportPath), { recursive: true });
+fs.writeFileSync(backgroundReportPath, markdown, 'utf8');
+const backgroundJob = {
+  ...failedJob,
+  jobId: backgroundJobId,
+  status: 'failed',
+  stage: 'failed',
+  resultPath: undefined,
+  markdown: undefined,
+  errorMessage: 'Hermes runs API failed and no final report file was recovered. run_late timed out.',
+  artifacts: {},
+  events: [],
+  eventLog: [],
+};
+let qualityRuns = 0;
+service.runQualityReviewForJob = async () => {
+  qualityRuns += 1;
+  return {};
+};
+service.jobs.set(backgroundJobId, backgroundJob);
+await service.reconcileEligibleLateArtifacts();
+assert.equal(backgroundJob.status, 'succeeded');
+assert.equal(backgroundJob.resultPath, backgroundReportPath);
+assert.equal(qualityRuns, 1);
 
 console.log('report runs late artifact recovery tests passed');

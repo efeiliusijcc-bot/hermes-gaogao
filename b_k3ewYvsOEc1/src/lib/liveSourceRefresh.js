@@ -1,7 +1,7 @@
 const LIVE_SOURCE_REFRESH_FAILURE_MESSAGE = '信源加载失败，请稍后重试。'
 
 function isEligible(context) {
-  return context.activeTab === 'sources' &&
+  return (context.activeTab === 'sources' || context.phase === 'loading') &&
     Boolean(context.jobId) &&
     ['queued', 'running'].includes(String(context.status || '').toLowerCase())
 }
@@ -9,7 +9,8 @@ function isEligible(context) {
 function sameContext(left, right) {
   return left?.activeTab === right.activeTab &&
     left?.jobId === right.jobId &&
-    left?.status === right.status
+    left?.status === right.status &&
+    left?.phase === right.phase
 }
 
 export function createLiveSourceRefreshController({

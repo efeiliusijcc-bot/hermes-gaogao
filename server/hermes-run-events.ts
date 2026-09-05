@@ -3,13 +3,16 @@ import type { ServerEvent } from './types.js';
 export interface HermesRunStreamEvent {
   event: string;
   run_id?: string;
-  timestamp?: number;
+  timestamp?: number | string;
   tool?: string;
   preview?: string;
   duration?: number;
   error?: boolean | string;
   text?: string;
   delta?: string;
+  sequence?: number;
+  usage?: Record<string, unknown>;
+  data?: Record<string, unknown>;
 }
 
 export interface ReadableToolSummary {
@@ -143,7 +146,8 @@ export class HermesRunEventStreamParser {
 }
 
 export class HermesRunEventBridge {
-  private sequence = 0;
+  private toolSequence = 0;
+  private eventSequence = 0;
   private readonly activeTools = new Map<string, ActiveToolCall[]>();
 
   constructor(private readonly describeTool: (input: ToolSummaryInput) => ReadableToolSummary) {}
@@ -154,19 +158,19 @@ export class HermesRunEventBridge {
     if (event.event === 'tool.completed') return [this.toolCompleted(event)];
 
     if (event.event === 'approval.request') {
-      return [{ type: 'stage', stage: 'approval_required', message: '编报智能体正在等待必要的工具授权。' }];
+      return [{ type: 'stage', stage: 'approval_required', message: '编报智能体正在等待必要的工具授权。', ...this.metadata(event) }];
     }
     if (event.event === 'run.completed') {
-      return [{ type: 'stage', stage: 'hermes_run_completed', message: '编报智能体已完成核心执行，正在整理报告产物。' }];
+      return [{ type: 'stage', stage: 'hermes_run_completed', message: '编报智能体已完成核心执行，正在整理报告产物。', ...this.metadata(event) }];
     }
     if (event.event === 'run.cancelled') {
-      return [{ type: 'stage', stage: 'hermes_run_cancelled', message: '编报智能体执行已取消。' }];
+      return [{ type: 'stage', stage: 'hermes_run_cancelled', message: '编报智能体执行已取消。', ...this.metadata(event) }];
     }
     if (event.event === 'run.failed') {
       const message = typeof event.error === 'string' && event.error.trim()
         ? `编报智能体执行失败：${event.error.trim()}`
         : '编报智能体执行失败。';
-      return [{ type: 'error', message }];
+      return [{ type: 'error', message, ...this.metadata(event) }];
     }
     return [];
   }
@@ -174,7 +178,7 @@ export class HermesRunEventBridge {
   private toolStarted(event: HermesRunStreamEvent): ServerEvent {
     const name = String(event.tool || 'tool').trim() || 'tool';
     const preview = String(event.preview || '').trim();
-    const id = `${event.run_id || 'run'}:tool:${++this.sequence}`;
+    const id = `${event.run_id || 'run'}:tool:${++this.toolSequence}`;
     const queue = this.activeTools.get(name) || [];
     queue.push({ id, preview });
     this.activeTools.set(name, queue);
@@ -184,6 +188,7 @@ export class HermesRunEventBridge {
       id,
       name,
       raw: this.rawSummary(summary, 'started'),
+      ...this.metadata(event),
     };
   }
 
@@ -193,7 +198,7 @@ export class HermesRunEventBridge {
     const active = queue.shift();
     if (queue.length) this.activeTools.set(name, queue);
     else this.activeTools.delete(name);
-    const id = active?.id || `${event.run_id || 'run'}:tool:${++this.sequence}`;
+    const id = active?.id || `${event.run_id || 'run'}:tool:${++this.toolSequence}`;
     const failed = event.error === true || (typeof event.error === 'string' && Boolean(event.error.trim()));
     const status = failed ? 'failed' : 'completed';
     const summary = this.describeTool({ name, preview: active?.preview || '', status });
@@ -204,8 +209,8 @@ export class HermesRunEventBridge {
       detail: [summary.detail, durationDetail].filter(Boolean).join('；'),
     }, status);
     return failed
-      ? { type: 'tool_error', id, name, message: summary.summary, raw }
-      : { type: 'tool_end', id, name, raw };
+      ? { type: 'tool_error', id, name, message: summary.summary, raw, ...this.metadata(event) }
+      : { type: 'tool_end', id, name, raw, ...this.metadata(event) };
   }
 
   private rawSummary(summary: ReadableToolSummary, status: string): Record<string, string> {
@@ -217,6 +222,49 @@ export class HermesRunEventBridge {
       status,
       ...(summary.command ? { command: summary.command } : {}),
       ...(summary.detail ? { detail: summary.detail } : {}),
+    };
+  }
+
+  private metadata(event: HermesRunStreamEvent) {
+    const rawTimestamp = event.timestamp;
+    const numericTimestamp = typeof rawTimestamp === 'number'
+      ? rawTimestamp
+      : typeof rawTimestamp === 'string' && /^-?\d+(?:\.\d+)?$/.test(rawTimestamp.trim())
+        ? Number(rawTimestamp)
+        : Number.NaN;
+    const timestampMs = Number.isFinite(numericTimestamp)
+      ? numericTimestamp < 1_000_000_000_000 ? numericTimestamp * 1000 : numericTimestamp
+      : typeof rawTimestamp === 'string'
+        ? Date.parse(rawTimestamp)
+        : Number.NaN;
+    const occurredAt = Number.isFinite(timestampMs) && Number.isFinite(new Date(timestampMs).getTime())
+      ? new Date(timestampMs).toISOString()
+      : undefined;
+    const durationSeconds = Number(event.duration);
+    const usageSource = event.usage && typeof event.usage === 'object'
+      ? event.usage
+      : event.data?.usage && typeof event.data.usage === 'object'
+        ? event.data.usage as Record<string, unknown>
+        : undefined;
+    const usage = usageSource
+      ? Object.fromEntries(
+          Object.entries(usageSource)
+            .filter(([, value]) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+            .slice(0, 12),
+        ) as Record<string, number>
+      : undefined;
+    const rawSequence = Number(event.sequence);
+    const sequence = Number.isFinite(rawSequence) && rawSequence >= 0
+      ? Math.round(rawSequence)
+      : this.eventSequence + 1;
+    this.eventSequence = Math.max(this.eventSequence, sequence);
+    return {
+      ...(occurredAt ? { occurredAt } : {}),
+      origin: 'hermes_agent' as const,
+      ...(Number.isFinite(durationSeconds) && durationSeconds >= 0 ? { durationMs: Math.round(durationSeconds * 1000) } : {}),
+      sequence,
+      runEvent: event.event,
+      ...(usage && Object.keys(usage).length ? { usage } : {}),
     };
   }
 }

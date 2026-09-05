@@ -81,7 +81,6 @@ test('recovered tool failures do not make earlier stages regress while the job i
   assert.deepEqual(statusMap(state), {
     plan: 'done',
     database: 'done',
-    research: 'done',
     deep_collection: 'done',
     consolidate: 'running',
     report: 'not_started',
@@ -113,7 +112,6 @@ test('a terminal collection failure remains visible on the actual failed stage',
   assert.deepEqual(statusMap(state), {
     plan: 'done',
     database: 'done',
-    research: 'done',
     deep_collection: 'failed',
     consolidate: 'not_started',
     report: 'not_started',

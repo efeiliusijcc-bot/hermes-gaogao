@@ -13,8 +13,17 @@ test('execution log cache preserves an ISO occurrence timestamp for history and 
   assert.match(source, /const occurredAt = new Date\(\)\.toISOString\(\)/);
   assert.match(source, /time:\s*formatLogTime\(occurredAt\)/);
   assert.match(source, /occurredAt,/);
-  assert.match(source, /entry\.eventId\s*\|\|\s*entry\.toolId\s*\|\|\s*entry\.id/);
+  assert.match(source, /return executionLogIdentity\(entry\)/);
   assert.match(source, /jobLogs\.splice\(0,\s*jobLogs\.length\s*-\s*500\)/);
+});
+
+test('progress polling also refreshes and merges persisted Hermes event logs', async () => {
+  const source = await readFile(jobsSourceUrl, 'utf8');
+
+  assert.match(source, /import \{ executionLogIdentity, mergeExecutionLogEntries \} from '\.\.\/lib\/reportExecutionLogs\.js'/);
+  assert.match(source, /loadExecutionLog\(jobId, shouldApply, \{ force: true, merge: true \}\)/);
+  assert.match(source, /mergeExecutionLogEntries\(executionLogsByJobId\.get\(jobId\) \|\| \[\], normalized\)/);
+  assert.match(source, /await loadExecutionLog\(jobId, \(\) => \([\s\S]*?jobEventSource === source[\s\S]*?\), \{ force: true, merge: true \}\)/);
 });
 
 test('DataCanvas reuses the technical timeline for live and historical inline details', async () => {

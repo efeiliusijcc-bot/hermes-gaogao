@@ -22,10 +22,10 @@ function remoteFsStub() {
   };
 }
 
-function job(deepReportEnabled: boolean) {
+function job(deepReportEnabled: boolean, skill = 'write-hb') {
   return {
     jobId: deepReportEnabled ? 'job-deep-report' : 'job-standard-report',
-    skill: 'write-hb',
+    skill,
     payload: {
       topic: deepReportEnabled ? '深度编报主题' : '普通编报主题',
       report_type: 'K报',
@@ -227,7 +227,7 @@ async function testNormalReportSkipsSkillAndKeepsProgressUnchanged() {
   assert.equal(service.buildInitialProgressState(normalJob).stages.some((stage) => stage.key === 'deep_collection'), false);
 }
 
-async function testDeepReportWritesSkillResultIntoGenerationPayload() {
+async function testWriteHbUsesIntegratedResearchWorkflowWithoutDuplicateCollection() {
   const calls: Record<string, unknown>[] = [];
   const service = reportsService({
     execute: async (input) => {
@@ -245,22 +245,52 @@ async function testDeepReportWritesSkillResultIntoGenerationPayload() {
   const deepJob = job(true);
   const result = await service.enrichPayloadWithDeepReportSources(deepJob, deepJob.payload as Record<string, unknown>);
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].workflow, 'deep_report');
-  assert.equal(calls[0].deepReportEnabled, true);
-  assert.equal(calls[0].stage, 'source_collection');
-  assert.equal(calls[0].planningSessionId, deepJob.jobId);
-  assert.equal(calls[0].topic, '深度编报主题');
-  assert.deepEqual((result.deepReportSources as Record<string, unknown>).acceptedSources, [acceptedSource]);
-  assert.deepEqual((deepJob.artifacts as Record<string, unknown>).deepReportSourceCollection, result.deepReportSources);
-  assert.equal(service.buildInitialProgressState(deepJob).stages.some((stage) => stage.key === 'deep_collection'), true);
+  assert.equal(calls.length, 0);
+  assert.equal(result, deepJob.payload);
+  assert.deepEqual((deepJob.artifacts as Record<string, unknown>).deepReportSourceCollection, {
+    status: 'integrated',
+    workflow: 'research_harness_orchestrate',
+  });
+  const stages = service.buildInitialProgressState(deepJob).stages;
+  assert.equal(stages.some((stage) => stage.key === 'research'), false);
+  assert.equal(stages.filter((stage) => stage.title === '资料深度采集').length, 1);
+}
+
+async function testWriteHbAlwaysGetsBackendPreparedContext() {
+  const writes = new Map<string, string>();
+  const remoteFs = {
+    ...remoteFsStub(),
+    writeFile: async (file: string, content: string) => { writes.set(file, content); },
+  };
+  const service = new ReportsService(
+    {} as never,
+    remoteFs as never,
+    {} as never,
+  ) as unknown as {
+    ensureBackendReportContextArtifact: (
+      reportJob: ReturnType<typeof job>,
+      payload: Record<string, unknown>,
+    ) => Promise<void>;
+  };
+  const reportJob = job(true);
+
+  await service.ensureBackendReportContextArtifact(reportJob, reportJob.payload as Record<string, unknown>);
+
+  const contextText = writes.get('/tmp/hermes-reports/job-deep-report/context.json');
+  assert.ok(contextText);
+  const context = JSON.parse(contextText);
+  assert.equal(context.job_id, 'job-deep-report');
+  assert.equal(context.topic, '深度编报主题');
+  assert.equal(context.report_type, 'K报');
+  assert.equal(context.deepReportEnabled, true);
+  assert.deepEqual(context.selectedModules, [{ id: 'basic' }]);
 }
 
 async function testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults() {
   const service = reportsService({
     execute: async () => { throw new Error('provider unavailable'); },
   });
-  const failedJob = job(true);
+  const failedJob = job(true, 'risk-assessment-reports');
   await assert.rejects(
     service.enrichPayloadWithDeepReportSources(failedJob, failedJob.payload as Record<string, unknown>),
     /深度资料采集失败：provider unavailable/,
@@ -272,8 +302,29 @@ async function testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults(
   )));
 }
 
+async function testNonWriteHbDeepReportStillUsesSeparateCollection() {
+  const calls: Record<string, unknown>[] = [];
+  const service = reportsService({
+    execute: async (input) => {
+      calls.push(input);
+      return {
+        status: 'completed',
+        acceptedSources: [acceptedSource],
+        uncertainSources: [],
+        coveredGaps: [],
+        uncoveredGaps: [],
+        summary: '人物或风险报告仍保留独立采集。',
+      };
+    },
+  });
+  const separateJob = job(true, 'risk-assessment-reports');
+  const result = await service.enrichPayloadWithDeepReportSources(separateJob, separateJob.payload as Record<string, unknown>);
+  assert.equal(calls.length, 1);
+  assert.deepEqual((result.deepReportSources as Record<string, unknown>).acceptedSources, [acceptedSource]);
+}
+
 async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
-  const [canvas, app, jobs, draft, deploy, hermes, reports, appModule, skill] = await Promise.all([
+  const [canvas, app, jobs, draft, deploy, hermes, reports, appModule, skill, runtimeWriteHb] = await Promise.all([
     readFile(new URL('b_k3ewYvsOEc1/src/components/DataCanvas.vue', root), 'utf8'),
     readFile(new URL('b_k3ewYvsOEc1/src/App.vue', root), 'utf8'),
     readFile(new URL('b_k3ewYvsOEc1/src/composables/useReportJobs.js', root), 'utf8'),
@@ -283,6 +334,7 @@ async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
     readFile(new URL('server/reports.service.ts', root), 'utf8'),
     readFile(new URL('server/app.module.ts', root), 'utf8'),
     readFile(new URL('skills/planning-source-collection/SKILL.md', root), 'utf8'),
+    readFile(new URL('deploy/runtime-skills/write-hb/SKILL.md', root), 'utf8'),
   ]);
 
   assert.doesNotMatch(canvas, /使用个人偏好和默认模板/);
@@ -295,8 +347,10 @@ async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
   assert.match(jobs, /deepReportEnabled:\s*true/);
   assert.match(draft, /deepReportEnabled:\s*true/);
   assert.doesNotMatch(`${canvas}\n${app}\n${jobs}`, /标准采集|Skill采集|采集执行方式/);
-  assert.match(deploy, /skills\/planning-source-collection/);
+  assert.match(deploy, /SKILLS_ROOT\/planning-source-collection/);
   assert.match(hermes, /runDeepReportSourceCollectionSkill/);
+  assert.match(hermes, /orchestrate --job-id/);
+  assert.doesNotMatch(hermes, /harness_cli\.py plan --job-dir/);
   const preparationIndex = reports.indexOf('enrichPayloadWithDraftAssistantContext(job');
   const deepCollectionIndex = reports.indexOf('enrichPayloadWithDeepReportSources(job');
   const generationIndex = reports.indexOf('const runInput: RunInput');
@@ -305,6 +359,9 @@ async function testFrontendHidesReportModeOptionsAndDefaultsToDeepReport() {
   assert.match(skill, /workflow.*deep_report/si);
   assert.match(skill, /deepReportEnabled.*true/si);
   assert.match(skill, /This skill is only available after Deep Report is enabled\./);
+  assert.match(runtimeWriteHb, /harness_cli\.py orchestrate --job-id \{jobId\}/);
+  assert.match(runtimeWriteHb, /不得再次调用 `pg-sources__query`/);
+  assert.doesNotMatch(runtimeWriteHb, /必须启动 .*Sub-Agent/);
 }
 
 function testOrdinaryReportPromptIsByteForByteUnchangedByFalseFlag() {
@@ -343,7 +400,23 @@ function testOrdinaryReportPromptIsByteForByteUnchangedByFalseFlag() {
   const context = hermes.buildContextJsonPayload(deepInput).context_json as Record<string, unknown>;
   assert.equal(context.deepReportEnabled, true);
   assert.deepEqual((context.deepReportSources as Record<string, unknown>).acceptedSources, [acceptedSource]);
-  assert.match(hermes.buildReportPrompt(deepInput), /deepReportSources/);
+  const prompt = hermes.buildReportPrompt(deepInput);
+  assert.match(prompt, /orchestrate --job-id job-prompt/);
+  assert.match(prompt, /REPORT_FILE: \/opt\/data\/workspace\/report-agent\/reports\/job-prompt\/final\/report\.md/);
+  assert.doesNotMatch(prompt, /REPORT_FILE: \/opt\/data\/workspace\/report-agent\/reports\/实际文件名\.md/);
+  assert.doesNotMatch(prompt, /在公开检索前调用 MCP 工具 pg-sources__query/);
+  assert.doesNotMatch(prompt, /deepReportSources/);
+  assert.doesNotMatch(prompt, /context_json_serialized/);
+
+  const databasePrompt = hermes.buildReportPrompt({
+    ...deepInput,
+    payload: {
+      ...deepInput.payload,
+      known_context: JSON.stringify({ databaseSourceOptions: { enabled: true } }),
+    },
+  });
+  assert.match(databasePrompt, /读取后端已生成的 database\/database_query_plan\.json/);
+  assert.match(databasePrompt, /不得再次调用 pg-sources__query/);
 }
 
 await testServerGuardRejectsNonDeepReportContexts();
@@ -354,8 +427,10 @@ await testSnakeCaseCollectionResultIsNormalized();
 testNestedCollectionResultIsParsed();
 testArbitraryJsonRunEnvelopeIsNotAcceptedAsCollectionResult();
 await testNormalReportSkipsSkillAndKeepsProgressUnchanged();
-await testDeepReportWritesSkillResultIntoGenerationPayload();
+await testWriteHbUsesIntegratedResearchWorkflowWithoutDuplicateCollection();
+await testWriteHbAlwaysGetsBackendPreparedContext();
 await testDeepReportCollectionFailureIsExplicitAndDoesNotCreateResults();
+await testNonWriteHbDeepReportStillUsesSeparateCollection();
 await testFrontendHidesReportModeOptionsAndDefaultsToDeepReport();
 testOrdinaryReportPromptIsByteForByteUnchangedByFalseFlag();
 console.log('deep report source collection tests passed');

@@ -94,27 +94,48 @@ function testToolPairingAndIgnoredContent() {
   assert.equal(secondEnd[0].type, 'tool_error');
   assert.equal(emptyErrorEnd[0].type, 'tool_end');
   assert.match(JSON.stringify(firstEnd[0]), /耗时 1\.25 秒/);
+  assert.equal(firstEnd[0].occurredAt, '1970-01-01T00:00:03.000Z');
+  assert.equal(firstEnd[0].durationMs, 1250);
+  assert.equal(firstEnd[0].runEvent, 'tool.completed');
   assert.doesNotMatch(JSON.stringify([...firstStart, ...secondStart, ...firstEnd, ...secondEnd]), /chain of thought|classified report/);
 }
 
 function testLifecycleEvents() {
   const bridge = new HermesRunEventBridge(describeTool);
   const approval = bridge.translate({ event: 'approval.request', run_id: 'run-1', timestamp: 5 });
-  const complete = bridge.translate({ event: 'run.completed', run_id: 'run-1', timestamp: 6 });
+  const complete = bridge.translate({
+    event: 'run.completed',
+    run_id: 'run-1',
+    timestamp: 6,
+    usage: { input_tokens: 123, output_tokens: 45, ignored: 'private' },
+  });
   const failed = bridge.translate({ event: 'run.failed', run_id: 'run-2', timestamp: 7, error: 'provider unavailable' });
 
-  assert.deepEqual(approval, [{
-    type: 'stage',
-    stage: 'approval_required',
-    message: '编报智能体正在等待必要的工具授权。',
-  }]);
-  assert.deepEqual(complete, [{
-    type: 'stage',
-    stage: 'hermes_run_completed',
-    message: '编报智能体已完成核心执行，正在整理报告产物。',
-  }]);
+  assert.equal(approval[0].type, 'stage');
+  assert.equal(approval[0].stage, 'approval_required');
+  assert.equal(approval[0].origin, 'hermes_agent');
+  assert.equal(approval[0].occurredAt, '1970-01-01T00:00:05.000Z');
+  assert.equal(complete[0].type, 'stage');
+  assert.equal(complete[0].stage, 'hermes_run_completed');
+  assert.equal(complete[0].runEvent, 'run.completed');
+  assert.deepEqual(complete[0].usage, { input_tokens: 123, output_tokens: 45 });
   assert.equal(failed[0].type, 'error');
   assert.match(failed[0].message, /provider unavailable/);
+}
+
+function testIsoTimestampMetadata() {
+  const bridge = new HermesRunEventBridge(describeTool);
+  const [complete] = bridge.translate({
+    event: 'run.completed',
+    run_id: 'run-iso',
+    timestamp: '2026-09-05T01:02:03.456Z',
+    sequence: 8,
+  });
+  const [cancelled] = bridge.translate({ event: 'run.cancelled', run_id: 'run-iso' });
+
+  assert.equal(complete.occurredAt, '2026-09-05T01:02:03.456Z');
+  assert.equal(complete.sequence, 8);
+  assert.equal(cancelled.sequence, 9);
 }
 
 async function testStreamConsumptionAndInitialRetry() {
@@ -182,6 +203,7 @@ async function testStreamRetriesThrownConnectionErrors() {
 testSseChunkParsing();
 testToolPairingAndIgnoredContent();
 testLifecycleEvents();
+testIsoTimestampMetadata();
 await testStreamConsumptionAndInitialRetry();
 await testStreamConnectionFailure();
 await testStreamRetriesThrownConnectionErrors();

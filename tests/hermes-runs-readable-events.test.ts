@@ -54,7 +54,8 @@ try {
   assert.ok(events.some((event) => event.type === 'tool_end'));
   assert.ok(events.some((event) => /PG向量信源召回.*(?:进行中|正在召回)/.test(JSON.stringify(event))));
   assert.ok(events.some((event) => /公开资料检索/.test(JSON.stringify(event))));
-  assert.ok(events.some((event) => /执行编报步骤/.test(JSON.stringify(event))));
+  assert.ok(events.some((event) => /custom_internal_tool/.test(JSON.stringify(event))));
+  assert.doesNotMatch(JSON.stringify(events), /编报步骤(?:正在执行|执行失败|已完成)/);
   assert.doesNotMatch(JSON.stringify(events.filter((event) => JSON.stringify(event).includes('custom_internal_tool'))), /secret-operation/);
   assert.ok(events.some((event) => JSON.stringify(event).includes('耗时 1.5 秒')));
   assert.doesNotMatch(JSON.stringify(events), /private reasoning|private report fragment/);

@@ -58,6 +58,7 @@ function runningSourceContext(overrides = {}) {
     activeTab: 'sources',
     jobId: 'job-1',
     status: 'running',
+    phase: 'done',
     ...overrides,
   };
 }
@@ -79,10 +80,16 @@ function runningSourceContext(overrides = {}) {
   controller.sync(runningSourceContext({ jobId: '' }));
   assert.equal(timers.activeCount(), 0, 'polling starts only for a live Sources job');
 
+  controller.sync(runningSourceContext({ activeTab: 'report', phase: 'loading' }));
+  timers.runActive();
+  assert.equal(refreshCount, 1, 'the report loading view refreshes live sources without opening the Sources tab');
+  controller.sync(runningSourceContext({ activeTab: 'report', phase: 'done' }));
+  assert.equal(timers.activeCount(), 0, 'leaving the loading phase stops its live-source timer');
+
   controller.sync(runningSourceContext({ status: 'queued' }));
   timers.runActive();
-  assert.equal(refreshCount, 1, 'a queued Sources job refreshes on its timer');
-  assert.deepEqual(timers.delays, [5000], 'polling keeps the five-second refresh interval');
+  assert.equal(refreshCount, 2, 'a queued Sources job refreshes on its timer');
+  assert.deepEqual(timers.delays, [5000, 5000], 'polling keeps the five-second refresh interval');
 
   controller.sync(runningSourceContext());
   controller.sync(runningSourceContext());

@@ -268,6 +268,9 @@ export class ReportsService implements OnModuleDestroy {
   private readonly jobsReady: Promise<void>;
   private dailySequence = new Map<string, number>();
   private pool: PgPool | null = null;
+  private lateArtifactReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private lateArtifactReconcileRunning = false;
+  private readonly runtimeActivityAt = new Map<string, number>();
 
   constructor(
     @Inject(HermesService) private readonly hermes: HermesService,
@@ -282,9 +285,15 @@ export class ReportsService implements OnModuleDestroy {
     @Optional() @Inject(ReportsRetrievalAdapter) private readonly reportsRetrieval?: ReportsRetrievalAdapter,
   ) {
     this.jobsReady = this.loadPersistedJobs();
+    this.lateArtifactReconcileTimer = setInterval(() => {
+      void this.reconcileEligibleLateArtifacts();
+    }, 30_000);
+    this.lateArtifactReconcileTimer.unref?.();
   }
 
   async onModuleDestroy() {
+    if (this.lateArtifactReconcileTimer) clearInterval(this.lateArtifactReconcileTimer);
+    this.lateArtifactReconcileTimer = null;
     if (this.pool) await this.pool.end();
   }
 
@@ -1013,6 +1022,14 @@ export class ReportsService implements OnModuleDestroy {
           ? 'done'
           : 'running';
 
+    if (entry.origin === 'research_harness') {
+      const harnessStatus: ReportProgressStageStatus = /research_harness_done_failed/.test(entry.phase || '')
+        ? 'failed'
+        : /research_harness_done_completed/.test(entry.phase || '')
+          ? 'done'
+          : 'running';
+      return { key: 'deep_collection', status: harnessStatus };
+    }
     if (/waiting_final_report|gateway_fallback|hermes:|^start$|^running$|received/.test(entry.phase || '')) return null;
     if (/deep_source_collection|资料深度采集|深度资料采集/.test(haystack)) return { key: 'deep_collection', status };
     if (/context_preparing|context\.json|preparing hermes/.test(haystack)) return { key: 'plan', status };
@@ -1152,6 +1169,16 @@ export class ReportsService implements OnModuleDestroy {
   private progressStageDefs(job: JobRecord): Array<Omit<ReportProgressStage, 'status' | 'evidence'>> {
     if ((job.payload as unknown as Record<string, unknown>)?.deepReportEnabled !== true) return BASE_PROGRESS_STAGE_DEFS;
     const researchIndex = BASE_PROGRESS_STAGE_DEFS.findIndex((stage) => stage.key === 'research');
+    if (job.skill === 'write-hb') {
+      return [
+        ...BASE_PROGRESS_STAGE_DEFS.slice(0, researchIndex),
+        {
+          ...DEEP_COLLECTION_PROGRESS_STAGE,
+          desc: '按规划并行检索、提取、核验并整合公开资料',
+        },
+        ...BASE_PROGRESS_STAGE_DEFS.slice(researchIndex + 1),
+      ];
+    }
     return [
       ...BASE_PROGRESS_STAGE_DEFS.slice(0, researchIndex + 1),
       DEEP_COLLECTION_PROGRESS_STAGE,
@@ -2377,6 +2404,42 @@ export class ReportsService implements OnModuleDestroy {
     };
   }
 
+  private async ensureBackendReportContextArtifact(
+    job: JobRecord,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (job.skill !== 'write-hb') return;
+    const jobDir = this.remoteFs.joinPath(this.remoteFs.remoteDir, job.jobId);
+    const contextPath = this.remoteFs.joinPath(jobDir, 'context.json');
+    await this.remoteFs.mkdir(jobDir);
+    const existing = await this.readJsonFile(contextPath);
+    const existingContext = existing && !Array.isArray(existing) ? existing : {};
+    const payloadContext = this.contextObjectFromPayload(payload);
+    const context = {
+      ...payloadContext,
+      ...existingContext,
+      job_id: job.jobId,
+      skill: job.skill,
+      topic: String(payload.topic || existingContext.topic || payloadContext.topic || ''),
+      report_type: String(
+        payload.report_type
+        || existingContext.report_type
+        || existingContext.reportType
+        || payloadContext.report_type
+        || payloadContext.reportType
+        || 'K报',
+      ),
+      deepReportEnabled: payload.deepReportEnabled === true,
+    };
+    await this.remoteFs.writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`);
+    job.artifacts = {
+      ...job.artifacts,
+      hermesJobDir: jobDir,
+      backendContextPath: contextPath,
+    };
+    await this.writeJobState(job);
+  }
+
   private async enhancePayloadWithUserPreferences(payload: Record<string, unknown>, user: AuthUser): Promise<Record<string, unknown>> {
     if (payload.useMyPreferences !== true || !this.userPreferences) return payload;
     const templateId = this.optionalId(payload.templateId);
@@ -3228,6 +3291,22 @@ export class ReportsService implements OnModuleDestroy {
     payload: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     if (payload.deepReportEnabled !== true) return payload;
+    if (job.skill === 'write-hb') {
+      job.artifacts = {
+        ...job.artifacts,
+        deepReportSourceCollection: {
+          status: 'integrated',
+          workflow: 'research_harness_orchestrate',
+        },
+      };
+      this.pushEvent(job, {
+        type: 'stage',
+        stage: 'deep_source_collection_integrated',
+        message: '资料深度采集已合并到主编报流程，将由同一证据流水线执行。',
+        origin: 'backend',
+      });
+      return payload;
+    }
 
     this.pushEvent(job, {
       type: 'stage',
@@ -3301,6 +3380,7 @@ export class ReportsService implements OnModuleDestroy {
     job.updatedAt = new Date().toISOString();
     await this.writeJobState(job);
     const startedAtMs = Date.now();
+    const stopRuntimeTelemetry = this.startRuntimeTelemetry(job);
 
     try {
       const requestUser = this.buildRequestUser(job);
@@ -3308,6 +3388,7 @@ export class ReportsService implements OnModuleDestroy {
       const supplementPayload = await this.enrichPayloadWithWebSupplement(job, enrichedPayload);
       const draftPayload = await this.enrichPayloadWithDraftAssistantContext(job, supplementPayload, this.buildJobOwnerUser(job));
       const preparedPayload = await this.enrichPayloadWithDeepReportSources(job, draftPayload);
+      await this.ensureBackendReportContextArtifact(job, preparedPayload);
       const runInput: RunInput = {
         skill: job.skill,
         payload: preparedPayload,
@@ -3527,6 +3608,95 @@ export class ReportsService implements OnModuleDestroy {
       this.pushEvent(job, { type: 'error', message });
       this.pushEvent(job, { type: 'done', jobId: job.jobId });
       this.streams.get(job.jobId)?.complete();
+    } finally {
+      stopRuntimeTelemetry();
+    }
+  }
+
+  private startRuntimeTelemetry(job: JobRecord): () => void {
+    const progressPath = this.remoteFs.joinPath(
+      this.remoteFs.remoteDir,
+      job.jobId,
+      'research',
+      'progress.jsonl',
+    );
+    let stopped = false;
+    let reading = false;
+    let consumedLines = 0;
+    let lastHeartbeatAt = 0;
+    this.runtimeActivityAt.set(job.jobId, Date.now());
+
+    const poll = async () => {
+      if (stopped || reading) return;
+      reading = true;
+      try {
+        const text = await this.remoteFs.readFile(progressPath);
+        const lines = text.split(/\r?\n/).filter((line) => line.trim());
+        if (lines.length < consumedLines) consumedLines = 0;
+        const pending = lines.slice(consumedLines);
+        consumedLines = lines.length;
+        for (const line of pending.slice(-100)) {
+          const event = this.parseResearchHarnessProgress(line);
+          if (event) this.pushEvent(job, event);
+        }
+      } catch {
+        // The progress file appears only after the research harness starts.
+      } finally {
+        reading = false;
+      }
+
+      const lastActivity = this.runtimeActivityAt.get(job.jobId) || Date.now();
+      if (Date.now() - lastActivity >= 30_000 && Date.now() - lastHeartbeatAt >= 30_000) {
+        lastHeartbeatAt = Date.now();
+        this.pushEvent(job, {
+          type: 'stage',
+          stage: 'system_heartbeat',
+          message: '系统心跳：编报任务仍在运行，最近暂无新的可公开技术事件。',
+          occurredAt: new Date().toISOString(),
+          origin: 'system_heartbeat',
+          runEvent: 'system.heartbeat',
+        });
+      }
+    };
+
+    void poll();
+    const timer = setInterval(() => void poll(), 2_000);
+    timer.unref?.();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      this.runtimeActivityAt.delete(job.jobId);
+    };
+  }
+
+  private parseResearchHarnessProgress(line: string): ServerEvent | null {
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed.origin !== 'research_harness' || parsed.runEvent !== 'research.progress') return null;
+      const phase = String(parsed.phase || '').trim();
+      if (!/^[a-z0-9_]{1,80}$/i.test(phase)) return null;
+      const status = String(parsed.status || 'running').toLowerCase();
+      if (!['started', 'running', 'completed', 'failed'].includes(status)) return null;
+      const metrics = parsed.metrics && typeof parsed.metrics === 'object' && !Array.isArray(parsed.metrics)
+        ? parsed.metrics as Record<string, unknown>
+        : {};
+      const durationMs = this.firstNumber(metrics, ['durationMs', 'duration_ms']);
+      const sequence = this.firstNumber(parsed, ['sequence']);
+      const occurredAt = typeof parsed.occurredAt === 'string' && Number.isFinite(Date.parse(parsed.occurredAt))
+        ? new Date(parsed.occurredAt).toISOString()
+        : undefined;
+      return {
+        type: 'stage',
+        stage: `${phase}_${status}`,
+        message: this.sanitizeUserVisibleText(String(parsed.summary || '资料深度采集进度已更新。'), 220),
+        ...(occurredAt ? { occurredAt } : {}),
+        origin: 'research_harness',
+        ...(durationMs !== undefined && durationMs >= 0 ? { durationMs } : {}),
+        ...(sequence !== undefined && sequence >= 0 ? { sequence } : {}),
+        runEvent: 'research.progress',
+      };
+    } catch {
+      return null;
     }
   }
 
@@ -3536,6 +3706,8 @@ export class ReportsService implements OnModuleDestroy {
       this.emitProgressState(job, safeEvent.progressState);
       return;
     }
+    const origin = 'origin' in safeEvent ? safeEvent.origin : undefined;
+    if (origin !== 'system_heartbeat') this.runtimeActivityAt.set(job.jobId, Date.now());
     job.events.push(safeEvent);
     const logEntry = this.toEventLogEntry(job, safeEvent);
     if (logEntry) {
@@ -3553,17 +3725,20 @@ export class ReportsService implements OnModuleDestroy {
   private toEventLogEntry(job: JobRecord, event: ServerEvent): EventLogEntry | null {
     const now = new Date().toISOString();
     const baseId = `${job.jobId}:${job.eventLog.length + 1}:${event.type}`;
+    const metadata = this.eventLogMetadata(event);
+    const eventTime = metadata.occurredAt || now;
 
     if (event.type === 'stage') {
       return {
         id: `${baseId}:${event.stage}`,
-        time: now,
+        time: eventTime,
         type: 'stage',
-        label: '阶段进度',
+        label: event.origin === 'research_harness' ? '资料采集执行' : event.origin === 'system_heartbeat' ? '系统心跳' : '阶段进度',
         status: event.stage || 'running',
         phase: event.stage,
-        actor: this.inferEventActor(event.stage),
+        actor: event.origin === 'research_harness' ? 'research-agent' : this.inferEventActor(event.stage),
         summary: this.sanitizeLogText(event.message || event.stage || 'Hermes 阶段更新', 220),
+        ...metadata,
       };
     }
 
@@ -3586,7 +3761,7 @@ export class ReportsService implements OnModuleDestroy {
       const toolEngine = this.sanitizeLogText(this.inferToolEngine(toolName || label || command), 60);
       return {
         id: `${baseId}:${event.id ?? job.eventLog.length + 1}`,
-        time: now,
+        time: eventTime,
         type: event.type,
         label,
         status,
@@ -3597,19 +3772,21 @@ export class ReportsService implements OnModuleDestroy {
         ...(detail ? { detail } : {}),
         ...(toolName ? { toolName, toolDisplayName: this.formatToolDisplayName(toolName), toolId: event.id } : {}),
         ...(toolEngine ? { toolEngine } : {}),
+        ...metadata,
       };
     }
 
     if (event.type === 'error') {
       return {
         id: baseId,
-        time: now,
+        time: eventTime,
         type: 'error',
         label: '任务错误',
         status: 'failed',
         phase: 'error',
         actor: 'system',
         summary: this.sanitizeLogText(event.message || '任务失败', 220),
+        ...metadata,
       };
     }
 
@@ -3627,6 +3804,37 @@ export class ReportsService implements OnModuleDestroy {
     }
 
     return null;
+  }
+
+  private eventLogMetadata(event: ServerEvent): Partial<EventLogEntry> {
+    if (!('origin' in event || 'occurredAt' in event || 'durationMs' in event || 'sequence' in event || 'runEvent' in event || 'usage' in event)) {
+      return {};
+    }
+    const occurredAt = typeof event.occurredAt === 'string' && Number.isFinite(Date.parse(event.occurredAt))
+      ? new Date(event.occurredAt).toISOString()
+      : undefined;
+    const durationMs = typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0
+      ? Math.round(event.durationMs)
+      : undefined;
+    const sequence = typeof event.sequence === 'number' && Number.isFinite(event.sequence) && event.sequence >= 0
+      ? Math.round(event.sequence)
+      : undefined;
+    const runEvent = typeof event.runEvent === 'string' ? this.sanitizeLogText(event.runEvent, 80) : '';
+    const usage = event.usage && typeof event.usage === 'object'
+      ? Object.fromEntries(
+          Object.entries(event.usage)
+            .filter(([, value]) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+            .slice(0, 12),
+        )
+      : undefined;
+    return {
+      ...(occurredAt ? { occurredAt } : {}),
+      ...(event.origin ? { origin: event.origin } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(sequence !== undefined ? { sequence } : {}),
+      ...(runEvent ? { runEvent } : {}),
+      ...(usage && Object.keys(usage).length ? { usage } : {}),
+    };
   }
 
   private firstLogString(value: Record<string, unknown>, keys: string[]): string {
@@ -4067,6 +4275,13 @@ export class ReportsService implements OnModuleDestroy {
   }
 
   private sanitizeEventLogEntry(item: EventLogEntry): EventLogEntry {
+    const usage = item.usage && typeof item.usage === 'object'
+      ? Object.fromEntries(
+          Object.entries(item.usage)
+            .filter(([, value]) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+            .slice(0, 12),
+        )
+      : undefined;
     return {
       ...item,
       label: this.sanitizeUserVisibleText(item.label, 120),
@@ -4080,6 +4295,20 @@ export class ReportsService implements OnModuleDestroy {
       toolDisplayName: item.toolDisplayName ? this.sanitizeUserVisibleText(item.toolDisplayName, 120) : item.toolDisplayName,
       toolId: item.toolId ? this.sanitizeUserVisibleText(item.toolId, 120) : item.toolId,
       toolEngine: item.toolEngine ? this.sanitizeUserVisibleText(item.toolEngine, 80) : item.toolEngine,
+      occurredAt: item.occurredAt && Number.isFinite(Date.parse(item.occurredAt))
+        ? new Date(item.occurredAt).toISOString()
+        : undefined,
+      origin: ['hermes_agent', 'research_harness', 'system_heartbeat', 'backend'].includes(String(item.origin))
+        ? item.origin
+        : undefined,
+      durationMs: typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0
+        ? Math.round(item.durationMs)
+        : undefined,
+      sequence: typeof item.sequence === 'number' && Number.isFinite(item.sequence) && item.sequence >= 0
+        ? Math.round(item.sequence)
+        : undefined,
+      runEvent: item.runEvent ? this.sanitizeUserVisibleText(item.runEvent, 80) : undefined,
+      usage: usage && Object.keys(usage).length ? usage : undefined,
     };
   }
 
@@ -4234,6 +4463,35 @@ export class ReportsService implements OnModuleDestroy {
     } catch (error) {
       console.error('recoverJobFromExistingReport failed:', error instanceof Error ? error.message : error);
       return false;
+    }
+  }
+
+  private async reconcileEligibleLateArtifacts(): Promise<void> {
+    if (this.lateArtifactReconcileRunning) return;
+    this.lateArtifactReconcileRunning = true;
+    try {
+      await this.jobsReady;
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const eligible = Array.from(this.jobs.values()).filter((job) => {
+        if (job.status !== 'failed' || !this.hasLateRunsArtifactRecoveryEvidence(job)) return false;
+        const activity = Math.max(
+          new Date(job.createdAt).getTime() || 0,
+          new Date(job.updatedAt || job.createdAt).getTime() || 0,
+        );
+        return activity >= cutoff;
+      });
+
+      for (const job of eligible) {
+        const recovered = await this.safeRecoverJobFromExistingReport(job, 'background_reconciliation');
+        if (!recovered) continue;
+        if (!job.artifacts?.qualityReview && !job.artifacts?.qualityReviewPath) {
+          await this.runQualityReviewForJob(job);
+        }
+      }
+    } catch (error) {
+      console.error('Late report artifact reconciliation failed:', error instanceof Error ? error.message : error);
+    } finally {
+      this.lateArtifactReconcileRunning = false;
     }
   }
 
@@ -4423,14 +4681,43 @@ export class ReportsService implements OnModuleDestroy {
     if (job.status === 'succeeded' && job.resultPath && job.markdown) return false;
     if (!this.canRecoverJobFromExistingReport(job)) return false;
 
-    const report = await this.findMarkdownFileInJobDir(job.jobId) ?? await this.findBestMarkdownFileForJob(job);
+    const reportInJobDir = await this.findMarkdownFileInJobDir(job.jobId);
+    const report = reportInJobDir ?? (
+      this.hasLateRunsArtifactRecoveryEvidence(job)
+        ? null
+        : await this.findBestMarkdownFileForJob(job)
+    );
     if (!report) return false;
+
+    let syncResult: ArtifactSyncResult | null = null;
+    if (this.artifactSync) {
+      syncResult = await this.artifactSync.syncReportMarkdown({
+        jobId: job.jobId,
+        localPath: report.filePath,
+        markdown: report.markdown,
+      });
+      if (syncResult.status !== 'completed') {
+        job.artifacts = {
+          ...job.artifacts,
+          artifactSyncStatus: 'failed',
+          artifactSyncDiagnostics: syncResult.diagnostics,
+        };
+        await this.writeJobState(job);
+        return false;
+      }
+    }
 
     job.status = 'succeeded';
     job.stage = 'done';
     job.markdown = report.markdown;
-    job.resultPath = report.filePath;
+    job.resultPath = syncResult?.artifacts.reportMarkdown?.storageKey || report.filePath;
     job.errorMessage = undefined;
+    job.artifacts = {
+      ...job.artifacts,
+      ...(syncResult?.artifacts || {}),
+      artifactSyncStatus: 'completed',
+      ...(syncResult ? { artifactSyncDiagnostics: syncResult.diagnostics } : {}),
+    };
     await this.writeReportReferencesArtifact(job, report.markdown);
     job.updatedAt = new Date().toISOString();
 

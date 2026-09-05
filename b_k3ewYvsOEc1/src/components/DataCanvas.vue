@@ -2248,8 +2248,8 @@ function translateHermesLog(log) {
   const base = {
     time: log?.time || '',
     stage: 'RUNNING',
-    title: '正在推进编报任务',
-    description: '系统正在执行当前编报步骤。',
+    title: sanitizeReportLogText(log?.label || log?.phase || '执行事件') || '执行事件',
+    description: sanitizeReportLogText(log?.summary || '智能体已上报一条执行事件。'),
     raw: displayRawLog,
     status,
     toolDisplayName,
@@ -2614,8 +2614,12 @@ const normalizedSources = computed(() => {
   })
 })
 
+const liveCollectedSources = computed(() => {
+  return sourceListItems.value.length ? sourceListItems.value : normalizedSources.value
+})
+
 const visibleSourceCards = computed(() => {
-  return dbSourcesExpanded.value ? normalizedSources.value : normalizedSources.value.slice(0, 5)
+  return dbSourcesExpanded.value ? liveCollectedSources.value : liveCollectedSources.value.slice(0, 5)
 })
 
 const databaseSourceDiagnostics = computed(() => {
@@ -2749,7 +2753,13 @@ const reportReferenceIndex = computed(() => {
 })
 
 const sourceStats = computed(() => {
-  return getTruthfulSourceStats(props.databaseSources, normalizedSources.value.length)
+  const stats = getTruthfulSourceStats(props.databaseSources, liveCollectedSources.value.length)
+  if (props.phase !== 'loading' || sourceListTotal.value === null) return stats
+  return {
+    ...stats,
+    selectedSources: sourceListTotal.value,
+    visibleSources: sourceListTotal.value,
+  }
 })
 
 function firstPositiveCount(...values) {
@@ -2944,7 +2954,9 @@ const backendProgressStageFlow = computed(() => {
   if (!stages.length) return []
   const byKey = new Map(stages.map((stage) => [stage.key, stage]))
   const displayStages = byKey.has('deep_collection')
-    ? [...userProgressStages.slice(0, 3), deepCollectionProgressStage, ...userProgressStages.slice(3)]
+    ? byKey.has('research')
+      ? [...userProgressStages.slice(0, 3), deepCollectionProgressStage, ...userProgressStages.slice(3)]
+      : [...userProgressStages.slice(0, 2), deepCollectionProgressStage, ...userProgressStages.slice(3)]
     : userProgressStages
   return displayStages.map((stage, index) => {
     const backendStage = byKey.get(stage.key)
@@ -2975,6 +2987,9 @@ const progressStageOrder = {
   RESEARCH_DONE: 2,
   SEARCHING: 2,
   EXTRACTING: 2,
+  DEEP_COLLECTION: 2,
+  DEEP_COLLECTION_DONE: 2,
+  DEEP_COLLECTION_FAILED: 2,
   CONSOLIDATE: 3,
   ANALYZING: 3,
   SYNTHESIS_TASK: 3,
@@ -3462,13 +3477,13 @@ async function loadSourceListPage(page = 1, { preserveOnError = false } = {}) {
       try {
         const response = await fetchReportSources(jobId, sourceRequestType(requestType), {
           page,
-          pageSize: sourceListPageSize.value,
+          pageSize: props.phase === 'loading' ? 50 : sourceListPageSize.value,
         })
         return { response, usedUntypedFallback: false }
       } catch {
         const response = await fetchReportSources(jobId, '', {
           page,
-          pageSize: sourceListPageSize.value,
+          pageSize: props.phase === 'loading' ? 50 : sourceListPageSize.value,
         })
         return { response, usedUntypedFallback: true }
       }
@@ -3553,6 +3568,7 @@ function startSourceAutoRefresh() {
     activeTab: activeResultTab.value,
     jobId: props.job?.jobId || '',
     status: props.job?.status || '',
+    phase: props.phase || '',
   })
 }
 
@@ -3804,9 +3820,17 @@ watch(() => activeResultTab.value, (tab) => {
     loadResultDraftOutline()
   }
 })
-watch(() => [props.job?.jobId, props.job?.status], () => {
+watch(() => [props.phase, props.job?.jobId, props.job?.status], () => {
   invalidateSourceListRequests()
   startSourceAutoRefresh()
+  if (
+    props.phase === 'loading' &&
+    props.job?.jobId &&
+    ['queued', 'running'].includes(String(props.job?.status || '').toLowerCase()) &&
+    !sourceListLoading.value
+  ) {
+    void loadSourceListPage(1, { preserveOnError: true })
+  }
 })
 watch([sourceSearchQuery, sourceKindFilter, sourceTimeFilter, sourceSortMode], handleSourceFiltersChanged)
 watch(() => props.processLogs?.length || 0, () => {
@@ -5167,10 +5191,10 @@ function exportPdf() {
             </p>
           </section>
 
-          <div v-if="databaseSourcesLoading && !normalizedSources.length" class="source-empty-state">
+          <div v-if="(databaseSourcesLoading || sourceListLoading) && !liveCollectedSources.length" class="source-empty-state">
             正在检查可展示信源...
           </div>
-          <div v-else-if="!normalizedSources.length" class="source-empty-state">
+          <div v-else-if="!liveCollectedSources.length" class="source-empty-state">
             <div>
               {{ filteredDatabaseCandidates.length ? '数据库未找到通过核心实体校验的信源。' : (dbSourcesState === 'fallback' ? '数据库无直接命中，已回退公开检索。' : '暂未采集到可展示信源，系统仍在检索中。') }}
             </div>
@@ -5215,12 +5239,12 @@ function exportPdf() {
             </article>
 
             <button
-              v-if="normalizedSources.length > 5"
+              v-if="liveCollectedSources.length > 5"
               class="source-expand-button"
               type="button"
               @click="dbSourcesExpanded = !dbSourcesExpanded"
             >
-              {{ dbSourcesExpanded ? '收起' : `展开全部信源（共 ${normalizedSources.length} 条）` }}
+              {{ dbSourcesExpanded ? '收起' : `展开全部信源（共 ${sourceListTotal ?? liveCollectedSources.length} 条）` }}
             </button>
           </div>
 

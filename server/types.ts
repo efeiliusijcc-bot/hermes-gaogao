@@ -66,23 +66,38 @@ export interface EventLogEntry {
   toolDisplayName?: string;
   toolId?: string;
   toolEngine?: string;
+  occurredAt?: string;
+  origin?: 'hermes_agent' | 'research_harness' | 'system_heartbeat' | 'backend';
+  durationMs?: number;
+  sequence?: number;
+  runEvent?: string;
+  usage?: Record<string, number>;
+}
+
+export interface ServerEventMetadata {
+  occurredAt?: string;
+  origin?: EventLogEntry['origin'];
+  durationMs?: number;
+  sequence?: number;
+  runEvent?: string;
+  usage?: Record<string, number>;
 }
 
 export type ServerEvent =
-  | { type: 'stage'; stage: string; message: string }
+  | ({ type: 'stage'; stage: string; message: string } & ServerEventMetadata)
   | { type: 'progress_state'; progressState: ReportProgressState }
   | { type: 'status'; status: string; message?: string }
   | { type: 'token'; content: string }
   | { type: 'text_delta'; content: string }
-  | { type: 'tool_start'; id?: string; name?: string; raw: unknown }
-  | { type: 'tool_delta'; id?: string; name?: string; raw: unknown }
-  | { type: 'tool_end'; id?: string; name?: string; raw: unknown }
-  | { type: 'tool_error'; id?: string; name?: string; message: string; raw?: unknown }
+  | ({ type: 'tool_start'; id?: string; name?: string; raw: unknown } & ServerEventMetadata)
+  | ({ type: 'tool_delta'; id?: string; name?: string; raw: unknown } & ServerEventMetadata)
+  | ({ type: 'tool_end'; id?: string; name?: string; raw: unknown } & ServerEventMetadata)
+  | ({ type: 'tool_error'; id?: string; name?: string; message: string; raw?: unknown } & ServerEventMetadata)
   | { type: 'sources'; sources: Record<string, unknown>[] }
   | { type: 'approval_required'; commands: string[]; message: string; partialOutput?: string }
   | { type: 'artifact'; name: string; available: boolean }
   | { type: 'done'; jobId: string }
-  | { type: 'error'; message: string };
+  | ({ type: 'error'; message: string } & ServerEventMetadata);
 
 export interface RunInput {
   skill: SkillName;

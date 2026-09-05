@@ -9,6 +9,7 @@ import {
   HERMES_API_KEY,
   HERMES_BASE_URL,
   HERMES_CONTAINER_REPORT_DIR,
+  HERMES_DEEP_SOURCE_COLLECTION_TIMEOUT_MS,
   HERMES_HEALTH_URL,
   HERMES_MODEL,
   HERMES_QA_AGENT_ID,
@@ -55,6 +56,11 @@ const RUNS_API_POLL_INTERVAL_MS = Number(process.env.HERMES_RUNS_POLL_INTERVAL_M
 const SSH_EXE = process.platform === 'win32'
   ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
   : 'ssh';
+
+interface RunsEventStreamContext {
+  phase?: string;
+  actor?: string;
+}
 
 @Injectable()
 export class HermesService {
@@ -139,7 +145,7 @@ export class HermesService {
     if (HERMES_RUN_MODE === 'runs') {
       text = await this.runStructuredSkillViaRunsApi(input, prompt);
     } else if (HERMES_RUN_MODE === 'remote_cli') {
-      text = await this.runHermesRemoteCli('planning-source-collection', prompt);
+      text = await this.runHermesRemoteCli('planning-source-collection', prompt, HERMES_DEEP_SOURCE_COLLECTION_TIMEOUT_MS);
     } else if (HERMES_RUN_MODE === 'http') {
       throw new Error('Deep Report source collection requires the Hermes report-agent tool runtime.');
     } else {
@@ -206,25 +212,38 @@ export class HermesService {
         },
       }),
     });
-    const immediateText = this.extractRunsFinalText(created).trim();
-    if (this.parseDeepReportSourceCollectionResult(immediateText)) return immediateText;
-
     const runId = this.extractRunsId(created);
-    if (!runId) throw new Error('Hermes runs API did not return a Deep Report collection run id.');
-    input.onEvent?.({ type: 'stage', stage: 'deep_source_collection_running', message: '深度资料采集中。' });
+    const onEvent = input.onEvent || (() => undefined);
+    const eventStream = runId
+      ? this.startRunsEventStream(runId, onEvent, {
+          phase: 'deep_source_collection',
+          actor: 'research-agent',
+        })
+      : null;
 
-    while (Date.now() - startedAt < REPORT_TIMEOUT_MS) {
-      await this.sleep(RUNS_API_POLL_INTERVAL_MS);
-      const run = await this.fetchHermesRunsJson(`${HERMES_RUNS_URL.replace(/\/$/, '')}/${encodeURIComponent(runId)}`, {
-        method: 'GET',
-      });
-      const text = this.extractRunsFinalText(run).trim();
-      if (this.parseDeepReportSourceCollectionResult(text)) return text;
-      if (this.isRunsTerminalStatus(this.extractRunsStatus(run))) {
-        throw new Error(`Deep Report source collection run ended without valid JSON: ${this.extractRunsError(run) || text.slice(0, 500)}`);
+    try {
+      const immediateText = this.extractRunsFinalText(created).trim();
+      if (this.parseDeepReportSourceCollectionResult(immediateText)) return immediateText;
+
+      if (!runId) throw new Error('Hermes runs API did not return a Deep Report collection run id.');
+      onEvent({ type: 'stage', stage: 'deep_source_collection_running', message: '深度资料采集中。' });
+
+      while (Date.now() - startedAt < HERMES_DEEP_SOURCE_COLLECTION_TIMEOUT_MS) {
+        await this.sleep(RUNS_API_POLL_INTERVAL_MS);
+        const run = await this.fetchHermesRunsJson(`${HERMES_RUNS_URL.replace(/\/$/, '')}/${encodeURIComponent(runId)}`, {
+          method: 'GET',
+        });
+        const text = this.extractRunsFinalText(run).trim();
+        if (this.parseDeepReportSourceCollectionResult(text)) return text;
+        if (this.isRunsTerminalStatus(this.extractRunsStatus(run))) {
+          throw new Error(`Deep Report source collection run ended without valid JSON: ${this.extractRunsError(run) || text.slice(0, 500)}`);
+        }
       }
+
+      throw new Error('Deep Report source collection timed out.');
+    } finally {
+      await this.finishRunsEventStream(eventStream);
     }
-    throw new Error('Deep Report source collection timed out.');
   }
 
   private async runStructuredSkillViaGateway(input: DeepReportSourceCollectionInput, prompt: string): Promise<string> {
@@ -233,7 +252,7 @@ export class HermesService {
     const payload = await this.gatewayDevice.runAgent({
       agentId: 'report-agent',
       message: prompt,
-      timeoutMs: REPORT_TIMEOUT_MS,
+      timeoutMs: HERMES_DEEP_SOURCE_COLLECTION_TIMEOUT_MS,
       sessionKey,
       label: `planning-source-collection: ${input.topic}`,
       onEvent: (event) => this.forwardGatewayEvent(event, input.onEvent || (() => undefined)),
@@ -384,7 +403,11 @@ export class HermesService {
     }
   }
 
-  private startRunsEventStream(runId: string, onEvent: (event: ServerEvent) => void) {
+  private startRunsEventStream(
+    runId: string,
+    onEvent: (event: ServerEvent) => void,
+    context: RunsEventStreamContext = {},
+  ) {
     const controller = new AbortController();
     const bridge = new HermesRunEventBridge(({ name, preview, status }) => {
       const phase = status === 'started' ? 'call' : status === 'failed' ? 'error' : 'output';
@@ -396,17 +419,18 @@ export class HermesService {
         ...(status === 'failed' ? { error: 'tool failed' } : {}),
       });
       if (!readable.phase) {
-        const completed = status === 'started' ? '正在执行。' : status === 'failed' ? '执行失败。' : '已完成。';
+        const completed = status === 'started' ? '正在执行' : status === 'failed' ? '执行失败' : '执行完成';
+        const safeName = this.sanitizeText(name, 80) || '工具';
         return {
-          phase: 'technical_detail',
-          actor: 'main-agent',
-          label: '执行编报步骤',
-          summary: `编报步骤${completed}`,
+          phase: context.phase || 'technical_detail',
+          actor: context.actor || 'main-agent',
+          label: safeName,
+          summary: `${safeName}${completed}。`,
         };
       }
       return {
-        phase: readable.phase || 'technical_detail',
-        actor: readable.actor || 'main-agent',
+        phase: context.phase || readable.phase || 'technical_detail',
+        actor: context.actor || readable.actor || 'main-agent',
         label: readable.label,
         summary: readable.summary,
         command: readable.command,
@@ -419,7 +443,29 @@ export class HermesService {
       headers: HERMES_API_KEY ? { Authorization: `Bearer ${HERMES_API_KEY}` } : {},
       signal: controller.signal,
       onEvent: (event) => {
-        for (const translated of bridge.translate(event)) onEvent(translated);
+        for (const translated of bridge.translate(event)) {
+          if (context.phase === 'deep_source_collection' && translated.type === 'stage') {
+            if (translated.stage === 'hermes_run_completed') {
+              onEvent({
+                ...translated,
+                type: 'stage',
+                stage: 'deep_source_collection_validating',
+                message: '深度资料采集执行完成，正在核验结构化结果。',
+              });
+              continue;
+            }
+            if (translated.stage === 'hermes_run_cancelled') {
+              onEvent({
+                ...translated,
+                type: 'stage',
+                stage: 'deep_source_collection_failed',
+                message: '深度资料采集执行已取消。',
+              });
+              continue;
+            }
+          }
+          onEvent(translated);
+        }
       },
     }).catch((error) => {
       if (controller.signal.aborted) return;
@@ -567,7 +613,7 @@ export class HermesService {
     });
   }
 
-  private runHermesRemoteCli(skill: string, prompt: string): Promise<string> {
+  private runHermesRemoteCli(skill: string, prompt: string, timeoutMs = REPORT_TIMEOUT_MS): Promise<string> {
     const promptB64 = Buffer.from(prompt, 'utf-8').toString('base64');
     const remoteScript = [
       'import base64, os, subprocess, sys',
@@ -609,10 +655,10 @@ export class HermesService {
       'sys.exit(proc.returncode)',
     ].join('\n');
 
-    return this.runHermesRemoteCliScript(remoteScript, 1);
+    return this.runHermesRemoteCliScript(remoteScript, 1, timeoutMs);
   }
 
-  private runHermesRemoteCliScript(remoteScript: string, attemptsRemaining: number): Promise<string> {
+  private runHermesRemoteCliScript(remoteScript: string, attemptsRemaining: number, timeoutMs: number): Promise<string> {
     const keyPath = HERMES_REMOTE_SSH_KEY.startsWith('~')
       ? path.join(os.homedir(), HERMES_REMOTE_SSH_KEY.slice(1))
       : HERMES_REMOTE_SSH_KEY;
@@ -634,7 +680,7 @@ export class HermesService {
       const timer = setTimeout(() => {
         child.kill('SIGTERM');
         reject(new Error('Hermes remote CLI timed out.'));
-      }, REPORT_TIMEOUT_MS);
+      }, timeoutMs);
 
       child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
       child.stderr.on('data', (chunk: Buffer) => errorChunks.push(chunk));
@@ -650,7 +696,7 @@ export class HermesService {
           const message = stderr || `exit code ${code}`;
           if (attemptsRemaining > 0 && /Invalid API Key|invalid_key|HTTP 401|Error code: 401/i.test(message)) {
             setTimeout(() => {
-              this.runHermesRemoteCliScript(remoteScript, attemptsRemaining - 1).then(resolve, reject);
+              this.runHermesRemoteCliScript(remoteScript, attemptsRemaining - 1, timeoutMs).then(resolve, reject);
             }, 5_000);
             return;
           }
@@ -1193,12 +1239,13 @@ export class HermesService {
 
   private buildReportPrompt(input: RunInput): string {
     const sanitizedPayload = sanitizeReportPayload(input.payload as unknown as Record<string, unknown>);
-    const promptPayload = sanitizedPayload.deepReportEnabled === true
-      ? sanitizedPayload
-      : Object.fromEntries(Object.entries(sanitizedPayload).filter(([key]) => key !== 'deepReportEnabled' && key !== 'deepReportSources'));
+    const promptPayload = input.skill === 'write-hb'
+      ? this.buildWriteHbPromptPayload(input, sanitizedPayload)
+      : sanitizedPayload.deepReportEnabled === true
+        ? sanitizedPayload
+        : Object.fromEntries(Object.entries(sanitizedPayload).filter(([key]) => key !== 'deepReportEnabled' && key !== 'deepReportSources'));
     const payloadWithOutput = {
       ...promptPayload,
-      ...this.buildContextJsonPayload(input),
       output_dir: HERMES_CONTAINER_REPORT_DIR,
       output_file_instruction: `如果需要写入文件，请把最终 Markdown 报告保存到 ${HERMES_CONTAINER_REPORT_DIR}。`,
     };
@@ -1233,10 +1280,32 @@ export class HermesService {
     ].join('\n');
   }
 
+  private buildWriteHbPromptPayload(
+    input: RunInput,
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const reportDir = `${HERMES_CONTAINER_REPORT_DIR.replace(/\/$/, '')}/${input.jobId}`;
+    return {
+      job_id: input.jobId,
+      topic: this.sanitizeText(String(payload.topic || payload.title || ''), 500),
+      report_type: this.sanitizeText(String(payload.report_type || 'K报'), 80),
+      deep_report_enabled: payload.deepReportEnabled === true,
+      draft_assistant_mode: payload.draftAssistantMode === true,
+      artifact_manifest: {
+        context: `${reportDir}/context.json`,
+        database: `${reportDir}/database/`,
+        research_plan: `${reportDir}/plan.json`,
+        research_results: `${reportDir}/research/research_*.json`,
+        synthesis_packet: `${reportDir}/research/synthesis_packet.json`,
+        consolidated_evidence: `${reportDir}/research/consolidated.json`,
+        final_report: `${reportDir}/final/report.md`,
+      },
+    };
+  }
+
   private getSkillWorkflowContract(input: RunInput): string[] {
     if (input.skill !== 'write-hb') return [];
 
-    const shortJobId = input.jobId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) || 'job';
     const reportDir = `${HERMES_CONTAINER_REPORT_DIR.replace(/\/$/, '')}/${input.jobId}`;
     const finalPath = `${reportDir}/final/report.md`;
     const harnessPath = '/opt/data/workspace/report-agent/skills/web-research-firecrawl/scripts/harness_cli.py';
@@ -1247,7 +1316,6 @@ export class HermesService {
       'WORKFLOW ENFORCEMENT CONTRACT FOR HERMES',
       'This contract is mandatory execution policy, not background guidance.',
       `Job id: ${input.jobId}`,
-      `Short job id: ${shortJobId}`,
       `Report directory: ${reportDir}`,
       `Final report path: ${finalPath}`,
       `Research harness: ${harnessPath}`,
@@ -1255,14 +1323,14 @@ export class HermesService {
       '',
       'Mandatory execution order:',
       '1. Load the write-hb skill and treat SKILL.md plus workflow.yaml as binding instructions.',
-      `2. Verify or create ${reportDir}/context.json before public web research.`,
+      `2. Read the backend-prepared ${reportDir}/context.json; do not rewrite or duplicate its contents in the conversation.`,
       `3. Preserve existing PG/vector artifacts under ${reportDir}/database/ and use them as first-class sources.`,
       `4. Before every harness command, load research keys with: ${harnessEnvPrefix}`,
-      `5. The first public research action MUST run: ${harnessEnvPrefix} python ${harnessPath} plan --job-dir ${reportDir}`,
-      `6. The plan step MUST create ${reportDir}/plan.json before any large page extraction or summarization.`,
-      `7. Run: ${harnessEnvPrefix} python ${harnessPath} run --job-dir ${reportDir} for every planned group and create ${reportDir}/research/research_*.json.`,
-      `8. Merge research outputs into ${reportDir}/research/consolidated.json.`,
-      `9. Only after plan.json, research/research_*.json, and research/consolidated.json exist, write ${finalPath}.`,
+      `5. The first and only full public-research command MUST be: ${harnessEnvPrefix} python ${harnessPath} orchestrate --job-id ${input.jobId}`,
+      `6. The orchestrator MUST create ${reportDir}/plan.json, grouped research files, ${reportDir}/research/consolidated.json, and ${reportDir}/research/synthesis_packet.json.`,
+      `7. Do not manually spawn duplicate research groups or rerun plan/run after orchestrate succeeds. The orchestrator may perform at most one focused gap supplement itself.`,
+      `8. Read synthesis_packet.json first for writing. Consult consolidated.json only when a required report section needs additional evidence detail.`,
+      `9. Only after the orchestrator reports success and its required artifacts exist, write ${finalPath}.`,
       `10. The final assistant response must be exactly: REPORT_FILE: ${finalPath}`,
       '',
       'Tool restrictions:',
@@ -1274,9 +1342,7 @@ export class HermesService {
       'Failure rules:',
       '- If harness_cli.py fails with ModuleNotFoundError, stop and report a workflow dependency failure. Do not continue with native web_search/web_extract.',
       '- If FIRECRAWL_API_KEY is absent, record firecrawl_fallback_reason="FIRECRAWL_API_KEY not configured" in plan/research artifacts and continue only through the harness fallback chain.',
-      '- If plan.json is missing, stop and report a workflow failure instead of continuing.',
-      '- If no research/research_*.json files exist, stop and report a workflow failure.',
-      '- If research/consolidated.json is missing, do not write the final report.',
+      '- If orchestrate exits unsuccessfully or any required research artifact is missing, stop and report a workflow failure instead of rerunning the full pipeline.',
     ];
   }
 
@@ -1577,7 +1643,8 @@ export class HermesService {
     if (input.skill !== 'write-hb') return [];
 
     const jobId = input.jobId;
-    const jobIdShort = jobId.slice(0, 8);
+    const reportDir = `${HERMES_CONTAINER_REPORT_DIR.replace(/\/$/, '')}/${jobId}`;
+    const finalPath = `${reportDir}/final/report.md`;
     const payload = sanitizeReportPayload(input.payload as unknown as Record<string, unknown>);
     const reportType = typeof payload.report_type === 'string' ? payload.report_type : 'K报或HB报';
     const knownContext = typeof payload.known_context === 'string' ? payload.known_context : '';
@@ -1586,41 +1653,26 @@ export class HermesService {
     const databaseSourceOptions = this.normalizeDatabaseSourceOptions(parsedContext?.databaseSourceOptions);
     const deepSourceRequirements = payload.deepReportEnabled === true
       ? [
-          '10e. deepReportSources 是当前深度编报任务在正式生成前额外执行 planning-source-collection Skill 得到的结构化结果。acceptedSources 可作为补充证据参与后续素材整合；uncertainSources 只能作为待核验线索，不得写成已确认事实。',
-          '10f. deepReportSources.coveredGaps 用于确认已补齐的信息缺口；uncoveredGaps 必须在相关章节或文末信息缺口中明确保留。不得为补足未覆盖项而伪造来源，也不得重新调用旧 Crawler 任务流程。',
+          '10e. 当前 K/HB 深度编报的资料采集已合并到 research harness orchestrate 中；不得再执行 planning-source-collection 或其他独立的全量 Agent 采集。',
+          '10f. synthesis_packet.json 中的 gaps 和 verification_needed 必须在相关章节或文末信息缺口中明确保留，不得为补足未覆盖项而伪造来源。',
         ]
       : [];
     const databaseSourceRequirements = databaseSourceOptions.enabled
       ? [
-          `18. databaseSourceOptions.enabled=true 时，Research Phase 必须先读取 context.json.databaseQueryIntent 分词词包，再在公开检索前调用 MCP 工具 pg-sources__query 检索 PostgreSQL 向量信源库；配置为 summary_first、storageMode=${databaseSourceOptions.storageMode}、sourceTable=public.${databaseSourceOptions.sourceTable}、lookbackDays=${databaseSourceOptions.lookbackDays}、maxMetadataRows=${databaseSourceOptions.maxMetadataRows}、maxContentRows=${databaseSourceOptions.maxContentRows}。`,
-          '19. PG 信源库当前主表是 public.vector_materials_text_embedding_v4；如需确认结构，只能先查询 information_schema.columns。不要查询 documents、news、articles 或 news.data_YYYYMMDD 等臆测表名，不要把 MySQL 当作默认入口；任何数据库操作都必须是只读 SELECT，不得执行 INSERT/UPDATE/DELETE/DDL。',
-          '20. PG 首轮检索必须围绕 databaseQueryIntent.primaryPhrases、entityTerms、actionTerms、domainTerms、ngrams，在 ch_title、entitle、summary、content、embedding_text 中组织关键词、同义词和语义召回；优先返回 ch_title、entitle、data_source_url、website_name、publish_time、summary，可在内部读取有限 content/embedding_text 摘要用于相关性判断；严禁读取或输出 embedding_vector、raw_data、连接信息。',
-          `21. PG 命中结果必须单独保存为 database/database_sources.json 和 database/database_query_plan.json。database_sources.json 每条记录必须保留原始展示字段：ch_title（中文标题）、data_source_url（信源链接）、summary（摘要）、website_name（来源站点名称）、publish_time（发布时间）；可附带内部字段如 relevance_score、similarity、relevance_reason、needs_verification、source_type='pg_vector'。database_query_plan 必须记录 retrieval_mode='pg_vector'、mcp_server='pg-sources'、storageMode、sourceTable、embeddingModel（如可得）、indexedRows（如可得）、vector_hits/total_hits、returned_sources、使用词包和 database_source_fallback_reason。`,
-          '22. 如果 pg-sources__query 返回空结果、表结构不满足需求、SQL 报错或权限不足，必须在 database_query_plan.json 中写入 database_source_fallback_reason 字段（值为字符串，说明具体回退原因）；只有在该字段已记录后，才可用 mysql-test__mysql_query 作为补充兜底检索，并在 plan 中记录 fallback_mcp="mysql-test"。无论是否回退，都不得让编报任务失败，也不得因此缩减公网调研流程。',
-          '23. 数据库/向量信源是候选素材渠道之一，必须与 Tavily/Exa/Firecrawl 结果合并并交叉核验后再写作；来源优先级由核心实体相关性、主题相关性、来源质量、时效性、互证程度和歧义惩罚共同决定，不得因来自数据库而天然优先。不得在最终报告正文或用户可见日志中暴露 SQL、表名、MCP 实现细节、数据库连接信息、完整 content、raw_data、embedding_text 或 embedding_vector。',
+          `18. databaseSourceOptions.enabled=true 时，先读取后端已生成的 database/database_query_plan.json、database/database_sources.json 和 database/vector_sources.json；后端已按 lookbackDays=${databaseSourceOptions.lookbackDays}、maxMetadataRows=${databaseSourceOptions.maxMetadataRows}、maxContentRows=${databaseSourceOptions.maxContentRows} 完成召回、实体校验和字段裁剪。不得再次调用 pg-sources__query、mysql-test__mysql_query 或其他数据库工具。`,
+          '19. database_sources.json 和 vector_sources.json 只包含通过后端校验、允许进入写作上下文的数据库信源；diagnostics 中的 uncertain、rejected、实体错配和仅向量相似候选不得进入正文证据。',
+          '20. database_query_plan.json 中 returned_sources=0 或记录 fallback reason 时，按真实空结果继续公网调研，不得重跑数据库召回，也不得用不相关候选补足数量。',
+          '21. 数据库/向量信源必须与公网研究结果合并并交叉核验后再写作；来源优先级由核心实体相关性、主题相关性、来源质量、时效性、互证程度和歧义惩罚共同决定，不得因来自数据库而天然优先。',
+          '22. 不得在最终报告正文或用户可见日志中暴露 SQL、表名、MCP 实现细节、数据库连接信息、完整 content、raw_data、embedding_text 或 embedding_vector。',
         ]
       : [
           '18. databaseSourceOptions.enabled 不是 true 时，不得调用 pg-sources__query、mysql-test__mysql_query 或其他数据库 MCP 工具；继续使用 web-research-firecrawl、用户指定信源和公开检索。',
         ];
-    if (databaseSourceOptions.enabled) {
-      databaseSourceRequirements.push(
-        `24. If strict phrase/entity matching returns fewer than maxMetadataRows=${databaseSourceOptions.maxMetadataRows}, broaden recall with entityTerms, actionTerms, domainTerms, and ngrams as OR conditions across ch_title, entitle, summary, content, and embedding_text until the candidate pool reaches maxMetadataRows or PG returns no more relevant rows.`,
-        '25. database_sources.json is a user-visible transparency artifact: keep up to maxMetadataRows URL-deduped metadata rows, including medium/low relevance rows with relevance_level and relevance_reason; do not discard rows solely because only summary matched.',
-        '26. database_query_plan.json must report retrieval_mode, mcp_server, storageMode, sourceTable, query_terms, strict_hits, expanded_hits, vector_hits/total_hits, returned_sources, broadening_applied, content_rows_read, database_source_fallback_reason, and fallback_mcp when used. total_hits must mean candidate-pool size and returned_sources must equal database_sources.json row count.',
-        '27. Preserve title/url fallback fields when ch_title/data_source_url are empty. Never include content, raw_data, SQL, table names, MCP implementation details, database connection details, embedding_text, or embedding_vector in the final report or user-visible logs.',
-        '28. If context.json contains vectorDatabaseSources, treat them as already-prefetched PostgreSQL pgvector semantic database sources. Save sanitized fields to database/vector_sources.json, including title, url, summary, contentExcerpt, websiteName, publishTime, similarity, and relevanceScore. Merge them with database_sources.json; they may satisfy PG/vector pre-recall when queryPlan reports returnedSources > 0.',
-        '29. PG/vector sources cannot replace harness_cli.py plan/run, Tavily, Exa, Firecrawl, research_*.json, consolidated.json, or synthesis steps; they replace only the old MySQL-first database recall path.',
-        '30. embeddingText/embedding_text is recall-debug text only. Do not include embeddingText, embedding_text, SQL, table names, MCP implementation details, database connection details, full content, raw_data, or embedding vectors in user-visible logs or the final report.',
-        '31. context.json.entityPolicy and sourceDiagnostics.database are authoritative source-contamination guards. database_sources.json may contain only accepted database sources that match coreEntities or their aliases; uncertain, rejected, low relevance, entity mismatch, and only-vector-similar sources must be written only to database/database_sources_diagnostics.json.',
-        '32. strict_hits=0 means expanded results are candidates only. Expanded results must pass core entity validation before entering database_sources.json, vector_sources.json, report context, synthesis evidence, or final references. Do not use unrelated but semantically similar companies, people, locations, or institutions to fill the database source quota.',
-        '33. If accepted database sources are empty, state internally that the database did not contain valid core-entity sources, continue Tavily/Exa/Firecrawl and controlled public-page fetching, and do not put rejected database candidates into the writing context.',
-      );
-    }
     return [
       `6. write-hb 的 report_type 为 ${reportType}，必须按该报种对应大纲撰写，不要混用 K报 与 HB报 结构。`,
-      '7. known_context 如果是 JSON，必须先解析其 selectedSearchQueries、userProvidedSources、selectedModules、parameterValues、supplement；selectedModules 可能按章节提供 sectionKey、sectionTitle、selectedDirections；如果解析失败，再按普通文本上下文处理。',
-      `8. Research Phase 必须执行完整 K/HB 全量流水线：先写入 reports/${jobId}/context.json；如启用数据库信源，再完成 pg-sources__query PG 向量库预召回并保存 database/database_query_plan.json、database/database_sources.json（仅在 PG 空结果/失败且已记录 fallback reason 后才可用 mysql-test__mysql_query 兜底）；随后必须调用 ${HERMES_CONTAINER_REPORT_DIR.replace(/\/reports$/, '')}/skills/web-research-firecrawl/scripts/harness_cli.py plan 生成 plan.json 和 groups/group_A.json 等分组文件；再启动 research-${jobIdShort}-{X} 调研子任务，由子任务调用 harness_cli.py run 产出 research/research_{X}.json；最后合并为 research/consolidated.json 后才能进入撰稿。`,
-      '9. Research Phase 禁止把 research_cli.py brief 作为 K/HB 主调研路径；research_cli.py brief 只允许在 harness_cli.py plan/run 已失败且已记录 firecrawl_fallback_reason 时作为异常补充。PG 向量信源不能替代 Tavily、Exa、Firecrawl 三件套，不能减少 harness_cli.py run、research_*.json 或 consolidated.json 的生成要求。',
+      '7. 从 context.json 读取 selectedSearchQueries、userProvidedSources、selectedModules、parameterValues、supplement；selectedModules 可能按章节提供 sectionKey、sectionTitle、selectedDirections。不要把完整 context.json 复制进对话上下文。',
+      `8. Research Phase 必须执行一次 ${HERMES_CONTAINER_REPORT_DIR.replace(/\/reports$/, '')}/skills/web-research-firecrawl/scripts/harness_cli.py orchestrate --job-id ${jobId}，由它确定性生成 plan.json、groups/group_*.json、research/research_*.json、research/consolidated.json 和 research/synthesis_packet.json；不得另行启动重复调研 Agent。`,
+      '9. Research Phase 禁止把 research_cli.py brief 作为 K/HB 主调研路径；只有 orchestrate 明确失败并已记录原因时才能停止并报告异常，不得自动重跑完整调研。PG 向量信源不能替代 Tavily、Exa、Firecrawl 三件套。',
       '10. Research Phase 输出必须形成完整内部素材包：context.json、plan.json、至少一个 groups/group_*.json、至少一个 research/research_*.json、research/consolidated.json、sources、evidence_cards、key_findings、verification_needed 和信息缺口；consolidated.json 或 research_*.json 中必须能看到 Tavily、Exa、Firecrawl 调研记录，除非三件套不可用且已记录明确 fallback reason。',
       '10a. Research 和 Synthesis 只能使用后端已通过 EntityPolicy、来源质量和去重校验的 accepted 数据库信源与互联网信源；uncertain、rejected 和实体错配来源不得进入正文证据。',
       '10b. 用户可见进度日志中，把 PG/vector 召回称为“数据库检索工具”，把 Tavily/Exa/Firecrawl 和受控正文抓取称为“互联网搜索工具”，如确有本地脚本则称为“本地脚本工具”；不要出现 OpenClaw 字样。',
@@ -1629,9 +1681,9 @@ export class HermesService {
       ...deepSourceRequirements,
       '11. Write-HB Phase：只在 Research Phase 完成后，基于前置研究结果和用户 selectedModules，按 sectionTitle 对应的 K报/HB报一级章节逐章撰写；每章重点展开 selectedDirections，未选方向不得强行作为正文重点。',
       '11a. K报篇幅是硬约束：最终 Markdown 目标约 9000-11000 个中文字符，按 A4 常规排版约 10 页；最低不得低于 8000 个中文字符。不得通过新增一级章节、堆砌参考资料或重复空话凑篇幅，只能通过增加事实密度、分析层次、风险链条、对策可操作性和信息缺口说明扩写。低于 8000 中文字符必须视为不合格并重新扩写，禁止交付短稿。',
-      `12. 必须把完整成稿 Markdown 写入 ${HERMES_CONTAINER_REPORT_DIR} 下的 .md 文件；不要只在对话中输出正文。`,
+      `12. 必须把完整成稿 Markdown 写入 ${finalPath}；不要写入报告根目录，也不要只在对话中输出正文。`,
       `13. 静默执行：调研、检索、提取、规划、草稿、进度说明都不要发送到对话；不要输出“任务已启动”“正在检索”“获取了足够素材”等中间文本。`,
-      `14. 最终对话只输出一行：REPORT_FILE: ${HERMES_CONTAINER_REPORT_DIR}/实际文件名.md。这里的”实际文件名”必须替换为真实已写入的 .md 文件名；严禁输出 ${jobId}、{报告名}、{filename}、summary.json、plan.json、context.json 或复制/后处理说明。除这一行外不要输出摘要、正文、来源表或其他说明。`,
+      `14. 最终对话只输出一行：REPORT_FILE: ${finalPath}。不得改写为其他路径、占位符、summary.json、plan.json、context.json 或复制/后处理说明；除这一行外不要输出摘要、正文、来源表或其他说明。`,
       '15. 最终保存的 Markdown 正文、标题、来源、文件名均不得包含 Unicode 替换字符 U+FFFD、连续替换字符、\\ufffd 或明显乱码；如素材中有乱码，必须改写为语义完整的中文句子后再保存。',
       '16. 正文段落不得出现 http:// 或 https:// 原始网址；正文引用只写来源机构、发布时间和参考资料编号，完整 URL 只放在文末参考资料部分。',
       '17. K报正文开头必须按标准样式把导语和摘要合并为“一、基本情况”之前的一整段自然段正文；不得生成“导语”“摘要”“导语/摘要”“摘要导语”等任何小标题，也不得拆成两个独立模块。',

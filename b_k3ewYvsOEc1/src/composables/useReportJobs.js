@@ -24,6 +24,7 @@ import {
 } from '../lib/reportWorkspaceState.js'
 import { buildPlanningContextPayload } from '../lib/reportPlanningContext.js'
 import { REPORT_HISTORY_CREATED_AFTER } from '../lib/reportHistoryCutoff.js'
+import { executionLogIdentity, mergeExecutionLogEntries } from '../lib/reportExecutionLogs.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
 
@@ -515,11 +516,13 @@ export function useReportJobs() {
     stopProgressPolling()
     progressPollJobId = jobId
     const refresh = () => {
-      void loadProgressState(jobId, () => {
+      const shouldApply = () => {
         const visibleJob = isVisibleJob(jobId)
         const activeWorkspaceJob = activeWorkspaceSnapshot.value?.job?.jobId === jobId
         return progressPollJobId === jobId && (visibleJob || activeWorkspaceJob)
-      })
+      }
+      void loadProgressState(jobId, shouldApply)
+      void loadExecutionLog(jobId, shouldApply, { force: true, merge: true })
     }
     refresh()
     progressPollTimer = window.setInterval(refresh, 2000)
@@ -534,7 +537,7 @@ export function useReportJobs() {
     activeExecutionLogJobId = null
   }
 
-  function setActiveExecutionLogJob(jobId, items = null) {
+  function setActiveExecutionLogJob(jobId, items = null, { merge = false } = {}) {
     activeExecutionLogJobId = jobId || null
     unreadLogCount.value = 0
     if (!jobId) {
@@ -545,6 +548,7 @@ export function useReportJobs() {
     if (Array.isArray(items)) {
       const normalized = items.map((item, index) => ({
         id: item.id || `${jobId}-saved-${index}`,
+        eventId: item.eventId || item.toolId || '',
         occurredAt: item.occurredAt || item.time || '',
         time: formatLogTime(item.time),
         type: item.type || 'stage',
@@ -559,9 +563,17 @@ export function useReportJobs() {
         toolDisplayName: item.toolDisplayName || item.toolName || '',
         toolId: item.toolId || '',
         toolEngine: item.toolEngine || '',
+        origin: item.origin || '',
+        durationMs: item.durationMs,
+        sequence: item.sequence,
+        runEvent: item.runEvent || '',
+        usage: item.usage || null,
       }))
-      executionLogsByJobId.set(jobId, normalized)
-      seenExecutionEventsByJobId.set(jobId, new Set(normalized.map((item) => executionLogKey(item))))
+      const next = merge
+        ? mergeExecutionLogEntries(executionLogsByJobId.get(jobId) || [], normalized)
+        : normalized
+      executionLogsByJobId.set(jobId, next)
+      seenExecutionEventsByJobId.set(jobId, new Set(next.map((item) => executionLogIdentity(item))))
     }
     executionLogs.value = executionLogsByJobId.get(jobId) || []
   }
@@ -574,9 +586,7 @@ export function useReportJobs() {
   }
 
   function executionLogKey(entry) {
-    const identity = entry.eventId || entry.toolId || entry.id || entry.occurredAt || entry.time || ''
-    if (identity) return `${identity}:${entry.type || ''}:${entry.status || ''}`
-    return `${entry.type}:${entry.status || ''}:${entry.toolName || ''}:${entry.summary || ''}:${entry.command || ''}`
+    return executionLogIdentity(entry)
   }
 
   function appendExecutionLog(entry, jobId = activeExecutionLogJobId) {
@@ -655,20 +665,20 @@ export function useReportJobs() {
     }
   }
 
-  async function loadExecutionLog(jobId, shouldApply = () => true) {
+  async function loadExecutionLog(jobId, shouldApply = () => true, { force = false, merge = force } = {}) {
     if (!jobId) {
       setActiveExecutionLogJob(null)
       return
     }
-    if (executionLogsByJobId.has(jobId)) {
+    if (!force && executionLogsByJobId.has(jobId)) {
       if (shouldApply()) setActiveExecutionLogJob(jobId)
       return
     }
     try {
       const result = await fetchReportJobEventLog(jobId)
-      if (shouldApply()) setActiveExecutionLogJob(jobId, result?.items || [])
+      if (shouldApply()) setActiveExecutionLogJob(jobId, result?.items || [], { merge })
     } catch {
-      if (shouldApply()) setActiveExecutionLogJob(jobId, [])
+      if (shouldApply() && !executionLogsByJobId.has(jobId)) setActiveExecutionLogJob(jobId, [])
     }
   }
 
@@ -757,16 +767,25 @@ export function useReportJobs() {
     const detail = raw.detail || ''
     const toolName = extractToolNameFromEvent(event, raw)
     const toolEngine = inferToolEngine(`${toolName} ${label} ${raw.command || ''}`)
+    const metadata = {
+      occurredAt: event.occurredAt || '',
+      origin: event.origin || '',
+      durationMs: event.durationMs,
+      sequence: event.sequence,
+      runEvent: event.runEvent || '',
+      usage: event.usage || null,
+    }
 
     if (event.type === 'stage') {
       return {
         type: 'stage',
-        label: '阶段进度',
+        label: event.origin === 'research_harness' ? '资料采集执行' : event.origin === 'system_heartbeat' ? '系统心跳' : '阶段进度',
         status: event.stage || 'running',
         summary: event.message || event.stage || '任务阶段更新',
         phase,
-        actor: actor || (String(event.stage || '').includes('hermes') ? 'main-agent' : 'system'),
+        actor: actor || (event.origin === 'research_harness' ? 'research-agent' : String(event.stage || '').includes('hermes') ? 'main-agent' : 'system'),
         eventId: event.stage,
+        ...metadata,
       }
     }
 
@@ -785,15 +804,16 @@ export function useReportJobs() {
         toolId: event.id || '',
         toolEngine,
         eventId: event.id,
+        ...metadata,
       }
     }
 
     if (event.type === 'error') {
-      return { type: 'error', label: '任务错误', status: 'failed', summary: event.message || '任务失败', phase: 'error', actor: 'system' }
+      return { type: 'error', label: '任务错误', status: 'failed', summary: event.message || '任务失败', phase: 'error', actor: 'system', ...metadata }
     }
 
     if (event.type === 'done') {
-      return { type: 'done', label: '任务完成', status: 'completed', summary: '后端任务已结束。', phase: 'done', actor: 'system', eventId: event.jobId }
+      return { type: 'done', label: '任务完成', status: 'completed', summary: '后端任务已结束。', phase: 'done', actor: 'system', eventId: event.jobId, ...metadata }
     }
 
     return null
@@ -859,6 +879,9 @@ export function useReportJobs() {
     if (event.type === 'done') {
       fetchDatabaseSourcesData(eventJobId)
       loadProgressState(eventJobId)
+      void loadExecutionLog(eventJobId, () => (
+        isVisibleJob(eventJobId) || activeWorkspaceSnapshot.value?.job?.jobId === eventJobId
+      ), { force: true, merge: true })
       stopProgressPolling(eventJobId)
       closeJobEvents()
     }
@@ -911,6 +934,11 @@ export function useReportJobs() {
         if (isVisibleJob(jobId)) job.value = latest
         if (activeWorkspaceSnapshot.value?.job?.jobId === jobId) patchActiveWorkspaceSnapshot({ job: latest, __force: true })
         await loadProgressState(jobId)
+        await loadExecutionLog(jobId, () => (
+          jobEventSource === source
+          && subscribedJobId === jobId
+          && (isVisibleJob(jobId) || activeWorkspaceSnapshot.value?.job?.jobId === jobId)
+        ), { force: true, merge: true })
         if (latest.status === 'succeeded' || latest.status === 'failed' || latest.status === 'cancelled') {
           stopProgressPolling(jobId)
           closeJobEvents()

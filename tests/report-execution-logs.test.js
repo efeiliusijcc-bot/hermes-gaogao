@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   buildReadableExecutionLogs,
+  mergeExecutionLogEntries,
   sanitizeReportExecutionText,
   translateHermesExecutionLog,
 } from '../b_k3ewYvsOEc1/src/lib/reportExecutionLogs.js'
@@ -35,8 +36,80 @@ test('translates database, public research and unknown tools into readable Chine
   assert.match(database.description, /PG 向量库|数据库信源/)
   assert.equal(research.stage, 'SEARCHING')
   assert.match(research.description, /公开资料|检索/)
-  assert.equal(unknown.title, '正在推进编报任务')
-  assert.equal(unknown.description, '系统正在执行当前编报步骤。')
+  assert.equal(unknown.title, '执行 custom_internal_tool')
+  assert.match(unknown.description, /custom_internal_tool/)
+  assert.doesNotMatch(unknown.description, /当前编报步骤/)
+})
+
+test('shows concrete Hermes actions for common run tools', () => {
+  const cases = [
+    ['skill_view', '读取编报能力'],
+    ['search_files', '检索任务文件'],
+    ['execute_code', '执行编报脚本'],
+  ]
+
+  for (const [toolName, expectedTitle] of cases) {
+    const translated = translateHermesExecutionLog({
+      type: 'tool_start',
+      status: 'started',
+      phase: 'deep_source_collection',
+      toolName,
+    })
+    assert.equal(translated.stage, 'DEEP_COLLECTION')
+    assert.equal(translated.title, expectedTitle)
+    assert.match(translated.description, new RegExp(toolName))
+  }
+})
+
+test('merges polled event logs with live SSE events without duplicates or lost entries', () => {
+  const live = [
+    {
+      id: 'client-1',
+      eventId: 'run-1:tool:1',
+      toolId: 'run-1:tool:1',
+      occurredAt: '2026-09-03T01:00:01.000Z',
+      type: 'tool_start',
+      status: 'started',
+      toolName: 'execute_code',
+      summary: '执行开始。',
+    },
+    {
+      id: 'client-2',
+      eventId: 'run-1:tool:2',
+      toolId: 'run-1:tool:2',
+      occurredAt: '2026-09-03T01:00:03.000Z',
+      type: 'tool_start',
+      status: 'started',
+      toolName: 'search_files',
+      summary: '仍未写入后端的实时事件。',
+    },
+  ]
+  const persisted = [
+    {
+      id: 'job-1:3:tool_start:run-1:tool:1',
+      toolId: 'run-1:tool:1',
+      occurredAt: '2026-09-03T01:00:00.500Z',
+      type: 'tool_start',
+      status: 'started',
+      toolName: 'execute_code',
+      summary: 'Hermes execute_code started.',
+    },
+    {
+      id: 'job-1:4:tool_end:run-1:tool:1',
+      toolId: 'run-1:tool:1',
+      occurredAt: '2026-09-03T01:00:02.000Z',
+      type: 'tool_end',
+      status: 'completed',
+      toolName: 'execute_code',
+      summary: 'Hermes execute_code completed.',
+    },
+  ]
+
+  const merged = mergeExecutionLogEntries(live, persisted)
+  assert.equal(merged.length, 3)
+  assert.equal(merged.filter((item) => item.type === 'tool_start' && item.toolName === 'execute_code').length, 1)
+  assert.ok(merged.some((item) => item.toolName === 'search_files'))
+  assert.deepEqual(merged.map((item) => item.type), ['tool_start', 'tool_end', 'tool_start'])
 })
 
 test('maps Hermes collection, synthesis, writing and review tools to report stages', () => {
@@ -83,6 +156,35 @@ test('keeps a readable tool duration on completed events', () => {
   })
 
   assert.equal(translated.durationLabel, '1.5 秒')
+})
+
+test('shows real harness progress and system heartbeats without placeholder copy', () => {
+  const harness = translateHermesExecutionLog({
+    type: 'stage',
+    status: 'research_group_completed',
+    phase: 'research_group_completed',
+    label: '资料采集执行',
+    summary: '调研分组 A 已完成。',
+    origin: 'research_harness',
+    sequence: 4,
+    runEvent: 'research.progress',
+    durationMs: 2300,
+  })
+  const heartbeat = translateHermesExecutionLog({
+    type: 'stage',
+    status: 'system_heartbeat',
+    phase: 'system_heartbeat',
+    label: '系统心跳',
+    summary: '系统心跳：编报任务仍在运行。',
+    origin: 'system_heartbeat',
+    runEvent: 'system.heartbeat',
+  })
+
+  assert.equal(harness.stage, 'DEEP_COLLECTION')
+  assert.equal(harness.description, '调研分组 A 已完成。')
+  assert.equal(harness.durationLabel, '2.3 秒')
+  assert.equal(heartbeat.title, '系统心跳')
+  assert.doesNotMatch(JSON.stringify([harness, heartbeat]), /正在推进编报任务|系统正在执行当前编报步骤/)
 })
 
 test('fills only started empty stages with marked reconstructed summaries', () => {
