@@ -99,6 +99,23 @@ test('uses completed progress to close unmatched historical events', () => {
   assert.equal(timeline.at(-1).durationLabel, '1分钟');
 });
 
+test('does not mark a completed timeline failed for a recovered tool event', () => {
+  const timeline = buildReportTechnicalTimeline({
+    stages: stages.map((stage) => ({ ...stage, status: 'done' })),
+    logs: [
+      log('recovered-tool', 'RECOVERED', '2026-07-15T02:03:00.000Z', 'recovered', {
+        type: 'tool_error',
+        recovered: true,
+      }),
+    ],
+  });
+
+  assert.equal(timeline.at(-1).key, 'other');
+  assert.equal(timeline.at(-1).status, 'done');
+  assert.equal(timeline.at(-1).events[0].status, 'recovered');
+  assert.equal(defaultExpandedTimelineKeys(timeline).includes('other'), false);
+});
+
 test('accepts historical ISO timestamps and live occurredAt timestamps consistently', () => {
   const timeline = buildReportTechnicalTimeline({
     stages: stages.slice(0, 1),

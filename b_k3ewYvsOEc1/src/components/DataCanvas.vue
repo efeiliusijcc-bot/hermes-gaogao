@@ -3060,7 +3060,9 @@ const progressStageFlow = computed(() => {
 
 const translatedTechnicalLogs = computed(() => technicalLogs.value.map((log) => ({
   ...log,
-  ...translateHermesExecutionLog(log),
+  ...translateHermesExecutionLog(log, {
+    taskSucceeded: props.job?.status === 'succeeded' || props.phase === 'done',
+  }),
   occurredAt: log?.occurredAt || log?.time || '',
 })))
 

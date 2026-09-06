@@ -223,7 +223,7 @@ export function mergeExecutionLogEntries(current = [], incoming = [], limit = 50
     .slice(-Math.max(1, limit))
 }
 
-export function translateHermesExecutionLog(log) {
+export function translateHermesExecutionLog(log, { taskSucceeded = false } = {}) {
   const toolDisplayName = logToolDisplayName(log)
   const rawLog = rawLogText(log)
   const classificationText = [log?.toolName, log?.toolId, log?.label, log?.summary, log?.command, log?.detail]
@@ -258,6 +258,18 @@ export function translateHermesExecutionLog(log) {
       title: '资料深度采集',
       description: fallbackDescription,
       status: failed ? 'error' : complete ? 'done' : 'running',
+    }
+  }
+
+  if (taskSucceeded && log?.type === 'tool_error') {
+    const title = toolAction?.title?.replace(/失败$/, '') || '内部执行步骤'
+    return {
+      ...base,
+      stage: isDeepCollection ? 'DEEP_COLLECTION' : 'RECOVERED',
+      title: `${title}异常已恢复`,
+      description: '该内部步骤曾出现异常，后续编报流程已恢复并成功完成；原始记录仍保留在日志中。',
+      status: 'recovered',
+      recovered: true,
     }
   }
 

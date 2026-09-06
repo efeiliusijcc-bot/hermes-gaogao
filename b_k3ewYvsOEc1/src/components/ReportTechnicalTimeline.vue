@@ -135,6 +135,7 @@ function selectStage(key) {
 
 function statusLabel(status) {
   if (status === 'done') return '已完成'
+  if (status === 'recovered') return '已恢复'
   if (status === 'current') return '进行中'
   if (status === 'error') return '异常'
   return '未开始'
@@ -142,6 +143,7 @@ function statusLabel(status) {
 
 function statusIcon(status) {
   if (status === 'done') return CheckCircle2
+  if (status === 'recovered') return CheckCircle2
   if (status === 'current') return LoaderCircle
   if (status === 'error') return CircleAlert
   return Circle
@@ -178,6 +180,7 @@ function durationLabel(group) {
 function eventStatus(status) {
   const value = String(status || '').toLowerCase()
   if (value === 'failed' || value === 'error') return 'error'
+  if (value === 'recovered') return 'recovered'
   if (value === 'done' || value === 'completed' || value === 'succeeded') return 'done'
   return 'current'
 }
@@ -816,6 +819,10 @@ function eventOutput(event) {
   border-color: #dcfce7;
   background: #16a34a;
 }
+.technical-call-chain li.is-recovered .technical-call-chain-node {
+  border-color: #ccfbf1;
+  background: #0f766e;
+}
 .technical-call-chain li.is-error .technical-call-chain-node {
   border-color: #fee2e2;
   background: #dc2626;
@@ -858,6 +865,7 @@ function eventOutput(event) {
   text-align: right;
 }
 .technical-call-chain-meta b { color: #475467; font-weight: 700; }
+.technical-call-chain li.is-recovered .technical-call-chain-meta b { color: #0f766e; }
 .technical-call-chain li.is-error .technical-call-chain-meta b { color: #dc2626; }
 
 .technical-io-list > article { border-bottom: 1px solid #e5eaf0; }
@@ -956,6 +964,7 @@ function eventOutput(event) {
   text-align: right;
 }
 .technical-log-viewer-body article.is-done .technical-log-line-meta em { color: #86efac; }
+.technical-log-viewer-body article.is-recovered .technical-log-line-meta em { color: #5eead4; }
 .technical-log-viewer-body article.is-error .technical-log-line-meta em { color: #fca5a5; }
 .technical-log-viewer pre {
   margin: 7px 0 0 40px;

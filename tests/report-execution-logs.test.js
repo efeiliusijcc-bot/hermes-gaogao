@@ -82,6 +82,27 @@ test('shows concrete Hermes actions for common run tools', () => {
   }
 })
 
+test('marks recovered tool errors neutrally after the report succeeds', () => {
+  const log = {
+    type: 'tool_error',
+    status: 'failed',
+    toolName: 'execute_code',
+    summary: 'Tool execute_code returned error.',
+    detail: 'Traceback: subprocess.TimeoutExpired',
+  }
+
+  const running = translateHermesExecutionLog(log)
+  const recovered = translateHermesExecutionLog(log, { taskSucceeded: true })
+
+  assert.equal(running.status, 'error')
+  assert.match(running.title, /失败$/)
+  assert.equal(recovered.status, 'recovered')
+  assert.equal(recovered.recovered, true)
+  assert.match(recovered.title, /异常已恢复$/)
+  assert.match(recovered.description, /原始记录仍保留/)
+  assert.match(recovered.raw, /TimeoutExpired/)
+})
+
 test('merges polled event logs with live SSE events without duplicates or lost entries', () => {
   const live = [
     {
