@@ -27,19 +27,34 @@ test('completed report progress opens technical details and uses a fuller stage 
   assert.match(flowSource, /font-size: 13px/)
 })
 
-test('stage summaries follow the reference table hierarchy', () => {
-  assert.match(timelineSource, /class="technical-timeline-table-header"/)
-  assert.match(timelineSource, /<span>开始时间<\/span>/)
-  assert.match(timelineSource, /<span>结束时间<\/span>/)
-  assert.match(timelineSource, /<span>耗时<\/span>/)
-  assert.match(timelineSource, /class="technical-timeline-stage-current"|`technical-timeline-stage-\$\{group\.status\}`/)
+test('technical details use a runtime overview and master-detail workspace', () => {
+  assert.match(timelineSource, /class="runtime-overview"/)
+  assert.match(timelineSource, /class="technical-master-detail"/)
+  assert.match(timelineSource, /class="technical-stage-nav"/)
+  assert.match(timelineSource, /class="technical-stage-workbench"/)
+  assert.match(timelineSource, /任务状态/)
+  assert.match(timelineSource, /运行时长/)
+  assert.match(timelineSource, /props\.groups\.filter\(\(group\) => group\.key !== 'other'\)/)
+  assert.match(timelineSource, /模型调用数[\s\S]*?value: '--'/)
+  assert.match(timelineSource, /Tool 调用数[\s\S]*?value: '--'/)
+  assert.doesNotMatch(timelineSource, /technical-timeline-table-header/)
 })
 
-test('existing execution log cards and raw record details remain available', () => {
-  assert.match(timelineSource, /class="technical-timeline-event"/)
-  assert.match(timelineSource, /class="technical-timeline-event-raw"/)
-  assert.match(timelineSource, /<summary>原始记录<\/summary>/)
+test('technical workbench provides overview, call chain, input-output, and isolated log views', () => {
+  assert.match(timelineSource, /key: 'overview', label: '概览'/)
+  assert.match(timelineSource, /key: 'chain', label: '调用链'/)
+  assert.match(timelineSource, /key: 'io', label: '输入输出'/)
+  assert.match(timelineSource, /key: 'logs', label: '日志'/)
+  assert.match(timelineSource, /class="technical-log-viewer"/)
+  assert.match(timelineSource, /<pre>\{\{ event\.raw \}\}<\/pre>/)
+  assert.doesNotMatch(timelineSource, /<summary>原始记录<\/summary>/)
   assert.match(dataCanvasSource, /class="log-new-items-button"/)
+})
+
+test('failed stages are selected automatically and open the log view', () => {
+  assert.match(timelineSource, /const failedStage = props\.groups\.find\(\(group\) => group\.status === 'error'\)/)
+  assert.match(timelineSource, /activeStageKey\.value = failedStage\.key[\s\S]*?activeView\.value = 'logs'/)
+  assert.match(timelineSource, /class="technical-stage-alert"/)
 })
 
 test('live report progress uses the liquid orb loader without replacing stage or log content', () => {

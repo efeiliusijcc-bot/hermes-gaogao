@@ -5271,6 +5271,8 @@ function exportPdf() {
               <ReportTechnicalTimeline
                 :groups="technicalTimelineGroups"
                 :task-status="overallProgressStatus"
+                :task-started-at="job?.createdAt || ''"
+                :task-ended-at="job?.updatedAt || ''"
                 empty-text="等待任务执行日志..."
               />
               <button
@@ -5992,6 +5994,8 @@ function exportPdf() {
               <ReportTechnicalTimeline
                 :groups="technicalTimelineGroups"
                 :task-status="overallProgressStatus"
+                :task-started-at="job?.createdAt || ''"
+                :task-ended-at="job?.updatedAt || ''"
                 empty-text="当前任务暂无可展示进度日志。"
               />
               <button
