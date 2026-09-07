@@ -3,8 +3,10 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const dataCanvasSource = readFileSync(new URL('../components/DataCanvas.vue', import.meta.url), 'utf8')
+const controlPanelSource = readFileSync(new URL('../components/ControlPanel.vue', import.meta.url), 'utf8')
 const flowSource = readFileSync(new URL('../components/ReportProgressStageFlow.vue', import.meta.url), 'utf8')
 const timelineSource = readFileSync(new URL('../components/ReportTechnicalTimeline.vue', import.meta.url), 'utf8')
+const mainStyles = readFileSync(new URL('../styles/main.css', import.meta.url), 'utf8')
 const orbLoaderSource = readFileSync(new URL('../components/ReportOrbLoader.vue', import.meta.url), 'utf8')
 const orbRendererSource = readFileSync(new URL('./report-orb/renderer.ts', import.meta.url), 'utf8')
 const orbPresetSource = readFileSync(new URL('./report-orb/preset.ts', import.meta.url), 'utf8')
@@ -16,15 +18,16 @@ test('the same horizontal stage flow is used for live and completed reports', ()
   const usages = dataCanvasSource.match(/<ReportProgressStageFlow :stages="progressStageFlow" \/>/g) || []
   assert.equal(usages.length, 2)
   assert.doesNotMatch(dataCanvasSource, /class="task-stage-card"/)
-  assert.match(flowSource, /report-progress-stage-connector/)
+  assert.doesNotMatch(flowSource, /report-progress-stage-connector|ChevronRight/)
   assert.match(flowSource, /report-progress-stage-current/)
   assert.match(flowSource, /overflow-x: auto/)
 })
 
-test('completed report progress opens technical details and uses a fuller stage scale', () => {
+test('completed report progress opens technical details and uses readable stage typography', () => {
   assert.match(dataCanvasSource, /<details class="source-technical-details result-technical-details" open>/)
-  assert.match(flowSource, /min-height: 84px/)
-  assert.match(flowSource, /font-size: 13px/)
+  assert.match(flowSource, /min-height: 74px/)
+  assert.match(flowSource, /\.report-progress-stage-title strong[\s\S]*?font-size: 14px/)
+  assert.match(flowSource, /\.report-progress-stage-status[\s\S]*?font-size: 12px/)
 })
 
 test('technical details use a runtime overview and master-detail workspace', () => {
@@ -35,6 +38,10 @@ test('technical details use a runtime overview and master-detail workspace', () 
   assert.match(timelineSource, /任务状态/)
   assert.match(timelineSource, /运行时长/)
   assert.match(timelineSource, /props\.groups\.filter\(\(group\) => group\.key !== 'other'\)/)
+  assert.match(timelineSource, /group\?\.key === 'other' \? '辅助'/)
+  assert.match(timelineSource, /group\?\.key === 'other'\) return '辅助分组'/)
+  assert.match(timelineSource, /group\?\.key === 'other' \? '辅助事件'/)
+  assert.match(timelineSource, /standardStages\.length \}\} 阶段/)
   assert.match(timelineSource, /模型调用数[\s\S]*?value: '--'/)
   assert.match(timelineSource, /Tool 调用数[\s\S]*?value: '--'/)
   assert.doesNotMatch(timelineSource, /technical-timeline-table-header/)
@@ -46,9 +53,27 @@ test('technical workbench provides overview, call chain, input-output, and isola
   assert.match(timelineSource, /key: 'io', label: '输入输出'/)
   assert.match(timelineSource, /key: 'logs', label: '日志'/)
   assert.match(timelineSource, /class="technical-log-viewer"/)
+  assert.match(timelineSource, /<span>序号<\/span>[\s\S]*?<span>时间<\/span>[\s\S]*?<span>事件与正文<\/span>[\s\S]*?<span>状态<\/span>/)
   assert.match(timelineSource, /<pre>\{\{ event\.raw \}\}<\/pre>/)
   assert.doesNotMatch(timelineSource, /<summary>原始记录<\/summary>/)
+  assert.doesNotMatch(timelineSource, /#101722|#17202d/)
+  assert.match(timelineSource, /\.technical-log-content pre[\s\S]*?font-size: 14px;[\s\S]*?line-height: 22px;/)
+  assert.match(timelineSource, /grid-template-columns: minmax\(196px, 208px\) minmax\(0, 1fr\)/)
   assert.match(dataCanvasSource, /class="log-new-items-button"/)
+})
+
+test('report header, progress width, and history use the compact continuous layout', () => {
+  assert.match(dataCanvasSource, /const resultTitleText = computed/)
+  assert.match(dataCanvasSource, /const resultMetaItems = computed/)
+  assert.match(dataCanvasSource, /class="result-identity-row"/)
+  assert.match(dataCanvasSource, /class="result-tab-panel task-progress-result-panel"/)
+  assert.match(controlPanelSource, /class="recent-history-stack"/)
+  assert.match(mainStyles, /\.sidebar-shell \{[\s\S]*?width: clamp\(220px, 16\.1vw, 232px\) !important;/)
+  assert.match(mainStyles, /\.recent-history-stack \.history-item[\s\S]*?border-bottom: 1px solid #e8edf3 !important;/)
+  assert.match(mainStyles, /\.task-progress-result-panel \{\s*max-width: none;/)
+  assert.match(mainStyles, /\.result-sticky-panel \{[\s\S]*?position: static;[\s\S]*?top: auto;/)
+  assert.doesNotMatch(mainStyles, /\.result-sticky-panel \{[\s\S]{0,120}?top: -/)
+  assert.match(mainStyles, /\.result-technical-details \.source-technical-log \{[\s\S]*?max-height: none;[\s\S]*?overflow: visible;/)
 })
 
 test('failed stages are selected automatically and open the log view', () => {

@@ -153,6 +153,20 @@ function stageNumber(index) {
   return String(index + 1).padStart(2, '0')
 }
 
+function stageIndexLabel(group, index) {
+  return group?.key === 'other' ? '辅助' : stageNumber(index)
+}
+
+function stageHeadingLabel(group) {
+  if (group?.key === 'other') return '辅助分组'
+  const index = standardStages.value.findIndex((item) => item.key === group?.key)
+  return index >= 0 ? `阶段 ${stageNumber(index)}` : '阶段 --'
+}
+
+function stageTitleLabel(group) {
+  return group?.key === 'other' ? '辅助事件' : group?.title || '--'
+}
+
 function formatClock(value) {
   if (!value) return '--'
   const parsed = new Date(value)
@@ -298,7 +312,7 @@ function eventOutput(event) {
       <aside class="technical-stage-nav" aria-label="执行阶段">
         <div class="technical-stage-nav-title">
           <strong>执行阶段</strong>
-          <span>{{ groups.length }}</span>
+          <span>{{ standardStages.length }} 阶段{{ groups.length > standardStages.length ? ' + 辅助' : '' }}</span>
         </div>
         <div class="technical-stage-nav-list">
           <button
@@ -313,7 +327,7 @@ function eventOutput(event) {
             :aria-current="activeStage?.key === group.key ? 'step' : undefined"
             @click="selectStage(group.key)"
           >
-            <span class="technical-stage-nav-index">{{ stageNumber(index) }}</span>
+            <span class="technical-stage-nav-index">{{ stageIndexLabel(group, index) }}</span>
             <span class="technical-stage-nav-copy">
               <strong>{{ group.title }}</strong>
               <small>{{ durationLabel(group) }} · {{ group.eventCount || 0 }} 条记录</small>
@@ -326,8 +340,8 @@ function eventOutput(event) {
       <section v-if="activeStage" class="technical-stage-workbench">
         <header class="technical-stage-workbench-header">
           <div>
-            <span>阶段 {{ stageNumber(groups.findIndex((group) => group.key === activeStage.key)) }}</span>
-            <strong>{{ activeStage.title }}</strong>
+            <span>{{ stageHeadingLabel(activeStage) }}</span>
+            <strong>{{ stageTitleLabel(activeStage) }}</strong>
           </div>
           <span class="technical-status" :class="`technical-status-${activeStage.status}`">
             <component :is="statusIcon(activeStage.status)" :size="14" aria-hidden="true" />
@@ -441,18 +455,24 @@ function eventOutput(event) {
               <b>{{ rawLogEvents.length ? `${rawLogEvents.length} 条` : '--' }}</b>
             </header>
             <div v-if="rawLogEvents.length" class="technical-log-viewer-body">
+              <div class="technical-log-columns" aria-hidden="true">
+                <span>序号</span>
+                <span>时间</span>
+                <span>事件与正文</span>
+                <span>状态</span>
+              </div>
               <article
                 v-for="(event, index) in rawLogEvents"
                 :key="event.id"
                 :class="`is-${eventStatus(event.status)}`"
               >
-                <div class="technical-log-line-meta">
-                  <span>{{ String(index + 1).padStart(3, '0') }}</span>
-                  <time>{{ formatClock(event.occurredAt || event.time) }}</time>
+                <span class="technical-log-index">{{ String(index + 1).padStart(3, '0') }}</span>
+                <time class="technical-log-time">{{ formatClock(event.occurredAt || event.time) }}</time>
+                <div class="technical-log-content">
                   <b>{{ eventName(event) }}</b>
-                  <em>{{ eventStatusLabel(event.status) }}</em>
+                  <pre>{{ event.raw }}</pre>
                 </div>
-                <pre>{{ event.raw }}</pre>
+                <em class="technical-log-status">{{ eventStatusLabel(event.status) }}</em>
               </article>
             </div>
             <div v-else class="technical-log-empty">该阶段暂无已保存的原始技术日志</div>
@@ -467,9 +487,9 @@ function eventOutput(event) {
 <style scoped>
 .report-technical-workspace {
   min-width: 0;
-  overflow: hidden;
+  overflow: clip;
   border: 1px solid #dfe6ef;
-  border-radius: 8px;
+  border-radius: 6px;
   background: #fff;
   color: #1f2937;
 }
@@ -482,27 +502,27 @@ function eventOutput(event) {
 .runtime-overview-header {
   display: flex;
   align-items: center;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 18px;
   border-bottom: 1px solid #eef2f6;
 }
 
 .runtime-overview-header strong {
   color: #172033;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 750;
 }
 
 .runtime-overview-metrics {
   display: grid;
-  grid-template-columns: repeat(7, minmax(92px, 1fr));
+  grid-template-columns: repeat(7, minmax(104px, 1fr));
   margin: 0;
   overflow-x: auto;
 }
 
 .runtime-overview-metric {
-  min-width: 92px;
-  padding: 14px 16px 15px;
+  min-width: 104px;
+  padding: 13px 16px 14px;
   border-right: 1px solid #eef2f6;
 }
 
@@ -512,7 +532,7 @@ function eventOutput(event) {
 .technical-stage-facts dt,
 .technical-usage-section dt {
   color: #7a8599;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 650;
 }
 
@@ -520,7 +540,7 @@ function eventOutput(event) {
   margin: 5px 0 0;
   color: #172033;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 750;
   white-space: nowrap;
 }
@@ -531,68 +551,68 @@ function eventOutput(event) {
 
 .technical-master-detail {
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
-  min-height: 520px;
+  grid-template-columns: minmax(196px, 208px) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 480px;
 }
 
 .technical-stage-nav {
   min-width: 0;
   border-right: 1px solid #e5eaf0;
-  background: #f8fafc;
+  background: #fbfcfe;
 }
 
 .technical-stage-nav-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 44px;
+  min-height: 46px;
   padding: 0 14px;
   border-bottom: 1px solid #e5eaf0;
 }
 
 .technical-stage-nav-title strong {
   color: #475467;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 750;
 }
 
 .technical-stage-nav-title span {
-  min-width: 22px;
   color: #667085;
-  font-family: 'Fira Code', monospace;
-  font-size: 10px;
+  font-size: 12px;
   text-align: right;
 }
 
 .technical-stage-nav-list {
   display: grid;
-  padding: 7px;
+  padding: 6px 0;
 }
 
 .technical-stage-nav-item {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 18px;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 58px;
-  padding: 8px 9px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  min-height: 62px;
+  padding: 9px 12px;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: #667085;
   text-align: left;
   cursor: pointer;
 }
 
-.technical-stage-nav-item:hover { background: #f1f5f9; }
+.technical-stage-nav-item:hover { background: #f4f7fb; }
 .technical-stage-nav-item.active {
-  border-color: #bfd3f7;
+  border-left-color: #2563eb;
   background: #edf4ff;
   color: #2563eb;
 }
 .technical-stage-nav-item-error.active {
-  border-color: #fecaca;
+  border-left-color: #dc2626;
   background: #fff1f2;
   color: #dc2626;
 }
@@ -604,7 +624,7 @@ function eventOutput(event) {
 
 .technical-stage-nav-index {
   font-family: 'Fira Code', monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -618,14 +638,13 @@ function eventOutput(event) {
 }
 .technical-stage-nav-copy strong {
   color: #344054;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 750;
 }
 .technical-stage-nav-copy small {
   margin-top: 4px;
   color: #8993a4;
-  font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 .technical-stage-nav-item.active .technical-stage-nav-copy strong { color: currentColor; }
 .technical-stage-nav-item-current > svg { animation: technical-spin 1.2s linear infinite; }
@@ -642,8 +661,8 @@ function eventOutput(event) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 64px;
-  padding: 10px 18px;
+  min-height: 68px;
+  padding: 11px 20px;
   border-bottom: 1px solid #e5eaf0;
 }
 
@@ -651,14 +670,13 @@ function eventOutput(event) {
 .technical-stage-workbench-header > div strong { display: block; }
 .technical-stage-workbench-header > div span {
   color: #7a8599;
-  font-family: 'Fira Code', monospace;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 }
 .technical-stage-workbench-header > div strong {
   margin-top: 4px;
   color: #172033;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 750;
 }
 
@@ -667,7 +685,7 @@ function eventOutput(event) {
   align-items: center;
   gap: 6px;
   color: #667085;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -680,27 +698,27 @@ function eventOutput(event) {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr);
   gap: 10px;
-  margin: 14px 18px 0;
-  padding: 11px 12px;
+  margin: 14px 20px 0;
+  padding: 12px 14px;
   border: 1px solid #fecaca;
   border-radius: 6px;
   background: #fff7f7;
   color: #b42318;
 }
-.technical-stage-alert strong { font-size: 11px; }
+.technical-stage-alert strong { font-size: 14px; }
 .technical-stage-alert p {
   margin: 3px 0 0;
   color: #7f1d1d;
-  font-size: 10px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .technical-workbench-tabs {
   display: flex;
   align-items: center;
-  gap: 22px;
-  min-height: 46px;
-  padding: 0 18px;
+  gap: 24px;
+  min-height: 48px;
+  padding: 0 20px;
   border-bottom: 1px solid #e5eaf0;
 }
 .technical-workbench-tabs button {
@@ -708,12 +726,12 @@ function eventOutput(event) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 46px;
+  height: 48px;
   padding: 0;
   border: 0;
   background: transparent;
   color: #667085;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -731,13 +749,13 @@ function eventOutput(event) {
 
 .technical-workbench-view { min-width: 0; }
 
-.technical-stage-overview { padding: 18px; }
+.technical-stage-overview { padding: 20px; }
 .technical-stage-description {
   margin: 0;
   padding-bottom: 16px;
   border-bottom: 1px solid #eef2f6;
   color: #5d687b;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.7;
 }
 .technical-stage-facts {
@@ -756,7 +774,7 @@ function eventOutput(event) {
   overflow: hidden;
   color: #27364f;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -765,7 +783,7 @@ function eventOutput(event) {
 .technical-usage-section { padding-top: 17px; }
 .technical-usage-section > strong {
   color: #344054;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 750;
 }
 .technical-usage-section > dl {
@@ -780,7 +798,7 @@ function eventOutput(event) {
   border-left: 2px solid #dbe7f8;
 }
 
-.technical-call-chain { padding: 14px 18px 20px; }
+.technical-call-chain { padding: 8px 20px 16px; }
 .technical-call-chain ol {
   margin: 0;
   padding: 0;
@@ -789,42 +807,27 @@ function eventOutput(event) {
 .technical-call-chain li {
   position: relative;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  gap: 10px;
-  min-height: 62px;
-  padding: 11px 0;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 12px;
+  min-height: 66px;
+  padding: 13px 0;
   border-bottom: 1px solid #eef2f6;
 }
 .technical-call-chain li:last-child { border-bottom: 0; }
-.technical-call-chain li::before {
-  position: absolute;
-  top: 31px;
-  bottom: -31px;
-  left: 6px;
-  width: 1px;
-  background: #d9e1ea;
-  content: '';
-}
-.technical-call-chain li:last-child::before { display: none; }
 .technical-call-chain-node {
-  z-index: 1;
-  width: 13px;
-  height: 13px;
-  margin-top: 3px;
-  border: 3px solid #dbeafe;
+  width: 7px;
+  height: 7px;
+  margin-top: 7px;
   border-radius: 50%;
   background: #2563eb;
 }
 .technical-call-chain li.is-done .technical-call-chain-node {
-  border-color: #dcfce7;
   background: #16a34a;
 }
 .technical-call-chain li.is-recovered .technical-call-chain-node {
-  border-color: #ccfbf1;
   background: #0f766e;
 }
 .technical-call-chain li.is-error .technical-call-chain-node {
-  border-color: #fee2e2;
   background: #dc2626;
 }
 .technical-call-chain-main { min-width: 0; }
@@ -834,7 +837,7 @@ function eventOutput(event) {
   align-items: center;
   gap: 5px 8px;
   color: #7a8599;
-  font-size: 10px;
+  font-size: 14px;
 }
 .technical-call-chain-main strong { color: #344054; font-weight: 750; }
 .technical-call-chain-main b { color: #2563eb; font-weight: 750; }
@@ -843,25 +846,26 @@ function eventOutput(event) {
   margin-top: 5px;
   overflow: hidden;
   color: #667085;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .technical-reconstructed-tag {
-  padding: 1px 4px;
+  padding: 2px 5px;
   border: 1px solid #d0d5dd;
   border-radius: 4px;
   color: #667085;
   background: #fff;
-  font-size: 8px;
+  font-size: 12px;
 }
 .technical-call-chain-meta {
   display: grid;
-  grid-template-columns: 66px 70px 42px;
-  gap: 8px;
+  grid-template-columns: 72px 72px 50px;
+  gap: 10px;
   color: #7a8599;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 9px;
+  font-size: 12px;
   text-align: right;
 }
 .technical-call-chain-meta b { color: #475467; font-weight: 700; }
@@ -875,14 +879,14 @@ function eventOutput(event) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 40px;
-  padding: 0 18px;
+  min-height: 44px;
+  padding: 0 20px;
   background: #f8fafc;
 }
 .technical-io-list > article > header strong {
   overflow: hidden;
   color: #344054;
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 750;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -890,7 +894,7 @@ function eventOutput(event) {
 .technical-io-list > article > header time {
   color: #7a8599;
   font-family: 'Fira Code', monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 .technical-io-grid {
   display: grid;
@@ -898,12 +902,12 @@ function eventOutput(event) {
 }
 .technical-io-grid section {
   min-width: 0;
-  padding: 13px 18px 16px;
+  padding: 14px 20px 18px;
 }
 .technical-io-grid section + section { border-left: 1px solid #e5eaf0; }
 .technical-io-grid span {
   color: #667085;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 750;
 }
 .technical-io-grid pre {
@@ -912,67 +916,96 @@ function eventOutput(event) {
   overflow: auto;
   color: #344054;
   font-family: 'Fira Code', Consolas, monospace;
-  font-size: 9px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.65;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .technical-log-viewer {
+  min-width: 0;
   min-height: 340px;
-  background: #101722;
-  color: #cbd5e1;
+  background: #fff;
+  color: #374151;
 }
 .technical-log-viewer-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 40px;
-  padding: 0 15px;
-  border-bottom: 1px solid #263242;
-  background: #17202d;
-  font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 9px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid #e5eaf0;
+  background: #fff;
+  font-size: 14px;
 }
-.technical-log-viewer-toolbar span { color: #e2e8f0; font-weight: 700; }
-.technical-log-viewer-toolbar b { color: #7dd3fc; font-weight: 650; }
-.technical-log-viewer-body { padding: 5px 0 12px; }
+.technical-log-viewer-toolbar span { color: #25324a; font-weight: 750; }
+.technical-log-viewer-toolbar b { color: #667085; font-size: 12px; font-weight: 650; }
+.technical-log-viewer-body { min-width: 0; }
+.technical-log-columns,
 .technical-log-viewer-body article {
-  padding: 10px 15px 12px;
-  border-bottom: 1px solid rgba(71, 85, 105, 0.38);
+  display: grid;
+  grid-template-columns: 50px 82px minmax(0, 1fr) 58px;
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+  padding: 0 16px;
+}
+.technical-log-columns {
+  align-items: center;
+  min-height: 38px;
+  border-bottom: 1px solid #e5eaf0;
+  background: #f6f8fb;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+.technical-log-viewer-body article {
+  padding-top: 13px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e8edf3;
 }
 .technical-log-viewer-body article:last-child { border-bottom: 0; }
-.technical-log-line-meta {
-  display: grid;
-  grid-template-columns: 32px 64px minmax(0, 1fr) 48px;
-  gap: 8px;
-  align-items: center;
-  color: #64748b;
-  font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 8px;
-}
-.technical-log-line-meta b {
-  overflow: hidden;
-  color: #7dd3fc;
-  font-weight: 650;
-  text-overflow: ellipsis;
+.technical-log-index,
+.technical-log-time {
+  color: #7a8599;
+  font-family: 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 22px;
   white-space: nowrap;
 }
-.technical-log-line-meta em {
-  color: #93c5fd;
-  font-style: normal;
-  text-align: right;
+.technical-log-content {
+  min-width: 0;
 }
-.technical-log-viewer-body article.is-done .technical-log-line-meta em { color: #86efac; }
-.technical-log-viewer-body article.is-recovered .technical-log-line-meta em { color: #5eead4; }
-.technical-log-viewer-body article.is-error .technical-log-line-meta em { color: #fca5a5; }
-.technical-log-viewer pre {
-  margin: 7px 0 0 40px;
-  color: #cbd5e1;
-  font-family: 'Fira Code', Consolas, monospace;
-  font-size: 9px;
-  line-height: 1.65;
+.technical-log-content b {
+  display: block;
+  color: #1d4ed8;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+.technical-log-status {
+  color: #2563eb;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 22px;
+  text-align: right;
+  white-space: nowrap;
+}
+.technical-log-viewer-body article.is-done .technical-log-status { color: #15803d; }
+.technical-log-viewer-body article.is-recovered .technical-log-status { color: #0f766e; }
+.technical-log-viewer-body article.is-error .technical-log-status { color: #dc2626; }
+.technical-log-content pre {
+  margin: 3px 0 0;
+  max-width: 100%;
+  overflow: visible;
+  color: #374151;
+  font-family: Inter, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 22px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 .technical-log-empty {
@@ -980,8 +1013,7 @@ function eventOutput(event) {
   min-height: 300px;
   place-items: center;
   color: #64748b;
-  font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 10px;
+  font-size: 14px;
 }
 
 .technical-empty-view {
@@ -989,7 +1021,7 @@ function eventOutput(event) {
   min-height: 300px;
   place-items: center;
   color: #98a2b3;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 @keyframes technical-spin {
@@ -998,10 +1030,10 @@ function eventOutput(event) {
 
 @media (max-width: 900px) {
   .runtime-overview-metrics { grid-template-columns: repeat(7, minmax(110px, 1fr)); }
-  .technical-master-detail { grid-template-columns: 190px minmax(0, 1fr); }
+  .technical-master-detail { grid-template-columns: 196px minmax(0, 1fr); }
   .technical-stage-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .technical-usage-section > dl { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 18px; }
-  .technical-call-chain li { grid-template-columns: 18px minmax(0, 1fr); }
+  .technical-call-chain li { grid-template-columns: 12px minmax(0, 1fr); }
   .technical-call-chain-meta {
     grid-column: 2;
     grid-template-columns: repeat(3, auto);
@@ -1018,7 +1050,7 @@ function eventOutput(event) {
     gap: 6px;
     overflow-x: auto;
   }
-  .technical-stage-nav-item { flex: 0 0 190px; }
+  .technical-stage-nav-item { flex: 0 0 208px; }
   .technical-stage-workbench-header { min-height: 58px; padding-inline: 14px; }
   .technical-workbench-tabs { gap: 18px; overflow-x: auto; padding-inline: 14px; }
   .technical-stage-overview { padding: 14px; }
@@ -1027,8 +1059,13 @@ function eventOutput(event) {
   .technical-usage-section > dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .technical-io-grid { grid-template-columns: 1fr; }
   .technical-io-grid section + section { border-top: 1px solid #e5eaf0; border-left: 0; }
-  .technical-log-line-meta { grid-template-columns: 28px 60px minmax(0, 1fr); }
-  .technical-log-line-meta em { display: none; }
-  .technical-log-viewer pre { margin-left: 36px; }
+  .technical-log-columns,
+  .technical-log-viewer-body article {
+    grid-template-columns: 42px 72px minmax(0, 1fr);
+    gap: 10px;
+    padding-inline: 12px;
+  }
+  .technical-log-columns span:last-child,
+  .technical-log-status { display: none; }
 }
 </style>

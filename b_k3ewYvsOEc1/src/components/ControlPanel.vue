@@ -196,11 +196,11 @@ function prepareRecentTitle(event) {
       </div>
 
       <div class="recent-list flex-1 overflow-auto p-3" @scroll="handleRecentScroll">
-        <div v-if="!isQaMode && recentJobs.length" class="space-y-2">
+        <div v-if="!isQaMode && recentJobs.length" class="recent-history-stack">
           <button
             v-for="item in recentJobs"
             :key="item.jobId"
-            class="history-item recent-item w-full text-left rounded-xl px-3.5 py-3.5 transition-all"
+            class="history-item recent-item w-full text-left px-3.5 py-3.5 transition-all"
             :class="{ active: item.jobId === currentJobId }"
             :title="jobTitle(item)"
             @mouseenter="prepareRecentTitle"
@@ -238,11 +238,11 @@ function prepareRecentTitle(event) {
           <div v-else-if="!recentHasMore" class="recent-load-state">没有更多了</div>
         </div>
 
-        <div v-else-if="isQaMode && sortedQaSessions.length" class="space-y-2">
+        <div v-else-if="isQaMode && sortedQaSessions.length" class="recent-history-stack">
           <button
             v-for="session in sortedQaSessions"
             :key="session.id"
-            class="history-item recent-item w-full text-left rounded-xl px-3.5 py-3.5 transition-all"
+            class="history-item recent-item w-full text-left px-3.5 py-3.5 transition-all"
             :class="{ active: session.id === currentQaSessionId }"
             @click="emit('open-qa-session', session)"
           >

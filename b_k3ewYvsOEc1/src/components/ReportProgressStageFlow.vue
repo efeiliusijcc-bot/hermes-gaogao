@@ -1,5 +1,5 @@
 <script setup>
-import { CheckCircle2, ChevronRight, Circle, CircleAlert, LoaderCircle } from '@lucide/vue'
+import { CheckCircle2, Circle, CircleAlert, LoaderCircle } from '@lucide/vue'
 
 const props = defineProps({
   stages: {
@@ -47,12 +47,6 @@ function statusIcon(status) {
           <component :is="statusIcon(stage.status)" :size="13" aria-hidden="true" />
           <span>{{ statusLabel(stage.status) }}</span>
         </div>
-        <ChevronRight
-          v-if="index < props.stages.length - 1"
-          class="report-progress-stage-connector"
-          :size="17"
-          aria-hidden="true"
-        />
       </article>
     </div>
   </section>
@@ -63,9 +57,8 @@ function statusIcon(status) {
   width: 100%;
   overflow-x: auto;
   border: 1px solid #dfe6ef;
-  border-radius: 8px;
+  border-radius: 6px;
   background: #fff;
-  padding: 22px 20px;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
 }
@@ -76,23 +69,24 @@ function statusIcon(status) {
 
 .report-progress-flow-list {
   display: grid;
-  grid-template-columns: repeat(var(--stage-count), minmax(132px, 1fr));
-  gap: 18px;
-  min-width: calc(var(--stage-count) * 132px + (var(--stage-count) - 1) * 18px);
+  grid-template-columns: repeat(var(--stage-count), minmax(140px, 1fr));
+  min-width: calc(var(--stage-count) * 140px);
 }
 
 .report-progress-stage {
   position: relative;
   display: grid;
-  min-height: 84px;
+  min-height: 74px;
   align-content: space-between;
-  gap: 12px;
-  padding: 14px 10px 13px;
-  border: 1px solid #d8e0ea;
-  border-radius: 6px;
+  gap: 8px;
+  padding: 13px 14px 12px;
+  border: 0;
+  border-right: 1px solid #e5eaf0;
   background: #fff;
   color: #667085;
 }
+
+.report-progress-stage:last-child { border-right: 0; }
 
 .report-progress-stage-title {
   display: flex;
@@ -102,13 +96,10 @@ function statusIcon(status) {
 }
 
 .report-progress-stage-title > span {
-  display: grid;
-  width: 26px;
-  height: 26px;
+  display: inline-flex;
+  width: 24px;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 4px;
-  background: #eff6ff;
+  align-items: center;
   color: #2563eb;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
   font-size: 12px;
@@ -118,9 +109,9 @@ function statusIcon(status) {
 .report-progress-stage-title strong {
   overflow: hidden;
   color: #25324a;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 750;
-  line-height: 1.35;
+  line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -129,46 +120,36 @@ function statusIcon(status) {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding-left: 32px;
+  padding-left: 30px;
   color: #98a2b3;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
 }
 
 .report-progress-stage-status svg { flex: 0 0 auto; }
 
-.report-progress-stage-connector {
-  position: absolute;
-  top: 50%;
-  right: -18px;
-  color: #2563eb;
-  transform: translateY(-50%);
-}
-
 .report-progress-stage-done .report-progress-stage-status { color: #16a34a; }
 
 .report-progress-stage-current {
-  border-color: #2563eb;
-  background: #f8fbff;
-  box-shadow: 0 0 0 1px rgb(37 99 235 / 10%);
+  box-shadow: inset 3px 0 0 #2563eb;
+  background: #f4f8ff;
 }
 
 .report-progress-stage-current .report-progress-stage-status { color: #2563eb; }
 .report-progress-stage-current .report-progress-stage-status svg { animation: report-progress-spin 1.2s linear infinite; }
 
 .report-progress-stage-error {
-  border-color: #fca5a5;
+  box-shadow: inset 3px 0 0 #dc2626;
   background: #fffafa;
 }
 
 .report-progress-stage-error .report-progress-stage-status { color: #dc2626; }
-.report-progress-stage-waiting .report-progress-stage-title > span { background: #f2f4f7; color: #98a2b3; }
+.report-progress-stage-waiting .report-progress-stage-title > span { color: #98a2b3; }
 .report-progress-stage-waiting .report-progress-stage-title strong { color: #667085; }
 
 @keyframes report-progress-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 760px) {
-  .report-progress-flow { padding: 16px; }
   .report-progress-flow-list { grid-template-columns: repeat(var(--stage-count), 150px); }
 }
 
