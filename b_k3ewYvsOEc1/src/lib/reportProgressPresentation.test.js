@@ -25,9 +25,32 @@ test('the same horizontal stage flow is used for live and completed reports', ()
 
 test('completed report progress opens technical details and uses readable stage typography', () => {
   assert.match(dataCanvasSource, /<details class="source-technical-details result-technical-details" open>/)
-  assert.match(flowSource, /min-height: 74px/)
+  assert.match(flowSource, /const allStagesDone = computed/)
+  assert.match(flowSource, /report-progress-flow-list-all-done/)
+  assert.match(flowSource, /v-if="!allStagesDone \|\| stage\.status !== 'done'"/)
+  assert.match(flowSource, /report-progress-flow-list-all-done \.report-progress-stage \{[\s\S]*?min-height: 56px/)
   assert.match(flowSource, /\.report-progress-stage-title strong[\s\S]*?font-size: 14px/)
   assert.match(flowSource, /\.report-progress-stage-status[\s\S]*?font-size: 12px/)
+})
+
+test('completed report status is neutral without repeated success marks', () => {
+  assert.doesNotMatch(flowSource, /CheckCircle2|#16a34a|#15803d/)
+  assert.match(flowSource, /stage\.status !== 'done'/)
+  assert.match(flowSource, /\.report-progress-stage-title > span \{[\s\S]*?color: #7a8599;/)
+  assert.match(flowSource, /\.report-progress-stage-current \.report-progress-stage-title > span \{ color: #2563eb; \}/)
+
+  assert.match(timelineSource, /const allStandardStagesDone = computed/)
+  assert.match(timelineSource, /function stageMetaLabel\(group\)/)
+  assert.match(timelineSource, /v-if="group\.status !== 'done'"/)
+  assert.match(timelineSource, /v-if="activeStage\.status !== 'done'" class="technical-status"/)
+  assert.match(timelineSource, /runtime-overview-metric-done dd \{ color: #475569; \}/)
+  assert.match(timelineSource, /is-done \.technical-call-chain-node \{\s*background: #94a3b8;/)
+  assert.match(timelineSource, /article\.is-done \.technical-log-status,[\s\S]*?color: #475569;/)
+  assert.doesNotMatch(timelineSource, /#16a34a|#15803d|#0f766e/)
+
+  assert.match(controlPanelSource, /v-else-if="item\.status !== 'succeeded'"/)
+  assert.doesNotMatch(controlPanelSource, /status === 'succeeded'\) return 'bg-neon-green/)
+  assert.match(controlPanelSource, /healthOk \? 'bg-neon-green/)
 })
 
 test('technical details use a runtime overview and master-detail workspace', () => {

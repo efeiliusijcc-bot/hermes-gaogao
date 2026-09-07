@@ -1,5 +1,6 @@
 <script setup>
-import { CheckCircle2, Circle, CircleAlert, LoaderCircle } from '@lucide/vue'
+import { computed } from 'vue'
+import { Circle, CircleAlert, LoaderCircle } from '@lucide/vue'
 
 const props = defineProps({
   stages: {
@@ -7,6 +8,10 @@ const props = defineProps({
     default: () => [],
   },
 })
+
+const allStagesDone = computed(() => (
+  props.stages.length > 0 && props.stages.every((stage) => stage.status === 'done')
+))
 
 function statusLabel(status) {
   if (status === 'done') return '已完成'
@@ -16,7 +21,6 @@ function statusLabel(status) {
 }
 
 function statusIcon(status) {
-  if (status === 'done') return CheckCircle2
   if (status === 'current') return LoaderCircle
   if (status === 'error') return CircleAlert
   return Circle
@@ -27,6 +31,7 @@ function statusIcon(status) {
   <section v-if="props.stages.length" class="report-progress-flow" aria-label="编报任务阶段">
     <div
       class="report-progress-flow-list"
+      :class="{ 'report-progress-flow-list-all-done': allStagesDone }"
       role="list"
       :style="{ '--stage-count': Math.max(props.stages.length, 1) }"
     >
@@ -43,8 +48,8 @@ function statusIcon(status) {
           <span>{{ String(index + 1).padStart(2, '0') }}</span>
           <strong>{{ stage.title }}</strong>
         </div>
-        <div class="report-progress-stage-status">
-          <component :is="statusIcon(stage.status)" :size="13" aria-hidden="true" />
+        <div v-if="!allStagesDone || stage.status !== 'done'" class="report-progress-stage-status">
+          <component v-if="stage.status !== 'done'" :is="statusIcon(stage.status)" :size="13" aria-hidden="true" />
           <span>{{ statusLabel(stage.status) }}</span>
         </div>
       </article>
@@ -100,7 +105,7 @@ function statusIcon(status) {
   width: 24px;
   flex: 0 0 auto;
   align-items: center;
-  color: #2563eb;
+  color: #7a8599;
   font-family: 'Fira Code', 'Microsoft YaHei', monospace;
   font-size: 12px;
   font-weight: 750;
@@ -128,13 +133,20 @@ function statusIcon(status) {
 
 .report-progress-stage-status svg { flex: 0 0 auto; }
 
-.report-progress-stage-done .report-progress-stage-status { color: #16a34a; }
+.report-progress-stage-done .report-progress-stage-status { color: #64748b; }
+
+.report-progress-flow-list-all-done .report-progress-stage {
+  min-height: 56px;
+  align-content: center;
+  padding-block: 10px;
+}
 
 .report-progress-stage-current {
   box-shadow: inset 3px 0 0 #2563eb;
   background: #f4f8ff;
 }
 
+.report-progress-stage-current .report-progress-stage-title > span { color: #2563eb; }
 .report-progress-stage-current .report-progress-stage-status { color: #2563eb; }
 .report-progress-stage-current .report-progress-stage-status svg { animation: report-progress-spin 1.2s linear infinite; }
 
@@ -143,6 +155,7 @@ function statusIcon(status) {
   background: #fffafa;
 }
 
+.report-progress-stage-error .report-progress-stage-title > span { color: #dc2626; }
 .report-progress-stage-error .report-progress-stage-status { color: #dc2626; }
 .report-progress-stage-waiting .report-progress-stage-title > span { color: #98a2b3; }
 .report-progress-stage-waiting .report-progress-stage-title strong { color: #667085; }

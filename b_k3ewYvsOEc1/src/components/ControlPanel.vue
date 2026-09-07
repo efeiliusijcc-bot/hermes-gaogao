@@ -85,7 +85,6 @@ function formatTime(value) {
 }
 
 function statusClass(status) {
-  if (status === 'succeeded') return 'bg-neon-green shadow-[0_0_8px_rgba(0,255,136,0.38)]'
   if (status === 'failed' || status === 'cancelled') return 'bg-red-300 shadow-[0_0_8px_rgba(252,90,122,0.35)]'
   if (status === 'waiting_approval') return 'bg-cyber-yellow shadow-[0_0_8px_rgba(252,238,10,0.32)]'
   return 'bg-blue-500 shadow-[0_0_8px_rgba(37,99,235,0.32)]'
@@ -219,7 +218,11 @@ function prepareRecentTitle(event) {
                 class="report-status-spinner shrink-0"
                 aria-label="任务进行中"
               ></span>
-              <span v-else class="w-1.5 h-1.5 rounded-full shrink-0" :class="statusClass(item.status)"></span>
+              <span
+                v-else-if="item.status !== 'succeeded'"
+                class="w-1.5 h-1.5 rounded-full shrink-0"
+                :class="statusClass(item.status)"
+              ></span>
               <span class="recent-status-text">{{ statusText(item.status, item) }}</span>
               <span class="recent-time-divider">·</span>
               <span>{{ formatTime(item.updatedAt || item.createdAt) }}</span>

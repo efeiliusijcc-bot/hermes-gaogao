@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Braces,
-  CheckCircle2,
   Circle,
   CircleAlert,
   GitBranch,
@@ -96,6 +95,9 @@ const activeStage = computed(() => (
 const allEvents = computed(() => props.groups.flatMap((group) => group.events || []))
 const standardStages = computed(() => props.groups.filter((group) => group.key !== 'other'))
 const completedStageCount = computed(() => standardStages.value.filter((group) => group.status === 'done').length)
+const allStandardStagesDone = computed(() => (
+  standardStages.value.length > 0 && standardStages.value.every((group) => group.status === 'done')
+))
 const activeStageError = computed(() => (
   activeStage.value?.events?.find((event) => eventStatus(event.status) === 'error') || null
 ))
@@ -142,8 +144,6 @@ function statusLabel(status) {
 }
 
 function statusIcon(status) {
-  if (status === 'done') return CheckCircle2
-  if (status === 'recovered') return CheckCircle2
   if (status === 'current') return LoaderCircle
   if (status === 'error') return CircleAlert
   return Circle
@@ -165,6 +165,12 @@ function stageHeadingLabel(group) {
 
 function stageTitleLabel(group) {
   return group?.key === 'other' ? '辅助事件' : group?.title || '--'
+}
+
+function stageMetaLabel(group) {
+  const detail = `${durationLabel(group)} · ${group?.eventCount || 0} 条记录`
+  if (group?.status === 'done' && allStandardStagesDone.value) return detail
+  return `${statusLabel(group?.status)} · ${detail}`
 }
 
 function formatClock(value) {
@@ -330,9 +336,9 @@ function eventOutput(event) {
             <span class="technical-stage-nav-index">{{ stageIndexLabel(group, index) }}</span>
             <span class="technical-stage-nav-copy">
               <strong>{{ group.title }}</strong>
-              <small>{{ durationLabel(group) }} · {{ group.eventCount || 0 }} 条记录</small>
+              <small>{{ stageMetaLabel(group) }}</small>
             </span>
-            <component :is="statusIcon(group.status)" :size="16" aria-hidden="true" />
+            <component v-if="group.status !== 'done'" :is="statusIcon(group.status)" :size="16" aria-hidden="true" />
           </button>
         </div>
       </aside>
@@ -340,10 +346,13 @@ function eventOutput(event) {
       <section v-if="activeStage" class="technical-stage-workbench">
         <header class="technical-stage-workbench-header">
           <div>
-            <span>{{ stageHeadingLabel(activeStage) }}</span>
+            <span>
+              {{ stageHeadingLabel(activeStage) }}
+              <b v-if="activeStage.status === 'done'"> · 已完成</b>
+            </span>
             <strong>{{ stageTitleLabel(activeStage) }}</strong>
           </div>
-          <span class="technical-status" :class="`technical-status-${activeStage.status}`">
+          <span v-if="activeStage.status !== 'done'" class="technical-status" :class="`technical-status-${activeStage.status}`">
             <component :is="statusIcon(activeStage.status)" :size="14" aria-hidden="true" />
             {{ statusLabel(activeStage.status) }}
           </span>
@@ -545,7 +554,7 @@ function eventOutput(event) {
   white-space: nowrap;
 }
 
-.runtime-overview-metric-done dd { color: #15803d; }
+.runtime-overview-metric-done dd { color: #475569; }
 .runtime-overview-metric-current dd { color: #2563eb; }
 .runtime-overview-metric-error dd { color: #dc2626; }
 
@@ -616,6 +625,7 @@ function eventOutput(event) {
   background: #fff1f2;
   color: #dc2626;
 }
+.technical-stage-nav-item-done { grid-template-columns: 34px minmax(0, 1fr); }
 .technical-stage-nav-item:focus-visible,
 .technical-workbench-tabs button:focus-visible {
   outline: 2px solid #2563eb;
@@ -648,7 +658,6 @@ function eventOutput(event) {
 }
 .technical-stage-nav-item.active .technical-stage-nav-copy strong { color: currentColor; }
 .technical-stage-nav-item-current > svg { animation: technical-spin 1.2s linear infinite; }
-.technical-stage-nav-item-done > svg { color: #16a34a; }
 .technical-stage-nav-item-error > svg { color: #dc2626; }
 
 .technical-stage-workbench {
@@ -673,6 +682,10 @@ function eventOutput(event) {
   font-size: 12px;
   font-weight: 700;
 }
+.technical-stage-workbench-header > div span b {
+  color: #475569;
+  font-weight: 700;
+}
 .technical-stage-workbench-header > div strong {
   margin-top: 4px;
   color: #172033;
@@ -689,7 +702,7 @@ function eventOutput(event) {
   font-weight: 700;
   white-space: nowrap;
 }
-.technical-status-done { color: #15803d; }
+.technical-status-done { color: #475569; }
 .technical-status-current { color: #2563eb; }
 .technical-status-current svg { animation: technical-spin 1.2s linear infinite; }
 .technical-status-error { color: #dc2626; }
@@ -822,10 +835,10 @@ function eventOutput(event) {
   background: #2563eb;
 }
 .technical-call-chain li.is-done .technical-call-chain-node {
-  background: #16a34a;
+  background: #94a3b8;
 }
 .technical-call-chain li.is-recovered .technical-call-chain-node {
-  background: #0f766e;
+  background: #64748b;
 }
 .technical-call-chain li.is-error .technical-call-chain-node {
   background: #dc2626;
@@ -869,7 +882,7 @@ function eventOutput(event) {
   text-align: right;
 }
 .technical-call-chain-meta b { color: #475467; font-weight: 700; }
-.technical-call-chain li.is-recovered .technical-call-chain-meta b { color: #0f766e; }
+.technical-call-chain li.is-recovered .technical-call-chain-meta b { color: #475569; }
 .technical-call-chain li.is-error .technical-call-chain-meta b { color: #dc2626; }
 
 .technical-io-list > article { border-bottom: 1px solid #e5eaf0; }
@@ -993,8 +1006,8 @@ function eventOutput(event) {
   text-align: right;
   white-space: nowrap;
 }
-.technical-log-viewer-body article.is-done .technical-log-status { color: #15803d; }
-.technical-log-viewer-body article.is-recovered .technical-log-status { color: #0f766e; }
+.technical-log-viewer-body article.is-done .technical-log-status,
+.technical-log-viewer-body article.is-recovered .technical-log-status { color: #475569; }
 .technical-log-viewer-body article.is-error .technical-log-status { color: #dc2626; }
 .technical-log-content pre {
   margin: 3px 0 0;
