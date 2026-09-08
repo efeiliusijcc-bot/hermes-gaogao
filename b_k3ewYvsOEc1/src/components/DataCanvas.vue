@@ -3793,7 +3793,7 @@ watch(() => props.generatedHtml, handleGeneratedHtmlChange)
 watch(() => [props.phase, props.isHistoryMode], () => {
   if (props.phase === 'done') scrollToTop()
 })
-watch(() => [props.phase, props.job?.jobId], () => {
+watch([() => props.phase, () => props.job?.jobId], () => {
   if (props.phase === 'done') activeResultTab.value = 'report'
   activeSourceType.value = 'all'
   acceptedCitationSources.value = []
@@ -3823,7 +3823,7 @@ watch(() => activeResultTab.value, (tab) => {
     loadResultDraftOutline()
   }
 })
-watch(() => [props.phase, props.job?.jobId, props.job?.status], () => {
+watch([() => props.phase, () => props.job?.jobId, () => props.job?.status], () => {
   invalidateSourceListRequests()
   startSourceAutoRefresh()
   if (

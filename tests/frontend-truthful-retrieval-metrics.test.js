@@ -50,3 +50,17 @@ test('DataCanvas labels retrieval counters by their actual stage', () => {
   assert.doesNotMatch(component, /<div class="source-stat-title">候选命中<\/div>/)
   assert.doesNotMatch(component, /<div class="source-stat-title">高相关候选<\/div>/)
 })
+
+test('DataCanvas source watchers track scalar job fields instead of job object identity', () => {
+  const component = fs.readFileSync(componentUrl, 'utf8')
+
+  assert.match(
+    component,
+    /watch\(\[\(\) => props\.phase, \(\) => props\.job\?\.jobId\], \(\) => \{/,
+  )
+  assert.match(
+    component,
+    /watch\(\[\(\) => props\.phase, \(\) => props\.job\?\.jobId, \(\) => props\.job\?\.status\], \(\) => \{/,
+  )
+  assert.doesNotMatch(component, /watch\(\(\) => \[props\.phase, props\.job\?\.jobId/)
+})
