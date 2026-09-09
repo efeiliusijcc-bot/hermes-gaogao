@@ -79,14 +79,19 @@ test('technical workbench provides overview, call chain, input-output, and isola
   assert.match(dataCanvasSource, /class="log-new-items-button"/)
 })
 
-test('report header, progress width, and history use the compact continuous layout', () => {
-  assert.match(dataCanvasSource, /const resultTitleText = computed/)
-  assert.match(dataCanvasSource, /const resultMetaItems = computed/)
-  assert.match(dataCanvasSource, /class="result-identity-row"/)
+test('report header follows the reference tab, actions, and metadata hierarchy', () => {
+  const stickyPanel = dataCanvasSource.match(/<div class="result-sticky-panel"[\s\S]*?<section v-if="activeResultTab/)?.[0] || ''
+
+  assert.doesNotMatch(stickyPanel, /class="result-identity-row"/)
+  assert.match(stickyPanel, /class="result-toolbar"[\s\S]*?class="result-tabs"[\s\S]*?class="result-actions"[\s\S]*?class="result-info-bar"/)
+  assert.match(stickyPanel, /v-for="item in resultInfoItems"/)
   assert.match(dataCanvasSource, /class="result-tab-panel task-progress-result-panel"/)
   assert.match(controlPanelSource, /class="recent-history-stack"/)
-  assert.match(mainStyles, /\.sidebar-shell \{[\s\S]*?width: clamp\(220px, 16\.1vw, 232px\) !important;/)
-  assert.match(mainStyles, /\.recent-history-stack \.history-item[\s\S]*?border-bottom: 1px solid #e8edf3 !important;/)
+  assert.match(mainStyles, /\.sidebar-shell \{[\s\S]*?width: clamp\(240px, 18vw, 320px\) !important;/)
+  assert.match(mainStyles, /\.recent-history-stack \.history-item[\s\S]*?border-radius: 16px !important;/)
+  assert.match(mainStyles, /\.result-toolbar \{[\s\S]*?flex-wrap: wrap;[\s\S]*?gap: 18px;/)
+  assert.match(mainStyles, /\.result-tabs \{[\s\S]*?border-radius: 14px;[\s\S]*?box-shadow: 0 12px 28px/)
+  assert.match(mainStyles, /\.result-action-btn \{[\s\S]*?min-height: 42px;[\s\S]*?border-radius: 12px;/)
   assert.match(mainStyles, /\.task-progress-result-panel \{\s*max-width: none;/)
   assert.match(mainStyles, /\.result-sticky-panel \{[\s\S]*?position: static;[\s\S]*?top: auto;/)
   assert.doesNotMatch(mainStyles, /\.result-sticky-panel \{[\s\S]{0,120}?top: -/)

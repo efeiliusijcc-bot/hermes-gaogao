@@ -2903,9 +2903,6 @@ const resultInfoItems = computed(() => {
   ]
 })
 
-const resultTitleText = computed(() => resultInfoItems.value[0]?.[1] || '--')
-const resultMetaItems = computed(() => resultInfoItems.value.slice(1))
-
 function artifactSyncLabel(status) {
   const value = String(status || '').toLowerCase()
   if (value === 'completed') return '报告可查看、可下载'
@@ -5308,11 +5305,20 @@ function exportPdf() {
 
       <div v-else class="result-shell">
         <div class="result-sticky-panel" @wheel="handleResultTabWheel">
-          <div class="result-identity-row">
-            <div class="result-report-identity">
-              <span>报告结果</span>
-              <h1>{{ resultTitleText }}</h1>
-            </div>
+          <div class="result-toolbar">
+            <nav class="result-tabs" aria-label="报告结果切换">
+              <button
+                v-for="tab in resultTabs"
+                :key="tab.key"
+                class="result-tab"
+                :class="{ active: activeResultTab === tab.key }"
+                type="button"
+                @click="setActiveResultTab(tab.key)"
+              >
+                {{ tab.label }}
+              </button>
+            </nav>
+
             <div class="result-actions">
               <button
                 v-if="REPORT_EDIT_ENABLED && job?.jobId && generatedHtml"
@@ -5342,21 +5348,8 @@ function exportPdf() {
             </div>
           </div>
 
-          <nav class="result-tabs" aria-label="报告结果切换">
-            <button
-              v-for="tab in resultTabs"
-              :key="tab.key"
-              class="result-tab"
-              :class="{ active: activeResultTab === tab.key }"
-              type="button"
-              @click="setActiveResultTab(tab.key)"
-            >
-              {{ tab.label }}
-            </button>
-          </nav>
-
           <div class="result-info-bar">
-            <div v-for="item in resultMetaItems" :key="item[0]" class="result-info-item">
+            <div v-for="item in resultInfoItems" :key="item[0]" class="result-info-item" :title="item[1]">
               <span>{{ item[0] }}</span>
               <strong>{{ item[1] }}</strong>
             </div>

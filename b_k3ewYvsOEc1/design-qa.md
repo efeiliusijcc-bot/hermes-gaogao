@@ -73,3 +73,55 @@
 - Planning stage: the same orb now replaces the legacy ring while the plan is generated; it rendered at 188 px on desktop and 132 px on mobile with no page or modal overflow.
 
 final result: passed
+
+---
+
+# Design QA: OpenClaw report layout reference
+
+## Comparison target
+
+- Reference: `/Users/a15070743048/Desktop/hermes/artifacts/ui-reference/openclaw-report-reference-1280x995.png`
+- Implementation: `/Users/a15070743048/Desktop/hermes/artifacts/ui-reference/hermes-local-after-1280x995-final.png`
+- Combined comparison: `/Users/a15070743048/Desktop/hermes/artifacts/ui-reference/openclaw-vs-hermes-1280x995.png`
+- Responsive implementation: `/Users/a15070743048/Desktop/hermes/artifacts/ui-reference/hermes-local-after-1024x800.png`
+- State: authenticated, latest completed report, report body tab selected
+- Viewport: 1280 x 995 CSS px at device scale factor 1; additional check at 1024 x 800
+
+## Findings and iterations
+
+### Resolved P1: report history escaped the sidebar
+
+- Evidence: the first local capture measured a 604.66 px history row inside a 207 px panel.
+- Cause: grid min-content sizing followed the long report title.
+- Fix: use a constrained vertical flex stack and set both the stack and history rows to `min-width: 0`; rows now measure 181 px inside the 207 px panel.
+
+### Resolved P2: report metadata wrapped the title label
+
+- Evidence: the first implementation capture rendered the `报告标题` label on two lines and made the information bar 66 px high.
+- Fix: keep metadata labels on one line, constrain the title item to 280 px, and ellipsize only the title value. The information bar now measures 46 px at 1280 px.
+
+## Fidelity review
+
+- Fonts and typography: both use Inter with Chinese system-font fallbacks. Tabs are 14 px/600, actions 13 px/600, and metadata 13 px. Long history and report titles truncate without changing the surrounding layout.
+- Spacing and layout rhythm: sidebar, inner cards, history-row width, 47 px tab strip, 42 px actions, and 46 px metadata bar match the reference proportions. The Hermes-only account footer reduces the visible history height by design.
+- Colors and visual tokens: white cards, `#f5f7fb` canvas, light blue selected states, subdued borders, and `#2563eb` primary action follow the reference.
+- Image and icon fidelity: there are no raster assets in the target region. Existing Lucide application icons are retained instead of copying the reference's text glyph icons.
+- Copy and content: Hermes keeps its real six report tabs, artifact state, delete action, user footer, report content, and actual runtime data. The removed top report identity row is replaced by the reference-style metadata title field.
+
+## Intentional product differences
+
+- Hermes keeps `引用依据` and `成稿自检`, so the tab strip has six segments instead of four.
+- Hermes keeps `删除编报` and the bottom-left account entry because they are current product functions.
+- The duplicate top `报告列表` action remains omitted because the sidebar already provides `查看全部报告`.
+- The 1024 px layout allows metadata to wrap naturally while preserving 13 px text and avoiding horizontal overflow.
+
+## Interaction and responsive checks
+
+- Report, source, and progress tabs switched successfully in the local authenticated app.
+- No document, sidebar, or history-panel horizontal overflow at 1280 x 995.
+- No document horizontal overflow at 1024 x 800; all six tabs, four actions, metadata, and account footer remain reachable.
+- Export and delete actions were not invoked to avoid downloads or destructive changes; their existing event bindings were preserved and covered by source tests.
+
+No remaining P0, P1, or P2 visual mismatch was found in the requested regions. Remaining differences are intentional product constraints listed above.
+
+final result: passed

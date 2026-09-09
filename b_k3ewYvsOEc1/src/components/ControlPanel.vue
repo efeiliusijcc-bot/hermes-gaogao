@@ -61,7 +61,6 @@ const displayRoleName = computed(() => displayUserRoleNames(props.user))
 const recentJobs = computed(() => props.recentJobs.length ? props.recentJobs : props.jobs)
 const isQaMode = computed(() => props.mode === 'qa')
 const historyTitle = computed(() => isQaMode.value ? '问答历史' : '编报历史')
-const historySubtitle = computed(() => isQaMode.value ? 'QA HISTORY' : 'REPORT HISTORY')
 const historyActionLabel = computed(() => isQaMode.value ? '查看全部问答' : '查看全部报告')
 const sortedQaSessions = computed(() => {
   return [...props.qaSessions].sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt))
@@ -189,7 +188,6 @@ function prepareRecentTitle(event) {
       <div class="panel-header recent-header justify-between px-4 py-4">
         <div>
           <span class="font-mono text-sm neon-text tracking-widest">{{ historyTitle }}</span>
-          <div class="mt-1 font-mono text-[10px] text-[#374151]">{{ historySubtitle }}</div>
         </div>
         <button class="sci-btn text-[10px] px-2.5 py-1.5" @click="handleHistoryAction">{{ historyActionLabel }}</button>
       </div>
