@@ -76,6 +76,28 @@ final result: passed
 
 ---
 
+# Design QA: Sticky report header and completed history marker
+
+## Comparison target
+
+- Reference: user-provided `write.test-link.xin` report-detail screenshots at 1206 x 1114.
+- Implementation: `/Users/a15070743048/Desktop/hermes/artifacts/ui-reference/hermes-local-sticky-green-dot-1206x1114.png`
+- State: authenticated completed report, report body selected, main content scrolled 480 px.
+
+## Verified behavior
+
+- The report header uses the reference `position: sticky`, `top: -28px`, and `z-index: 30` behavior. After the main content scrolls 480 px, its top remains at 112.11 px rather than leaving the viewport.
+- Completed report history rows show one 6 px green status dot before `已完成`. Running, failed, cancelled, and waiting states retain their existing state-specific indicators.
+- The sticky panel, report body, history list, and document have no horizontal overflow at 1206 x 1114.
+- The source implementation preserves all Hermes-only tabs, actions, metadata, and click handlers.
+- Mobile retains the responsive sticky offset of `-20px` below 720 px.
+
+No remaining P0, P1, or P2 visual mismatch was found in the requested regions.
+
+final result: passed
+
+---
+
 # Design QA: OpenClaw report layout reference
 
 ## Comparison target

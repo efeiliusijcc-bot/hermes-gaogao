@@ -84,6 +84,7 @@ function formatTime(value) {
 }
 
 function statusClass(status) {
+  if (status === 'succeeded') return 'bg-neon-green shadow-[0_0_8px_rgba(0,255,136,0.38)]'
   if (status === 'failed' || status === 'cancelled') return 'bg-red-300 shadow-[0_0_8px_rgba(252,90,122,0.35)]'
   if (status === 'waiting_approval') return 'bg-cyber-yellow shadow-[0_0_8px_rgba(252,238,10,0.32)]'
   return 'bg-blue-500 shadow-[0_0_8px_rgba(37,99,235,0.32)]'
@@ -217,7 +218,7 @@ function prepareRecentTitle(event) {
                 aria-label="任务进行中"
               ></span>
               <span
-                v-else-if="item.status !== 'succeeded'"
+                v-else
                 class="w-1.5 h-1.5 rounded-full shrink-0"
                 :class="statusClass(item.status)"
               ></span>

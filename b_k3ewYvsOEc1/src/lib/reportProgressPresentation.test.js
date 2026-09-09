@@ -42,8 +42,8 @@ test('completed report status is neutral without repeated success marks', () => 
   assert.match(timelineSource, /article\.is-done \.technical-log-status,[\s\S]*?color: #475569;/)
   assert.doesNotMatch(timelineSource, /#16a34a|#15803d|#0f766e/)
 
-  assert.match(controlPanelSource, /v-else-if="item\.status !== 'succeeded'"/)
-  assert.doesNotMatch(controlPanelSource, /status === 'succeeded'\) return 'bg-neon-green/)
+  assert.match(controlPanelSource, /v-else[\s\S]*?:class="statusClass\(item\.status\)"/)
+  assert.match(controlPanelSource, /status === 'succeeded'\) return 'bg-neon-green/)
   assert.match(controlPanelSource, /healthOk \? 'bg-neon-green/)
 })
 
@@ -93,8 +93,7 @@ test('report header follows the reference tab, actions, and metadata hierarchy',
   assert.match(mainStyles, /\.result-tabs \{[\s\S]*?border-radius: 14px;[\s\S]*?box-shadow: 0 12px 28px/)
   assert.match(mainStyles, /\.result-action-btn \{[\s\S]*?min-height: 42px;[\s\S]*?border-radius: 12px;/)
   assert.match(mainStyles, /\.task-progress-result-panel \{\s*max-width: none;/)
-  assert.match(mainStyles, /\.result-sticky-panel \{[\s\S]*?position: static;[\s\S]*?top: auto;/)
-  assert.doesNotMatch(mainStyles, /\.result-sticky-panel \{[\s\S]{0,120}?top: -/)
+  assert.match(mainStyles, /\.result-sticky-panel \{[\s\S]*?position: sticky;[\s\S]*?top: -28px;[\s\S]*?z-index: 30;/)
   assert.match(mainStyles, /\.result-technical-details \.source-technical-log \{[\s\S]*?max-height: none;[\s\S]*?overflow: visible;/)
 })
 
