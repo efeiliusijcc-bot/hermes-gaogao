@@ -1,9 +1,9 @@
-const STRUCTURED_CONTEXT_KEYS = ['selectedModules', 'selectedSearchQueries']
+const STRUCTURED_CONTEXT_KEYS = ['selectedModules', 'selectedSearchQueries', 'eventTaskPlan', 'intentRecognition']
 
 function isStructuredContext(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && (
     value.kind === 'structured_report_context' ||
-    STRUCTURED_CONTEXT_KEYS.some((key) => Array.isArray(value[key]))
+    STRUCTURED_CONTEXT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(value, key))
   ))
 }
 

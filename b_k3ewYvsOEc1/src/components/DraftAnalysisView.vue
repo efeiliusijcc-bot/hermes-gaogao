@@ -1,5 +1,6 @@
 <script setup>
 import { ArrowLeft, ListTree, LoaderCircle, RefreshCw } from '@lucide/vue'
+import EventTaskPlanEditor from './EventTaskPlanEditor.vue'
 
 defineProps({
   sourceInput: { type: String, default: '' },
@@ -16,9 +17,13 @@ defineProps({
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
   generating: { type: Boolean, default: false },
+  intentRecognition: { type: Object, default: null },
+  eventTaskPlan: { type: Object, default: null },
+  planningAvailable: { type: Boolean, default: false },
+  planningError: { type: String, default: '' },
 })
 
-const emit = defineEmits(['back', 'generate', 'retry'])
+const emit = defineEmits(['back', 'generate', 'retry', 'resolve-intent', 'update-task'])
 </script>
 
 <template>
@@ -53,13 +58,26 @@ const emit = defineEmits(['back', 'generate', 'retry'])
           <p>{{ section.content }}</p>
         </article>
       </div>
+
+      <div v-if="!loading && !error" class="draft-event-planning">
+        <EventTaskPlanEditor
+          v-if="planningAvailable"
+          :intent-recognition="intentRecognition"
+          :event-task-plan="eventTaskPlan"
+          @resolve-intent="emit('resolve-intent', $event)"
+          @update-task="emit('update-task', $event)"
+        />
+        <div v-else class="draft-event-planning-missing">
+          该任务生成时未保存五维任务记录，不对已有分析进行推断或补写。
+        </div>
+      </div>
     </div>
 
     <footer class="draft-analysis-actions">
       <button class="secondary" type="button" :disabled="loading || generating" @click="emit('back')">
         <ArrowLeft :size="17" aria-hidden="true" />返回重新输入
       </button>
-      <button class="primary" type="button" :disabled="loading || generating || Boolean(error)" @click="emit('generate')">
+      <button class="primary" type="button" :disabled="loading || generating || Boolean(error) || Boolean(planningError)" @click="emit('generate')">
         <LoaderCircle v-if="generating" :size="17" class="draft-spin" aria-hidden="true" />
         <ListTree v-else :size="17" aria-hidden="true" />
         {{ generating ? '正在生成' : '生成提纲' }}
@@ -86,6 +104,8 @@ const emit = defineEmits(['back', 'generate', 'retry'])
 .draft-analysis-error { margin: 20px 0 0 48px; border-left: 3px solid #ef4444; background: #fff7f7; padding: 14px 16px; color: #991b1b; }
 .draft-analysis-error p { margin: 0 0 10px; font-size: 13px; }
 .draft-analysis-error button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: #b91c1c; padding: 0; cursor: pointer; font-weight: 700; }
+.draft-event-planning { margin: 24px 0 0 48px; }
+.draft-event-planning-missing { border-left: 3px solid #cbd5e1; background: #f8fafc; color: #64748b; padding: 12px 14px; font-size: 13px; line-height: 1.65; }
 .draft-analysis-actions { position: fixed; left: 50%; bottom: 16px; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 10px; width: min(840px, calc(100vw - 56px)); box-sizing: border-box; margin: 0; border: 1px solid #d8dee7; background: rgba(255, 255, 255, 0.97); border-radius: 8px; box-shadow: 0 10px 30px rgba(30, 41, 59, 0.14); padding: 12px; transform: translateX(-50%); backdrop-filter: blur(12px); }
 .draft-analysis-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border-radius: 7px; padding: 0 15px; cursor: pointer; font-size: 13px; font-weight: 700; }
 .draft-analysis-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -98,7 +118,7 @@ const emit = defineEmits(['back', 'generate', 'retry'])
 @media (max-width: 640px) {
   .draft-analysis-view { padding: 14px 0 190px; }
   .draft-user-message { width: 94%; }
-  .draft-analysis-sections, .draft-analysis-loading, .draft-analysis-error { margin-left: 0; }
+  .draft-analysis-sections, .draft-analysis-loading, .draft-analysis-error, .draft-event-planning { margin-left: 0; }
   .draft-analysis-actions { bottom: 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: calc(100vw - 16px); padding: 10px; }
   .draft-analysis-actions button { width: 100%; min-width: 0; padding: 0 8px; line-height: 1.4; white-space: normal; }
 }

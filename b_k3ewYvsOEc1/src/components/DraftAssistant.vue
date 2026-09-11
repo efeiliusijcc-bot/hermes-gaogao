@@ -18,6 +18,7 @@ import {
   restoredDraftStage,
 } from '../lib/draftAssistantFlow.js'
 import { createDraftAutosave } from '../lib/draftAutosave.js'
+import { eventPlanningError, hasEventPlanning, normalizeEventTaskPlan, normalizeIntentRecognition } from '../lib/eventTaskPlan.js'
 import DraftAnalysisView from './DraftAnalysisView.vue'
 import DraftHistorySidebar from './DraftHistorySidebar.vue'
 import DraftImportState from './DraftImportState.vue'
@@ -59,6 +60,13 @@ const currentEventId = computed(() => (
   || ''
 ))
 const analysisSections = computed(() => buildDraftAnalysisSections(eventResult.value || {}))
+const currentAnalysis = computed(() => eventResult.value?.analysis || eventResult.value?.event?.analysis || {})
+const eventPlanningAvailable = computed(() => hasEventPlanning(currentAnalysis.value))
+const draftIntentRecognition = computed(() => eventPlanningAvailable.value ? normalizeIntentRecognition(currentAnalysis.value.intentRecognition) : null)
+const draftEventTaskPlan = computed(() => eventPlanningAvailable.value ? normalizeEventTaskPlan(currentAnalysis.value.eventTaskPlan) : null)
+const draftEventPlanningError = computed(() => eventPlanningAvailable.value
+  ? eventPlanningError(draftIntentRecognition.value, draftEventTaskPlan.value)
+  : '')
 const isImporting = computed(() => stage.value === 'importing' || stage.value === 'completed')
 
 function emptyOutline() {
@@ -71,6 +79,50 @@ function emptyOutline() {
     sourceRequirements: [],
     uncertaintiesToVerify: [],
   }
+}
+
+function replaceCurrentAnalysis(nextAnalysis) {
+  if (!eventResult.value) return
+  if (eventResult.value.analysis) {
+    eventResult.value = { ...eventResult.value, analysis: nextAnalysis }
+  } else if (eventResult.value.event) {
+    eventResult.value = {
+      ...eventResult.value,
+      event: { ...eventResult.value.event, analysis: nextAnalysis },
+    }
+  }
+}
+
+function resolveDraftIntent(resolved) {
+  if (!eventPlanningAvailable.value || !['event_timeline', 'other'].includes(resolved)) return
+  pageError.value = ''
+  replaceCurrentAnalysis({
+    ...currentAnalysis.value,
+    intentRecognition: { ...draftIntentRecognition.value, resolved },
+  })
+}
+
+function updateDraftEventTask(payload = {}) {
+  const taskId = String(payload.id || '')
+  const changes = payload.changes && typeof payload.changes === 'object' ? payload.changes : {}
+  if (!taskId || !draftEventTaskPlan.value) return
+  pageError.value = ''
+  replaceCurrentAnalysis({
+    ...currentAnalysis.value,
+    eventTaskPlan: {
+      ...draftEventTaskPlan.value,
+      tasks: draftEventTaskPlan.value.tasks.map((task) => task.id === taskId
+        ? {
+            ...task,
+            ...(typeof changes.enabled === 'boolean' ? { enabled: changes.enabled } : {}),
+            ...(typeof changes.objective === 'string' ? { objective: changes.objective.slice(0, 500) } : {}),
+            ...(Array.isArray(changes.searchQueries)
+              ? { searchQueries: changes.searchQueries.map((query) => String(query).trim().slice(0, 80)).filter(Boolean).slice(0, 3) }
+              : {}),
+          }
+        : task),
+    },
+  })
 }
 
 function cloneOutline(value = {}) {
@@ -258,11 +310,21 @@ async function createOutline() {
     pageError.value = '请先完成事件分析'
     return
   }
+  if (draftEventPlanningError.value) {
+    pageError.value = draftEventPlanningError.value
+    return
+  }
   isGeneratingOutline.value = true
   try {
     const created = await generateDraftOutline({
       eventId: currentEventId.value,
       outlinePreference: '',
+      ...(eventPlanningAvailable.value
+        ? {
+            intentRecognition: draftIntentRecognition.value,
+            eventTaskPlan: draftEventTaskPlan.value,
+          }
+        : {}),
     })
     selectedOutline.value = created
     syncOutlineDraft(created.outline)
@@ -512,9 +574,15 @@ onBeforeUnmount(() => {
           :loading="isAnalyzing"
           :error="analysisError"
           :generating="isGeneratingOutline"
+          :intent-recognition="draftIntentRecognition"
+          :event-task-plan="draftEventTaskPlan"
+          :planning-available="eventPlanningAvailable"
+          :planning-error="draftEventPlanningError"
           @back="stage = 'input'"
           @retry="startDraft"
           @generate="createOutline"
+          @resolve-intent="resolveDraftIntent"
+          @update-task="updateDraftEventTask"
         />
 
         <DraftOutlineEditor

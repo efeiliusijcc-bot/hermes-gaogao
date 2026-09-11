@@ -17,6 +17,7 @@ import { UserPreferencesService } from './user-preferences.service.js';
 import { buildRuleBasedEntityPolicy, parseEntityPolicy, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
 import { filterSourcesByEntityPolicy, type SourceEntityMatch, type SourceFilterDiagnostics, type SourceFilterResult } from './source-entity-guard.js';
 import { buildCleanRetrievalInput } from './reports/retrieval/query/clean-query-input.js';
+import { normalizeSubmittedEventPlanning } from './event-task-plan.js';
 import { ReportsRetrievalAdapter } from './reports/reports-retrieval.adapter.js';
 import type { QueryProfile } from './reports/retrieval/retrieval.types.js';
 import {
@@ -302,7 +303,7 @@ export class ReportsService implements OnModuleDestroy {
       throw new ForbiddenException({ error: 'Viewer cannot create report jobs' });
     }
     const inputPayload = sanitizeReportPayload(req.payload as unknown as Record<string, unknown>);
-    const payload = sanitizeReportPayload(await this.enhancePayloadWithUserPreferences(inputPayload, user));
+    let payload = sanitizeReportPayload(await this.enhancePayloadWithUserPreferences(inputPayload, user));
     const planId = this.optionalId(payload.planId);
     const planBundle = planId ? await this.loadDraftAssistantPlanBundle(planId, user) : null;
     const eventId = this.optionalId(payload.eventId) || planBundle?.eventId;
@@ -310,6 +311,38 @@ export class ReportsService implements OnModuleDestroy {
     if (planBundle) {
       if (eventId && eventId !== planBundle.eventId) throw new BadRequestException({ error: 'eventId does not match planId' });
       if (outlineId && outlineId !== planBundle.outlineId) throw new BadRequestException({ error: 'outlineId does not match planId' });
+      const context = this.withoutEventPlanningContext(this.contextObjectFromPayload(payload));
+      const reportPlan = this.plainObject(planBundle.reportPlan);
+      payload = {
+        ...payload,
+        known_context: JSON.stringify({
+          ...context,
+          ...(reportPlan.intentRecognition && reportPlan.eventTaskPlan
+            ? {
+                intentRecognition: reportPlan.intentRecognition,
+                eventTaskPlan: reportPlan.eventTaskPlan,
+              }
+            : {}),
+        }, null, 2),
+      };
+    } else {
+      const context = this.contextObjectFromPayload(payload);
+      if (context.intentRecognition || context.eventTaskPlan) {
+        try {
+          const planning = normalizeSubmittedEventPlanning(
+            context.intentRecognition,
+            context.intentRecognition,
+            context.eventTaskPlan,
+            String(payload.topic || payload.title || context.topic || ''),
+          );
+          payload = {
+            ...payload,
+            known_context: JSON.stringify({ ...context, ...planning }, null, 2),
+          };
+        } catch (error) {
+          throw new BadRequestException({ error: error instanceof Error ? error.message : String(error) });
+        }
+      }
     }
     const jobId = uuid();
     const now = new Date().toISOString();
@@ -2289,7 +2322,7 @@ export class ReportsService implements OnModuleDestroy {
     if (!planId) return payload;
     const bundle = await this.loadDraftAssistantPlanBundle(planId, user);
     await this.writeDraftAssistantArtifacts(job, bundle, payload);
-    const context = this.contextObjectFromPayload(payload);
+    const context = this.withoutEventPlanningContext(this.contextObjectFromPayload(payload));
     const instructions = [
       '本次深度编报必须严格依据 Draft Assistant 生成的 report_plan。',
       '用户已经确认该提纲版本，正文规划不得脱离该提纲。',
@@ -2308,6 +2341,12 @@ export class ReportsService implements OnModuleDestroy {
       draftAssistantMode: true,
       known_context: JSON.stringify({
         ...context,
+        ...(bundle.reportPlan.intentRecognition && bundle.reportPlan.eventTaskPlan
+          ? {
+              intentRecognition: bundle.reportPlan.intentRecognition,
+              eventTaskPlan: bundle.reportPlan.eventTaskPlan,
+            }
+          : {}),
         draftAssistantContext: {
           eventId: bundle.eventId,
           outlineId: bundle.outlineId,
@@ -2348,9 +2387,9 @@ export class ReportsService implements OnModuleDestroy {
     await this.remoteFs.mkdir(databaseDir);
     const contextPath = this.remoteFs.joinPath(jobDir, 'context.json');
     const existingContext = await this.readJsonFile(contextPath);
-    const baseContext = existingContext && !Array.isArray(existingContext)
+    const baseContext = this.withoutEventPlanningContext(existingContext && !Array.isArray(existingContext)
       ? existingContext
-      : this.contextObjectFromPayload(payload);
+      : this.contextObjectFromPayload(payload));
     const draftAssistantContext = {
       eventId: bundle.eventId,
       outlineId: bundle.outlineId,
@@ -2360,11 +2399,17 @@ export class ReportsService implements OnModuleDestroy {
       attitudes: bundle.attitudes,
       reportPlan: bundle.reportPlan,
     };
+    const eventPlanning = bundle.reportPlan.intentRecognition && bundle.reportPlan.eventTaskPlan
+      ? {
+          intentRecognition: bundle.reportPlan.intentRecognition,
+          eventTaskPlan: bundle.reportPlan.eventTaskPlan,
+        }
+      : {};
 
     await Promise.all([
       this.remoteFs.writeFile(
         contextPath,
-        `${JSON.stringify({ ...baseContext, draftAssistantContext }, null, 2)}\n`,
+        `${JSON.stringify({ ...baseContext, ...eventPlanning, draftAssistantContext }, null, 2)}\n`,
       ),
       this.remoteFs.writeFile(
         this.remoteFs.joinPath(databaseDir, 'draft_event.json'),
@@ -2402,6 +2447,11 @@ export class ReportsService implements OnModuleDestroy {
       reportType: String(payload.report_type || ''),
       freeTextContext: knownContext,
     };
+  }
+
+  private withoutEventPlanningContext(context: Record<string, unknown>): Record<string, unknown> {
+    const { intentRecognition: _intentRecognition, eventTaskPlan: _eventTaskPlan, ...rest } = context;
+    return rest;
   }
 
   private async ensureBackendReportContextArtifact(

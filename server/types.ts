@@ -156,9 +156,41 @@ export interface ReportPlanStep {
   options: ReportPlanOption[];
 }
 
+export type EventIntentKind = 'event_timeline' | 'other' | 'uncertain';
+
+export interface IntentRecognition {
+  detected: EventIntentKind;
+  resolved: Exclude<EventIntentKind, 'uncertain'> | null;
+  reason: string;
+  source: 'model' | 'fallback';
+}
+
+export type EventTaskId =
+  | 'event_time'
+  | 'participants'
+  | 'event_causes'
+  | 'event_content'
+  | 'event_location';
+
+export interface EventTask {
+  id: EventTaskId;
+  dimension: string;
+  title: string;
+  objective: string;
+  searchQueries: string[];
+  enabled: boolean;
+}
+
+export interface EventTaskPlan {
+  version: 1;
+  tasks: EventTask[];
+}
+
 export interface ReportPlanResponse {
   title: string;
   summary: string;
   searchQueries: string[];
   steps: ReportPlanStep[];
+  intentRecognition: IntentRecognition;
+  eventTaskPlan: EventTaskPlan;
 }

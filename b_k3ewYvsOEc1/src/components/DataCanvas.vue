@@ -4,6 +4,8 @@ import DOMPurify from 'dompurify'
 import { ArrowDown, Copy, ExternalLink, FileDown, FilePlus2, FileText, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import ReportTechnicalTimeline from './ReportTechnicalTimeline.vue'
 import ReportProgressStageFlow from './ReportProgressStageFlow.vue'
+import EventTaskPlanEditor from './EventTaskPlanEditor.vue'
+import EventTaskPlanSummary from './EventTaskPlanSummary.vue'
 import { createChatCompletion, createReportEdit, fetchQaSessionSources, fetchReportSources, getAuthToken, getChatStreamUrl, getDraftOutline, getReportEdits, getReportQualityReview, runReportQualityReview } from '../lib/api.js'
 import { createLiveSourceRefreshController } from '../lib/liveSourceRefresh.js'
 import { isDraftAssistantReportJob, normalizeReportDraftOutline } from '../lib/reportDraftOutline.js'
@@ -12,6 +14,7 @@ import { parseStructuredPlanningContext } from '../lib/reportPlanningContext.js'
 import { buildReportTechnicalTimeline } from '../lib/reportTechnicalTimeline.js'
 import { filterAcceptedReportReferences, firstSourceDisplayText, hasDistinctSourceDetail, resolveSourceGroup, sanitizeSourceDisplayText, sourceHostname } from '../lib/sourceDisplay.js'
 import { getTruthfulSourceStats } from '../lib/sourceStats.js'
+import { eventPlanningError } from '../lib/eventTaskPlan.js'
 
 const purifyConfig = {
   ALLOWED_TAGS: [
@@ -155,6 +158,8 @@ const emit = defineEmits([
   'toggle-plan-option',
   'add-plan-option',
   'toggle-plan-search-query',
+  'resolve-plan-intent',
+  'update-plan-event-task',
   'next-plan-step',
   'prev-plan-step',
   'open-daily-awareness',
@@ -283,6 +288,14 @@ const titleLength = computed(() => props.title?.length || 0)
 const currentPlanStep = computed(() => props.reportPlan?.steps?.[props.planStepIndex] || null)
 const isLastPlanStep = computed(() => props.planStepIndex >= ((props.reportPlan?.steps?.length || 1) - 1))
 const isSourcePlanStep = computed(() => currentPlanStep.value?.type === 'source_scope')
+const isIntentPlanStep = computed(() => currentPlanStep.value?.type === 'intent_recognition')
+const isEventTaskPlanStep = computed(() => currentPlanStep.value?.type === 'event_tasks')
+const planEventValidationError = computed(() => eventPlanningError(props.reportPlan?.intentRecognition, props.reportPlan?.eventTaskPlan))
+const canAdvancePlanStep = computed(() => {
+  if (isIntentPlanStep.value) return !planEventValidationError.value
+  if (isEventTaskPlanStep.value) return !planEventValidationError.value
+  return true
+})
 const verifiedPlanSourceOptions = computed(() => (currentPlanStep.value?.options || []).filter((option) => option.sourceGroup === 'verified' || option.id === 'database-source'))
 const networkPlanSourceOptions = computed(() => (currentPlanStep.value?.options || []).filter((option) => option.sourceGroup !== 'verified' && option.id !== 'database-source'))
 const isSupplementPlanStep = computed(() => currentPlanStep.value?.type === 'supplement')
@@ -4380,7 +4393,27 @@ function exportPdf() {
               <p class="text-sm text-[#374151] mt-1">{{ currentPlanStep.description }}</p>
             </div>
 
-            <div v-if="isSourcePlanStep" class="plan-source-sections">
+            <EventTaskPlanEditor
+              v-if="isIntentPlanStep"
+              :intent-recognition="reportPlan.intentRecognition"
+              :event-task-plan="reportPlan.eventTaskPlan"
+              :show-intent="true"
+              :show-tasks="false"
+              @resolve-intent="emit('resolve-plan-intent', $event)"
+              @update-task="emit('update-plan-event-task', $event)"
+            />
+
+            <EventTaskPlanEditor
+              v-else-if="isEventTaskPlanStep"
+              :intent-recognition="reportPlan.intentRecognition"
+              :event-task-plan="reportPlan.eventTaskPlan"
+              :show-intent="false"
+              :show-tasks="true"
+              @resolve-intent="emit('resolve-plan-intent', $event)"
+              @update-task="emit('update-plan-event-task', $event)"
+            />
+
+            <div v-else-if="isSourcePlanStep" class="plan-source-sections">
               <section class="plan-source-section">
                 <div class="plan-source-section-head">
                   <strong>PG 数据库信源</strong>
@@ -4481,7 +4514,7 @@ function exportPdf() {
               </button>
             </div>
 
-            <div v-if="!isSourcePlanStep && !isSupplementPlanStep" class="manual-direction-box">
+            <div v-if="!isSourcePlanStep && !isSupplementPlanStep && !isIntentPlanStep && !isEventTaskPlanStep" class="manual-direction-box">
               <div>
                 <strong>手动新增检索写报方向</strong>
                 <p>新增后会自动勾选，并随本步骤一起提交给后端用于检索和写报。</p>
@@ -4526,6 +4559,7 @@ function exportPdf() {
                 class="sci-btn text-[10px] px-3 py-2 border-neon-cyan"
                 style="color: #0369a1"
                 type="button"
+                :disabled="!canAdvancePlanStep"
                 @click="emit('next-plan-step')"
               >
                 下一步
@@ -4534,6 +4568,7 @@ function exportPdf() {
                 v-else
                 class="sci-btn text-[10px] px-4 py-2 border-neon-green text-neon-green shadow-[0_0_18px_rgba(0,255,159,0.12)]"
                 type="button"
+                :disabled="Boolean(planEventValidationError)"
                 @click="emit('confirm-plan')"
               >
                 确认并开始编写
@@ -5676,6 +5711,14 @@ function exportPdf() {
               </div>
             </header>
 
+            <section class="planning-selection-section">
+              <div class="planning-section-heading">
+                <h3>事件意图与五维任务</h3>
+                <p>展示拟稿助手确认并实际带入深度编报的任务快照。</p>
+              </div>
+              <EventTaskPlanSummary :context="planningContext" />
+            </section>
+
             <section v-if="draftOutlineView.coreArgument" class="draft-outline-argument">
               <span>核心论点</span>
               <p>{{ draftOutlineView.coreArgument }}</p>
@@ -5733,7 +5776,7 @@ function exportPdf() {
           </div>
           <div v-else-if="!planningSelectionView.available" class="planning-empty-state">
             <strong>暂无规划选择记录</strong>
-            <p>当前任务没有保存可展示的规划勾选信息。新生成的编报任务会在这里展示规划阶段的选择结果。</p>
+            <p>该任务生成时未保存五维任务记录或其他可展示的规划勾选信息，不对历史数据进行推断或补写。</p>
           </div>
           <div v-else class="planning-selection-page">
             <header class="planning-selection-hero">
@@ -5743,6 +5786,14 @@ function exportPdf() {
                 <p>展示正式提交编报前，用户在规划阶段确认的检索词、信源范围、章节方向和补充要求。</p>
               </div>
             </header>
+
+            <section class="planning-selection-section">
+              <div class="planning-section-heading">
+                <h3>事件意图与五维任务</h3>
+                <p>展示提交编报前确认的搜情意图、启用维度、任务描述和检索词。</p>
+              </div>
+              <EventTaskPlanSummary :context="planningContext" />
+            </section>
 
             <div class="planning-summary-grid">
               <button type="button" aria-label="跳转到检索词选择" title="跳转到检索词选择" @click="scrollPlanningSection('planning-search-queries')">

@@ -36,6 +36,20 @@ def main():
             "topic": "并行调研测试",
             "report_type": "K报",
             "selectedSearchQueries": ["测试政策", "测试舆情", "测试地方"],
+            "intentRecognition": {
+                "detected": "event_timeline", "resolved": "event_timeline",
+                "reason": "测试事件需要梳理脉络", "source": "model",
+            },
+            "eventTaskPlan": {
+                "version": 1,
+                "tasks": [
+                    {"id": "event_time", "dimension": "发生时间", "title": "核实事件时间", "objective": "核实时间线", "searchQueries": ["测试事件 时间线"], "enabled": True},
+                    {"id": "participants", "dimension": "参与方", "title": "识别参与方", "objective": "核实参与方", "searchQueries": ["测试事件 参与方"], "enabled": True},
+                    {"id": "event_causes", "dimension": "事件原因", "title": "梳理事件原因", "objective": "核实原因", "searchQueries": ["测试事件 原因"], "enabled": False},
+                    {"id": "event_content", "dimension": "具体内容", "title": "核实具体内容", "objective": "核实内容", "searchQueries": ["测试事件 内容"], "enabled": True},
+                    {"id": "event_location", "dimension": "发生地点", "title": "核实发生地点", "objective": "核实地点", "searchQueries": ["测试事件 地点"], "enabled": True},
+                ],
+            },
             "selectedModules": [
                 {"sectionTitle": "国家政策", "selectedDirections": [{"label": "国家战略"}]},
                 {"sectionTitle": "地方动态", "selectedDirections": [{"label": "地方反应"}]},
@@ -97,6 +111,15 @@ def main():
         assert result["groups_completed"] == 3
         assert max_active >= 2
         assert job.root.joinpath("plan.json").exists()
+        saved_plan = json.loads(job.root.joinpath("plan.json").read_text(encoding="utf-8"))
+        assert len(saved_plan["eventTaskPlan"]["tasks"]) == 5
+        planned_subtasks = [task for group in saved_plan["groups"].values() for task in group["subtasks"]]
+        assert "event_causes" not in {task["id"] for task in planned_subtasks}
+        assert {"event_time", "participants", "event_content", "event_location"}.issubset({task["id"] for task in planned_subtasks})
+        for task_id in ["event_time", "participants", "event_content", "event_location"]:
+            task_group = next(group for group in saved_plan["groups"].values() if any(task["id"] == task_id for task in group["subtasks"]))
+            task = next(task for task in task_group["subtasks"] if task["id"] == task_id)
+            assert task["searchQueries"][0] in task_group["queries"]
         assert len(list(job.root.joinpath("groups").glob("group_*.json"))) == 3
         assert len(list(job.root.joinpath("research").glob("research_*.json"))) == 3
         consolidated = json.loads(job.root.joinpath("research", "consolidated.json").read_text(encoding="utf-8"))

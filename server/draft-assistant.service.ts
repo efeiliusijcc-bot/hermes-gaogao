@@ -40,6 +40,13 @@ import type {
 import type { VectorSourceItem } from './vector-source.service.js';
 import { VectorSourceService } from './vector-source.service.js';
 import { UserPreferencesService } from './user-preferences.service.js';
+import {
+  buildEventTaskPlan,
+  fallbackIntentRecognition,
+  normalizeEventTaskPlan,
+  normalizeIntentRecognition,
+  normalizeSubmittedEventPlanning,
+} from './event-task-plan.js';
 
 const OUTLINE_KEYS: Array<keyof DraftOutlineJson> = [
   'reportTitle',
@@ -92,6 +99,8 @@ const DEFAULT_ANALYSIS: DraftAnalysisJson = {
   importanceJudgement: '',
   uncertainties: [],
   suggestedAngles: [],
+  intentRecognition: fallbackIntentRecognition(),
+  eventTaskPlan: buildEventTaskPlan('', true),
 };
 
 const REPORT_PLAN_GLOBAL_CONSTRAINTS = [
@@ -146,9 +155,18 @@ export class DraftAssistantService implements OnModuleDestroy {
 
     try {
       const sources = await this.listSources(eventId);
-      const analysis = await this.generateAnalysis({ title, materials, category, region, sources });
+      let analysis: unknown;
+      try {
+        analysis = await this.generateAnalysis({ title, materials, category, region, sources });
+      } catch {
+        analysis = {
+          ...DEFAULT_ANALYSIS,
+          intentRecognition: fallbackIntentRecognition('模型分析暂不可用，无法可靠判断事件意图，请用户确认。'),
+          eventTaskPlan: buildEventTaskPlan(title, true),
+        };
+      }
       const normalizedAnalysis = this.ensureMinimumAnalysis(
-        this.normalizeAnalysis(analysis),
+        this.normalizeAnalysis(analysis, title, true),
         { title, materials, category, region, sources },
       );
       await this.updateEventAnalysis(eventId, normalizedAnalysis);
@@ -208,6 +226,22 @@ export class DraftAssistantService implements OnModuleDestroy {
   async generateOutline(input: DraftOutlineInput, user: AuthUser) {
     const eventId = this.requiredText(input.eventId, 'eventId', 80);
     const event = await this.loadEventForUser(eventId, user);
+    const storedIntent = event.analysis.intentRecognition;
+    const storedEventTaskPlan = event.analysis.eventTaskPlan;
+    if (storedIntent && storedEventTaskPlan) {
+      try {
+        const confirmed = normalizeSubmittedEventPlanning(
+          storedIntent,
+          input.intentRecognition || storedIntent,
+          input.eventTaskPlan || storedEventTaskPlan,
+          event.title,
+        );
+        event.analysis = { ...event.analysis, ...confirmed };
+        await this.updateEventAnalysis(eventId, event.analysis);
+      } catch (error) {
+        throw new BadRequestException({ error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     const sources = await this.listSources(eventId);
     const attitudes = await this.listAttitudes(eventId);
     const preferenceContext = await this.outlineUserPreferenceText(user);
@@ -427,6 +461,12 @@ export class DraftAssistantService implements OnModuleDestroy {
       sourceRequirements: outline.sourceRequirements,
       uncertaintiesToVerify: outline.uncertaintiesToVerify,
       globalWritingConstraints: REPORT_PLAN_GLOBAL_CONSTRAINTS,
+      ...(event.analysis.intentRecognition && event.analysis.eventTaskPlan
+        ? {
+            intentRecognition: event.analysis.intentRecognition,
+            eventTaskPlan: event.analysis.eventTaskPlan,
+          }
+        : {}),
     };
   }
 
@@ -490,6 +530,10 @@ export class DraftAssistantService implements OnModuleDestroy {
             '证据不足时不要编造事实，应明确写“待核实”。',
             '即使只有标题，也要输出基于标题的待核实分析框架。',
             'riskSummary 必须输出结构化对象，不要输出 JSON 字符串或 Markdown 代码块。',
+            '必须输出 intentRecognition，包含 detected、resolved、reason、source；detected 只能是 event_timeline、other、uncertain，source 为 model。',
+            '必须输出 eventTaskPlan.version=1，并按 event_time、participants、event_causes、event_content、event_location 固定顺序输出五项任务。',
+            '每项任务必须包含 id、dimension、title、objective、searchQueries、enabled，searchQueries 为 1-3 个可执行中文查询。',
+            '需要梳理具体事件发生、演进或影响时识别为 event_timeline；非事件主题为 other；证据不足时为 uncertain。',
           ],
           requiredShape: DEFAULT_ANALYSIS,
           attitudeShape: {
@@ -668,8 +712,19 @@ export class DraftAssistantService implements OnModuleDestroy {
     }
   }
 
-  private normalizeAnalysis(value: unknown): DraftAnalysisJson {
+  private normalizeAnalysis(value: unknown, topic = '', ensureEventPlanning = false): DraftAnalysisJson {
     const raw = this.objectValue(value);
+    const hasEventPlanning = Boolean(raw.intentRecognition || raw.eventTaskPlan || ensureEventPlanning);
+    const intentRecognition = hasEventPlanning
+      ? normalizeIntentRecognition(raw.intentRecognition, {
+          source: this.objectValue(raw.intentRecognition).source === 'model' ? 'model' : 'fallback',
+          fallbackReason: '模型未返回完整的事件意图识别结果，请用户确认。',
+          allowUncertainResolution: !ensureEventPlanning,
+        })
+      : undefined;
+    const eventTaskPlan = hasEventPlanning
+      ? normalizeEventTaskPlan(raw.eventTaskPlan, topic, intentRecognition?.detected !== 'other')
+      : undefined;
     return {
       oneSentenceSummary: this.text(raw.oneSentenceSummary || raw.summary || raw.eventSummary, 2000),
       basicSituation: this.text(raw.basicSituation || raw.situation || raw.eventOverview, 8000),
@@ -683,6 +738,7 @@ export class DraftAssistantService implements OnModuleDestroy {
       importanceJudgement: this.text(raw.importanceJudgement, 4000),
       uncertainties: this.arrayValue(raw.uncertainties),
       suggestedAngles: this.arrayValue(raw.suggestedAngles),
+      ...(intentRecognition && eventTaskPlan ? { intentRecognition, eventTaskPlan } : {}),
     };
   }
 
@@ -1117,7 +1173,7 @@ export class DraftAssistantService implements OnModuleDestroy {
       importanceScore: Number(row.importance_score || 0),
       riskScore: Number(row.risk_score || 0),
       rawInput: this.objectValue(row.raw_input),
-      analysis: this.normalizeAnalysis(row.analysis_json || {}),
+      analysis: this.normalizeAnalysis(row.analysis_json || {}, String(row.title || '')),
       createdAt: this.dateString(row.created_at),
       updatedAt: this.dateString(row.updated_at),
     };

@@ -81,6 +81,8 @@ const {
   togglePlanOption,
   addPlanOption,
   togglePlanSearchQuery,
+  resolvePlanIntent,
+  updatePlanEventTask,
   nextPlanStep,
   prevPlanStep,
   refreshHealth,
@@ -701,6 +703,8 @@ function formatArchiveTime(value) {
         @toggle-plan-option="togglePlanOption"
         @add-plan-option="addPlanOption"
         @toggle-plan-search-query="togglePlanSearchQuery"
+        @resolve-plan-intent="resolvePlanIntent"
+        @update-plan-event-task="updatePlanEventTask"
         @next-plan-step="nextPlanStep"
         @prev-plan-step="prevPlanStep"
         @update:homeMode="setHomeMode"

@@ -22,4 +22,10 @@ assert.deepEqual(parseStructuredPlanningContext(payload.planningContext), contex
 assert.deepEqual(parseStructuredPlanningContext(JSON.stringify(context)), context);
 assert.deepEqual(parseStructuredPlanningContext(JSON.stringify(JSON.stringify(context))), context);
 
+const eventOnlyContext = {
+  intentRecognition: { detected: 'event_timeline', resolved: 'event_timeline', reason: '事件主题', source: 'model' },
+  eventTaskPlan: { version: 1, tasks: [] },
+};
+assert.deepEqual(parseStructuredPlanningContext(JSON.stringify(eventOnlyContext)), eventOnlyContext);
+
 console.log('report planning context tests passed');

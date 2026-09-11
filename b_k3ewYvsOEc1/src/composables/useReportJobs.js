@@ -25,6 +25,7 @@ import {
 import { buildPlanningContextPayload } from '../lib/reportPlanningContext.js'
 import { REPORT_HISTORY_CREATED_AFTER } from '../lib/reportHistoryCutoff.js'
 import { executionLogIdentity, mergeExecutionLogEntries } from '../lib/reportExecutionLogs.js'
+import { attachEventPlanningSteps, eventPlanningError } from '../lib/eventTaskPlan.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
 
@@ -1290,10 +1291,12 @@ export function useReportJobs() {
       .map((item) => item.trim())
       .filter(Boolean)
     const context = {
-      version: 1,
       kind: 'structured_report_context',
+      version: 2,
       topic: title.value.trim(),
       reportType: reportType.value,
+      intentRecognition: plan?.intentRecognition || null,
+      eventTaskPlan: plan?.eventTaskPlan || null,
       selectedSearchQueries: selectedQueries,
       selectedSources,
       userProvidedSources,
@@ -1577,6 +1580,45 @@ export function useReportJobs() {
     planSearchSelections.value = (reportPlan.value?.searchQueries || []).filter((item) => current.has(item))
   }
 
+  function resolvePlanIntent(resolved) {
+    if (!reportPlan.value || !['event_timeline', 'other'].includes(resolved)) return
+    planError.value = ''
+    reportPlan.value = attachEventPlanningSteps({
+      ...reportPlan.value,
+      intentRecognition: {
+        ...(reportPlan.value.intentRecognition || {}),
+        resolved,
+      },
+    })
+    planStepIndex.value = Math.min(
+      planStepIndex.value,
+      Math.max((reportPlan.value?.steps?.length || 1) - 1, 0),
+    )
+  }
+
+  function updatePlanEventTask(payload = {}) {
+    const taskId = String(payload.id || '')
+    const changes = payload.changes && typeof payload.changes === 'object' ? payload.changes : {}
+    if (!taskId || !reportPlan.value?.eventTaskPlan?.tasks) return
+    planError.value = ''
+    reportPlan.value = {
+      ...reportPlan.value,
+      eventTaskPlan: {
+        ...reportPlan.value.eventTaskPlan,
+        tasks: reportPlan.value.eventTaskPlan.tasks.map((task) => task.id === taskId
+          ? {
+              ...task,
+              ...(typeof changes.enabled === 'boolean' ? { enabled: changes.enabled } : {}),
+              ...(typeof changes.objective === 'string' ? { objective: changes.objective.slice(0, 500) } : {}),
+              ...(Array.isArray(changes.searchQueries)
+                ? { searchQueries: changes.searchQueries.map((query) => String(query).trim().slice(0, 80)).filter(Boolean).slice(0, 3) }
+                : {}),
+            }
+          : task),
+      },
+    }
+  }
+
   function nextPlanStep() {
     const total = reportPlan.value?.steps?.length || 0
     planStepIndex.value = Math.min(planStepIndex.value + 1, Math.max(total - 1, 0))
@@ -1611,7 +1653,7 @@ export function useReportJobs() {
         context: buildContext(),
         parameters,
       })
-      const normalizedPlan = normalizeKReportPlan(plan)
+      const normalizedPlan = attachEventPlanningSteps(normalizeKReportPlan(plan))
       reportPlan.value = normalizedPlan
       initializePlanSelections(normalizedPlan)
     } catch (error) {
@@ -1623,6 +1665,11 @@ export function useReportJobs() {
 
   async function confirmReportPlan() {
     if (isGenerating.value || !title.value.trim() || !reportType.value) return
+    const planningIssue = eventPlanningError(reportPlan.value?.intentRecognition, reportPlan.value?.eventTaskPlan)
+    if (planningIssue) {
+      planError.value = planningIssue
+      return
+    }
 
     const requestId = ++generationRequestId
     const plannedContext = buildPlanningContext()
@@ -2100,6 +2147,8 @@ export function useReportJobs() {
     togglePlanOption,
     addPlanOption,
     togglePlanSearchQuery,
+    resolvePlanIntent,
+    updatePlanEventTask,
     nextPlanStep,
     prevPlanStep,
     refreshHealth,

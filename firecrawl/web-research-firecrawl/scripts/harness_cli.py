@@ -271,6 +271,14 @@ DIMENSION_PRESETS = {
 
 DIMENSION_GROUPS = {"A": ["国家", "政策"], "B": ["地方", "社会"], "C": ["传播"]}
 
+EVENT_TASK_GROUPS = {
+    "event_time": "A",
+    "event_location": "A",
+    "participants": "B",
+    "event_causes": "B",
+    "event_content": "C",
+}
+
 
 def _guess_dimension(label: str, section: str) -> str:
     text = f"{label} {section}"
@@ -286,6 +294,12 @@ def _compact_group_queries(topic: str, selected_queries: list, group_subtasks: l
     """Keep each group bounded so agent runtime scales predictably."""
     selected = [q for q in selected_queries if q][:3]
     task_queries = []
+    for st in group_subtasks:
+        queries = st.get("searchQueries", [])
+        if isinstance(queries, list):
+            first = next((str(query).strip() for query in queries if str(query).strip()), "")
+            if first:
+                task_queries.append(first)
     seen_labels = set()
     for st in group_subtasks:
         label = (st.get("label") or "").strip()
@@ -297,7 +311,8 @@ def _compact_group_queries(topic: str, selected_queries: list, group_subtasks: l
             break
     compacted = []
     seen = set()
-    for query in selected + task_queries:
+    ordered = task_queries + selected if task_queries else selected
+    for query in ordered:
         normalized = re.sub(r"\s+", " ", query).strip()
         if normalized and normalized not in seen:
             seen.add(normalized)
@@ -337,6 +352,26 @@ def cmd_plan(args):
     modules = context.get("selectedModules", [])
     subtasks = []
     task_id = 0
+    intent = context.get("intentRecognition", {})
+    event_task_plan = context.get("eventTaskPlan", {})
+    if isinstance(intent, dict) and intent.get("resolved") == "event_timeline" and isinstance(event_task_plan, dict):
+        for task in event_task_plan.get("tasks", []):
+            if not isinstance(task, dict) or task.get("enabled") is not True:
+                continue
+            event_task_id = str(task.get("id") or "").strip()
+            group_id = EVENT_TASK_GROUPS.get(event_task_id)
+            if not group_id:
+                continue
+            subtasks.append({
+                "id": event_task_id,
+                "dimension": str(task.get("dimension") or "").strip(),
+                "label": str(task.get("title") or task.get("dimension") or event_task_id).strip(),
+                "detail": str(task.get("objective") or "").strip(),
+                "searchQueries": [str(query).strip() for query in task.get("searchQueries", []) if str(query).strip()][:3],
+                "section": "事件脉络梳理",
+                "research_group": group_id,
+                "task_kind": "event_dimension",
+            })
     if modules:
         for mod in modules:
             section = mod.get("sectionTitle") or mod.get("sectionKey", "")
@@ -354,7 +389,7 @@ def cmd_plan(args):
 
     groups = {}
     active_gids = [gid for gid, dims in DIMENSION_GROUPS.items()
-                   if any(s["dimension"] in dims for s in subtasks)]
+                   if any(s.get("research_group") == gid or s["dimension"] in dims for s in subtasks)]
     # Distribute selectedSearchQueries evenly across active groups
     queries_per_group = {}
     if active_gids and queries:
@@ -367,7 +402,7 @@ def cmd_plan(args):
             else:
                 queries_per_group[gid] = queries[start:start + chunk_size]
     for gid, dims in DIMENSION_GROUPS.items():
-        group_subtasks = [s for s in subtasks if s["dimension"] in dims]
+        group_subtasks = [s for s in subtasks if s.get("research_group") == gid or s["dimension"] in dims]
         if group_subtasks:
             group_queries = _compact_group_queries(
                 topic,
@@ -392,6 +427,8 @@ def cmd_plan(args):
 
     plan = {"topic": topic, "report_type": report_type, "total_queries": len(queries),
             "total_subtasks": len(subtasks), "groups": groups,
+            "intentRecognition": intent if isinstance(intent, dict) else {},
+            "eventTaskPlan": event_task_plan if isinstance(event_task_plan, dict) else {},
             "modules": [{"sectionTitle": m.get("sectionTitle"), "sectionKey": m.get("sectionKey"),
                          "directions": [{"id": d.get("id"), "label": d.get("label"), "detail": d.get("detail")}
                                         for raw in m.get("selectedDirections", [])

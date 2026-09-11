@@ -35,6 +35,7 @@ import { sanitizeLegacyPlanningContext, sanitizeReportPayload } from './legacy-p
 import { ResearchKeysService } from './research-keys.service.js';
 import { consumeHermesRunEventStream, HermesRunEventBridge } from './hermes-run-events.js';
 import { ENTITY_POLICY_PROMPT, extractEntityPolicy as extractEntityPolicyWithFallback, type EntityPolicy, type ExtractEntityPolicyInput } from './entity-policy.js';
+import { buildEventTaskPlan, fallbackIntentRecognition, normalizeEventTaskPlan, normalizeIntentRecognition } from './event-task-plan.js';
 import type { DeepReportSourceCollectionInput } from './deep-report-source-collection.types.js';
 import type { HermesHealth, ReportPlanRequest, ReportPlanResponse, RunInput, RunResult, ServerEvent } from './types.js';
 import type { ReportPlanStepType } from './types.js';
@@ -539,7 +540,10 @@ export class HermesService {
     const prompt = [
       '请为一个中文深度编报任务生成“规划搜索与子任务选择”方案。',
       '只输出严格 JSON，不要输出 Markdown，不要解释。',
-      'JSON 字段必须是：title, summary, searchQueries, steps。',
+      'JSON 字段必须是：title, summary, searchQueries, steps, intentRecognition, eventTaskPlan。',
+      'intentRecognition 字段必须包含 detected, resolved, reason, source；detected 只能是 event_timeline、other、uncertain，source 固定为 model。',
+      'eventTaskPlan 字段必须包含 version=1 和 tasks；tasks 固定按 event_time、participants、event_causes、event_content、event_location 五项输出。',
+      '每个 task 必须包含 id, dimension, title, objective, searchQueries, enabled；searchQueries 为 1-3 个中文检索词。',
       'steps 每项字段：id, type, sectionKey, sectionTitle, title, description, allowMultiple, options。',
       'options 每项字段：id, label, detail, selected。',
       '要求：',
@@ -553,6 +557,8 @@ export class HermesService {
       '8. source_scope options 不设固定数量上限；如检索到很多信源，去重后尽量全部展示。可补充官方/监管、主流媒体、智库研究、行业/数据材料、当事方/机构、区域/外文信源等兜底项。',
       '9. 选项要贴合报类、主题和所在章节，不要泛泛而谈；每个 source_scope option 的 label 应是具体信源名或明确来源类型，detail 说明该信源可提供什么材料。',
       '10. 不要包含 URL、密钥、环境变量或长正文。',
+      '11. 只有需要梳理具体事件发生、演进或影响的主题才识别为 event_timeline；非事件主题识别为 other；证据不足时必须识别为 uncertain。',
+      '12. event_timeline 的五项任务默认启用；other 的五项任务默认停用；uncertain 仍生成五项任务供用户确认。',
       '',
       `报类：${input.reportType}`,
       `主题：${input.topic}`,
@@ -1772,6 +1778,16 @@ export class HermesService {
           ? parsed.searchQueries.map((item) => this.sanitizeText(String(item), 80)).filter(Boolean).slice(0, 8)
           : fallback.searchQueries,
         steps: normalizedSteps,
+        intentRecognition: normalizeIntentRecognition(parsed.intentRecognition, {
+          source: 'model',
+          fallbackReason: '规划模型未返回可验证的意图识别结果，请用户确认。',
+          allowUncertainResolution: false,
+        }),
+        eventTaskPlan: normalizeEventTaskPlan(
+          parsed.eventTaskPlan,
+          fallback.title.replace(/：编报规划$/, ''),
+          normalizeIntentRecognition(parsed.intentRecognition, { source: 'model' }).detected !== 'other',
+        ),
       };
     } catch {
       return fallback;
@@ -1840,6 +1856,8 @@ export class HermesService {
     return {
       title: `${topic}：编报规划`,
       summary: `已围绕“${topic}”生成${reportLabel}检索词和研判子任务，请选择需要纳入正式编报的方向。`,
+      intentRecognition: fallbackIntentRecognition(),
+      eventTaskPlan: buildEventTaskPlan(topic, true),
       searchQueries: [
         `${topic} 最新动态`,
         `${topic} 政策背景 影响`,

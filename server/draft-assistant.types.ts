@@ -1,4 +1,5 @@
 import type { UserRole } from './auth-user.interface.js';
+import type { EventTaskPlan, IntentRecognition } from './types.js';
 
 export interface DraftAnalyzeInput {
   title?: string;
@@ -13,6 +14,8 @@ export interface DraftAnalyzeInput {
 export interface DraftOutlineInput {
   eventId?: string;
   outlinePreference?: string;
+  intentRecognition?: IntentRecognition;
+  eventTaskPlan?: EventTaskPlan;
 }
 
 export interface DraftOutlineRefineInput {
@@ -70,6 +73,8 @@ export interface DraftAnalysisJson {
   importanceJudgement: string;
   uncertainties: unknown[];
   suggestedAngles: unknown[];
+  intentRecognition?: IntentRecognition;
+  eventTaskPlan?: EventTaskPlan;
 }
 
 export interface DraftOutlineItem {
@@ -141,6 +146,8 @@ export interface DraftReportPlanJson {
   sourceRequirements: unknown[];
   uncertaintiesToVerify: unknown[];
   globalWritingConstraints: string[];
+  intentRecognition?: IntentRecognition;
+  eventTaskPlan?: EventTaskPlan;
 }
 
 export interface DraftCurrentUser {
