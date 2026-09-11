@@ -28,6 +28,9 @@ import {
   HERMES_RUN_MODE,
   HERMES_RUNS_URL,
   HERMES_STATE_DIR,
+  REPORT_AGENT_API_KEY,
+  REPORT_AGENT_BASE_URL,
+  REPORT_AGENT_MODEL,
   REPORT_TIMEOUT_MS,
 } from './config.js';
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
@@ -75,6 +78,16 @@ export class HermesService {
     baseURL: HERMES_BASE_URL,
     timeout: REPORT_TIMEOUT_MS,
   });
+
+  private readonly planningClient = REPORT_AGENT_API_KEY
+    ? new OpenAI({
+        apiKey: REPORT_AGENT_API_KEY,
+        baseURL: REPORT_AGENT_BASE_URL,
+        timeout: REPORT_TIMEOUT_MS,
+      })
+    : this.client;
+
+  private readonly planningModel = REPORT_AGENT_API_KEY ? REPORT_AGENT_MODEL : HERMES_MODEL;
 
   async health(timeoutMs = HEALTH_TIMEOUT_MS): Promise<HermesHealth> {
     if (HERMES_RUN_MODE === 'remote_cli') {
@@ -569,9 +582,10 @@ export class HermesService {
 
     try {
       const completion = await this.withTimeout(
-        this.client.chat.completions.create({
-          model: HERMES_MODEL,
+        this.planningClient.chat.completions.create({
+          model: this.planningModel,
           stream: false,
+          response_format: { type: 'json_object' },
           messages: [
             {
               role: 'system',
