@@ -53,7 +53,7 @@ export class HermesApprovalRequiredError extends Error {
   }
 }
 
-const PLAN_MODEL_TIMEOUT_MS = Number(process.env.REPORT_PLAN_TIMEOUT_MS || 25000);
+const PLAN_MODEL_TIMEOUT_MS = Number(process.env.REPORT_PLAN_TIMEOUT_MS || 60000);
 const PLAN_SEARCH_QUERY_TIMEOUT_MS = Number(process.env.REPORT_PLAN_SEARCH_QUERY_TIMEOUT_MS || 2500);
 const GATEWAY_FINAL_POLL_INTERVAL_MS = 2000;
 const RUNS_API_POLL_INTERVAL_MS = Number(process.env.HERMES_RUNS_POLL_INTERVAL_MS || 2000);
