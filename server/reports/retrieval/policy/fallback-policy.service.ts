@@ -11,12 +11,12 @@ export class FallbackPolicyService {
     private readonly policy: CandidatePolicyService,
   ) {}
 
-  select(candidates: RetrievalCandidate[], profile: QueryProfile): FallbackSelection {
-    const normal = this.policy.evaluate(candidates, profile, 'normal');
+  select(candidates: RetrievalCandidate[], profile: QueryProfile, finalLimit?: number): FallbackSelection {
+    const normal = this.policy.evaluate(candidates, profile, 'normal', finalLimit);
     if (normal.accepted.length) return this.result(normal.accepted, normal.decisions, 0, false, false, 'normal-policy');
 
     const suspicious = this.isSuspiciousDerivedEntityPolicy(candidates, normal.decisions, profile);
-    const relaxDerived = this.policy.evaluate(candidates, profile, 'relax-derived');
+    const relaxDerived = this.policy.evaluate(candidates, profile, 'relax-derived', finalLimit);
     if (relaxDerived.accepted.length) {
       return this.result(
         relaxDerived.accepted,
@@ -28,12 +28,12 @@ export class FallbackPolicyService {
       );
     }
 
-    const explicitOnly = this.policy.evaluate(candidates, profile, 'explicit-only');
+    const explicitOnly = this.policy.evaluate(candidates, profile, 'explicit-only', finalLimit);
     if (explicitOnly.accepted.length) {
       return this.result(explicitOnly.accepted, explicitOnly.decisions, 2, false, suspicious, 'kept-only-explicit-hard-entities');
     }
 
-    const scoreOnly = this.policy.evaluate(candidates, profile, 'score-only');
+    const scoreOnly = this.policy.evaluate(candidates, profile, 'score-only', finalLimit);
     if (scoreOnly.accepted.length) {
       return this.result(scoreOnly.accepted, scoreOnly.decisions, 3, false, suspicious, 'score-only-fallback');
     }

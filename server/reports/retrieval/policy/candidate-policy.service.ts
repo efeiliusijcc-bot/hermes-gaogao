@@ -21,6 +21,7 @@ export class CandidatePolicyService {
     candidates: RetrievalCandidate[],
     profile: QueryProfile,
     mode: CandidatePolicyMode,
+    finalLimit = this.config.finalTopK,
   ): PolicyEvaluation {
     const hardEntities = this.hardEntities(profile, mode);
     const minimumScore = mode === 'score-only'
@@ -42,7 +43,7 @@ export class CandidatePolicyService {
     });
     const selectedIds = new Set(evaluated
       .filter((decision) => decision.accepted)
-      .slice(0, this.config.finalTopK)
+      .slice(0, finalLimit)
       .map((decision) => decision.candidate.documentId));
     const decisions = evaluated.map((decision) =>
       decision.accepted && !selectedIds.has(decision.candidate.documentId)

@@ -1,0 +1,30 @@
+services:
+  source-recall:
+    image: ${SOURCE_RECALL_IMAGE:?Set an immutable image tag}
+    container_name: hermes-source-recall
+    restart: unless-stopped
+    env_file: ./source-recall.env
+    ports:
+      - "127.0.0.1:1557:1555"
+    networks:
+      - hermes-net
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.5
+    mem_limit: 384m
+    pids_limit: 96
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:1555/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+networks:
+  hermes-net:
+    external: true

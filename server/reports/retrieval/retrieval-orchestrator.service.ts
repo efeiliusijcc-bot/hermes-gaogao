@@ -7,6 +7,7 @@ import type {
   QueryProfile,
   RetrievalCandidate,
   RetrievalDiagnostics,
+  RetrievalOptions,
   RetrievalResult,
   RetrievalSource,
 } from './retrieval.types.js';
@@ -46,7 +47,7 @@ export class RetrievalOrchestratorService {
     private readonly audit: RetrievalAuditService,
   ) {}
 
-  async retrieve(request: CleanRetrievalInput): Promise<RetrievalResult> {
+  async retrieve(request: CleanRetrievalInput, options: RetrievalOptions = {}): Promise<RetrievalResult> {
     const storage = this.embedding.retrievalProfile?.();
     if (storage) assertHybridSidecarSourceTable(storage.sourceTable);
     const startedAt = Date.now();
@@ -56,12 +57,15 @@ export class RetrievalOrchestratorService {
     const queryEmbedding = await this.queryEmbedding(profile, errors);
     let pass = await this.runPass(profile, queryEmbedding, 1);
     errors.push(...pass.errors);
-    let selection = this.fallback.select(pass.reranked, profile);
+    const finalLimit = options.finalLimit === undefined
+      ? undefined
+      : Math.max(1, Math.min(50, Math.floor(options.finalLimit)));
+    let selection = this.fallback.select(pass.reranked, profile, finalLimit);
 
     if (selection.needsExpandedRetrieval) {
       pass = await this.runPass(profile, queryEmbedding, this.config.expandedTopKMultiplier);
       errors.push(...pass.errors);
-      const expanded = this.fallback.select(pass.reranked, profile);
+      const expanded = this.fallback.select(pass.reranked, profile, finalLimit);
       selection = {
         ...expanded,
         fallbackLevel: 4,
@@ -84,13 +88,34 @@ export class RetrievalOrchestratorService {
     };
 
     try {
-      await this.audit.persist({ runId, request, profile, diagnostics, decisions: selection.decisions });
+      const auditInput = options.auditMode === 'metadata-only'
+        ? this.metadataOnlyAuditInput(request)
+        : { request, profile };
+      await this.audit.persist({ runId, ...auditInput, diagnostics, decisions: selection.decisions });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Hybrid retrieval audit failed without blocking report: ${message.slice(0, 300)}`);
     }
 
     return { runId, profile, sources: selection.accepted, diagnostics };
+  }
+
+  private metadataOnlyAuditInput(request: CleanRetrievalInput) {
+    return {
+      request: {
+        reportJobId: request.reportJobId,
+        topic: '[external-source-recall]',
+        supplement: '',
+        explicitEntities: [],
+      },
+      profile: {
+        originalQuery: '[external-source-recall]',
+        supplement: '',
+        coreEntities: [],
+        coreTopics: [],
+        queryVariants: ['[external-source-recall]'],
+      },
+    };
   }
 
   private async queryEmbedding(

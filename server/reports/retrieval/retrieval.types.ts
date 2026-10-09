@@ -141,3 +141,8 @@ export interface RetrievalResult {
   sources: RetrievalCandidate[];
   diagnostics: RetrievalDiagnostics;
 }
+
+export interface RetrievalOptions {
+  finalLimit?: number;
+  auditMode?: 'full' | 'metadata-only';
+}
