@@ -4,15 +4,16 @@ import {
   Braces,
   Circle,
   CircleAlert,
-  GitBranch,
-  LayoutDashboard,
   LoaderCircle,
   ScrollText,
 } from '@lucide/vue'
 import { sanitizeReportExecutionText } from '../lib/reportExecutionLogs.js'
 import { formatTimelineDuration } from '../lib/reportTechnicalTimeline.js'
+import ResearchToolLog from './ResearchToolLog.vue'
 
 const props = defineProps({
+  jobId: { type: String, default: '' },
+  jobRunning: { type: Boolean, default: false },
   groups: {
     type: Array,
     default: () => [],
@@ -36,14 +37,12 @@ const props = defineProps({
 })
 
 const workspaceViews = [
-  { key: 'overview', label: '概览', icon: LayoutDashboard },
-  { key: 'chain', label: '调用链', icon: GitBranch },
   { key: 'io', label: '输入输出', icon: Braces },
   { key: 'logs', label: '日志', icon: ScrollText },
 ]
 
 const activeStageKey = ref('')
-const activeView = ref('overview')
+const activeView = ref('io')
 const userSelectedStage = ref(false)
 const autoOpenedErrorKey = ref('')
 const nowMs = ref(Date.now())
@@ -106,7 +105,6 @@ const rawLogEvents = computed(() => (
 ))
 
 const globalTokenUsage = computed(() => collectTokenUsage(allEvents.value))
-const activeTokenUsage = computed(() => collectTokenUsage(activeStage.value?.events || []))
 
 const taskDuration = computed(() => {
   const startedMs = Date.parse(props.taskStartedAt || '')
@@ -180,13 +178,6 @@ function formatClock(value) {
   return parsed.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
-function formatDateTime(value) {
-  if (!value) return '--'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return '--'
-  return parsed.toLocaleString('zh-CN', { hour12: false })
-}
-
 function durationLabel(group) {
   if (!group) return '--'
   if (group.status !== 'current' || props.taskStatus !== 'current' || !group.startedAt) {
@@ -207,14 +198,6 @@ function eventStatus(status) {
 
 function eventStatusLabel(status) {
   return statusLabel(eventStatus(status))
-}
-
-function actorLabel(actor) {
-  const value = String(actor || '').toLowerCase()
-  if (value === 'research-agent') return '调研智能体'
-  if (value === 'synthesis-agent') return '撰稿智能体'
-  if (value === 'main-agent') return '主智能体'
-  return '系统'
 }
 
 function eventName(event) {
@@ -381,62 +364,7 @@ function eventOutput(event) {
         </nav>
 
         <div class="technical-workbench-view">
-          <section v-if="activeView === 'overview'" class="technical-stage-overview">
-            <p class="technical-stage-description">{{ activeStage.desc || '--' }}</p>
-            <dl class="technical-stage-facts">
-              <div>
-                <dt>开始时间</dt>
-                <dd>{{ formatDateTime(activeStage.startedAt) }}</dd>
-              </div>
-              <div>
-                <dt>结束时间</dt>
-                <dd>{{ activeStage.status === 'current' && taskStatus === 'current' ? '至今' : formatDateTime(activeStage.endedAt) }}</dd>
-              </div>
-              <div>
-                <dt>阶段耗时</dt>
-                <dd>{{ durationLabel(activeStage) }}</dd>
-              </div>
-              <div>
-                <dt>已记录事件</dt>
-                <dd>{{ activeStage.eventCount || '--' }}</dd>
-              </div>
-            </dl>
-            <div class="technical-usage-section">
-              <strong>资源调用</strong>
-              <dl>
-                <div><dt>输入 Token</dt><dd>{{ tokenMetric(activeTokenUsage.input) }}</dd></div>
-                <div><dt>输出 Token</dt><dd>{{ tokenMetric(activeTokenUsage.output) }}</dd></div>
-                <div><dt>总 Token</dt><dd>{{ tokenMetric(activeTokenUsage.total) }}</dd></div>
-                <div><dt>模型调用数</dt><dd>--</dd></div>
-                <div><dt>Tool 调用数</dt><dd>--</dd></div>
-              </dl>
-            </div>
-          </section>
-
-          <section v-else-if="activeView === 'chain'" class="technical-call-chain" aria-label="阶段调用链">
-            <ol v-if="activeStage.events?.length">
-              <li v-for="event in activeStage.events" :key="event.id" :class="`is-${eventStatus(event.status)}`">
-                <span class="technical-call-chain-node" aria-hidden="true"></span>
-                <div class="technical-call-chain-main">
-                  <div>
-                    <strong>{{ actorLabel(event.actor) }}</strong>
-                    <span aria-hidden="true">→</span>
-                    <b>{{ eventName(event) }}</b>
-                    <span v-if="event.reconstructed" class="technical-reconstructed-tag">状态还原</span>
-                  </div>
-                  <small>{{ event.title || event.label || '执行事件' }}</small>
-                </div>
-                <div class="technical-call-chain-meta">
-                  <time>{{ formatClock(event.occurredAt || event.time) }}</time>
-                  <span>{{ event.durationLabel || '--' }}</span>
-                  <b>{{ eventStatusLabel(event.status) }}</b>
-                </div>
-              </li>
-            </ol>
-            <div v-else class="technical-empty-view">该阶段暂无已保存的调用事件</div>
-          </section>
-
-          <section v-else-if="activeView === 'io'" class="technical-io-view" aria-label="阶段输入输出">
+          <section v-if="activeView === 'io'" class="technical-io-view" aria-label="阶段输入输出">
             <div v-if="activeStage.events?.length" class="technical-io-list">
               <article v-for="event in activeStage.events" :key="event.id">
                 <header>
@@ -458,6 +386,16 @@ function eventOutput(event) {
             <div v-else class="technical-empty-view">该阶段暂无已保存的输入输出记录</div>
           </section>
 
+          <section v-else-if="activeStage.key === 'deep_collection' && jobId" class="technical-log-viewer">
+            <ResearchToolLog :job-id="jobId" :running="jobRunning" />
+            <details class="technical-orchestration-logs">
+              <summary>编排记录 · {{ rawLogEvents.length }} 条</summary>
+              <article v-for="event in rawLogEvents" :key="event.id">
+                <time>{{ formatClock(event.occurredAt || event.time) }}</time>
+                <pre>{{ event.raw }}</pre>
+              </article>
+            </details>
+          </section>
           <section v-else class="technical-log-viewer" aria-label="阶段原始技术日志">
             <header class="technical-log-viewer-toolbar">
               <span>原始执行日志</span>
@@ -494,6 +432,11 @@ function eventOutput(event) {
 </template>
 
 <style scoped>
+.technical-orchestration-logs { border-top: 1px solid #e2e8f0; padding: 14px 16px; }
+.technical-orchestration-logs summary { cursor: pointer; font-size: 14px; color: #475569; }
+.technical-orchestration-logs article { padding: 12px 0; border-bottom: 1px solid #eef2f6; }
+.technical-orchestration-logs time { font-size: 12px; color: #64748b; }
+.technical-orchestration-logs pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 14px; line-height: 22px; }
 .report-technical-workspace {
   min-width: 0;
   overflow: clip;
@@ -522,6 +465,7 @@ function eventOutput(event) {
   font-weight: 750;
 }
 
+
 .runtime-overview-metrics {
   display: grid;
   grid-template-columns: repeat(7, minmax(104px, 1fr));
@@ -537,9 +481,7 @@ function eventOutput(event) {
 
 .runtime-overview-metric:last-child { border-right: 0; }
 
-.runtime-overview-metric dt,
-.technical-stage-facts dt,
-.technical-usage-section dt {
+.runtime-overview-metric dt {
   color: #7a8599;
   font-size: 12px;
   font-weight: 650;
@@ -762,129 +704,6 @@ function eventOutput(event) {
 
 .technical-workbench-view { min-width: 0; }
 
-.technical-stage-overview { padding: 20px; }
-.technical-stage-description {
-  margin: 0;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #eef2f6;
-  color: #5d687b;
-  font-size: 14px;
-  line-height: 1.7;
-}
-.technical-stage-facts {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 0;
-  border-bottom: 1px solid #eef2f6;
-}
-.technical-stage-facts > div {
-  min-width: 0;
-  padding: 17px 14px 17px 0;
-}
-.technical-stage-facts dd,
-.technical-usage-section dd {
-  margin: 6px 0 0;
-  overflow: hidden;
-  color: #27364f;
-  font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 14px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.technical-usage-section { padding-top: 17px; }
-.technical-usage-section > strong {
-  color: #344054;
-  font-size: 14px;
-  font-weight: 750;
-}
-.technical-usage-section > dl {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-  margin: 12px 0 0;
-}
-.technical-usage-section > dl > div {
-  min-width: 0;
-  padding-left: 10px;
-  border-left: 2px solid #dbe7f8;
-}
-
-.technical-call-chain { padding: 8px 20px 16px; }
-.technical-call-chain ol {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.technical-call-chain li {
-  position: relative;
-  display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) auto;
-  gap: 12px;
-  min-height: 66px;
-  padding: 13px 0;
-  border-bottom: 1px solid #eef2f6;
-}
-.technical-call-chain li:last-child { border-bottom: 0; }
-.technical-call-chain-node {
-  width: 7px;
-  height: 7px;
-  margin-top: 7px;
-  border-radius: 50%;
-  background: #2563eb;
-}
-.technical-call-chain li.is-done .technical-call-chain-node {
-  background: #94a3b8;
-}
-.technical-call-chain li.is-recovered .technical-call-chain-node {
-  background: #64748b;
-}
-.technical-call-chain li.is-error .technical-call-chain-node {
-  background: #dc2626;
-}
-.technical-call-chain-main { min-width: 0; }
-.technical-call-chain-main > div {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px 8px;
-  color: #7a8599;
-  font-size: 14px;
-}
-.technical-call-chain-main strong { color: #344054; font-weight: 750; }
-.technical-call-chain-main b { color: #2563eb; font-weight: 750; }
-.technical-call-chain-main small {
-  display: block;
-  margin-top: 5px;
-  overflow: hidden;
-  color: #667085;
-  font-size: 13px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-.technical-reconstructed-tag {
-  padding: 2px 5px;
-  border: 1px solid #d0d5dd;
-  border-radius: 4px;
-  color: #667085;
-  background: #fff;
-  font-size: 12px;
-}
-.technical-call-chain-meta {
-  display: grid;
-  grid-template-columns: 72px 72px 50px;
-  gap: 10px;
-  color: #7a8599;
-  font-family: 'Fira Code', 'Microsoft YaHei', monospace;
-  font-size: 12px;
-  text-align: right;
-}
-.technical-call-chain-meta b { color: #475467; font-weight: 700; }
-.technical-call-chain li.is-recovered .technical-call-chain-meta b { color: #475569; }
-.technical-call-chain li.is-error .technical-call-chain-meta b { color: #dc2626; }
-
 .technical-io-list > article { border-bottom: 1px solid #e5eaf0; }
 .technical-io-list > article:last-child { border-bottom: 0; }
 .technical-io-list > article > header {
@@ -1044,15 +863,6 @@ function eventOutput(event) {
 @media (max-width: 900px) {
   .runtime-overview-metrics { grid-template-columns: repeat(7, minmax(110px, 1fr)); }
   .technical-master-detail { grid-template-columns: 196px minmax(0, 1fr); }
-  .technical-stage-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .technical-usage-section > dl { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 18px; }
-  .technical-call-chain li { grid-template-columns: 12px minmax(0, 1fr); }
-  .technical-call-chain-meta {
-    grid-column: 2;
-    grid-template-columns: repeat(3, auto);
-    justify-content: start;
-    text-align: left;
-  }
 }
 
 @media (max-width: 680px) {
@@ -1066,10 +876,6 @@ function eventOutput(event) {
   .technical-stage-nav-item { flex: 0 0 208px; }
   .technical-stage-workbench-header { min-height: 58px; padding-inline: 14px; }
   .technical-workbench-tabs { gap: 18px; overflow-x: auto; padding-inline: 14px; }
-  .technical-stage-overview { padding: 14px; }
-  .technical-stage-facts { grid-template-columns: 1fr; }
-  .technical-stage-facts > div { padding-block: 12px; }
-  .technical-usage-section > dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .technical-io-grid { grid-template-columns: 1fr; }
   .technical-io-grid section + section { border-top: 1px solid #e5eaf0; border-left: 0; }
   .technical-log-columns,

@@ -584,6 +584,10 @@ export function fetchReportJobEventLog(jobId) {
   return request(`/report-jobs/${jobId}/event-log`)
 }
 
+export function fetchResearchToolLog(jobId) {
+  return request(`/report-jobs/${encodeURIComponent(jobId)}/research-tool-log`)
+}
+
 export function fetchReportProgress(jobId) {
   return request(`/report-jobs/${jobId}/progress`)
 }

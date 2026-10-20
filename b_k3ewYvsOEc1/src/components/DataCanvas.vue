@@ -5310,6 +5310,8 @@ function exportPdf() {
             <summary>查看技术详情</summary>
             <div ref="liveLogListRef" class="source-technical-log" @scroll="handleLogScroll('live', $event)">
               <ReportTechnicalTimeline
+                :job-id="job?.jobId || ''"
+                :job-running="job?.status === 'running' || job?.status === 'queued'"
                 :groups="technicalTimelineGroups"
                 :task-status="overallProgressStatus"
                 :task-started-at="job?.createdAt || ''"
@@ -6050,6 +6052,8 @@ function exportPdf() {
             <summary>查看技术详情</summary>
             <div ref="liveLogListRef" class="source-technical-log" @scroll="handleLogScroll('live', $event)">
               <ReportTechnicalTimeline
+                :job-id="job?.jobId || ''"
+                :job-running="job?.status === 'running' || job?.status === 'queued'"
                 :groups="technicalTimelineGroups"
                 :task-status="overallProgressStatus"
                 :task-started-at="job?.createdAt || ''"
