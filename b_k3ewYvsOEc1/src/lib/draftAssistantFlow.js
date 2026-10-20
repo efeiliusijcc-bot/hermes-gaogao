@@ -1,3 +1,13 @@
+import { normalizeIntentRecognition } from './eventTaskPlan.js'
+
+export function resolveDraftIntentRecognition(value) {
+  const intent = normalizeIntentRecognition(value)
+  return {
+    ...intent,
+    resolved: intent.resolved || (intent.detected === 'other' ? 'other' : 'event_timeline'),
+  }
+}
+
 function cleanTitleLine(value) {
   return String(value || '')
     .replace(/^\s*(?:[-*•]|\d+[.)、])\s*/, '')

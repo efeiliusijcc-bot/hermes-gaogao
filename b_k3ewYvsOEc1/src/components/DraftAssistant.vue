@@ -15,10 +15,11 @@ import {
   buildDraftAnalysisSections,
   buildDraftAnalyzePayload,
   resetDraftScroll,
+  resolveDraftIntentRecognition,
   restoredDraftStage,
 } from '../lib/draftAssistantFlow.js'
 import { createDraftAutosave } from '../lib/draftAutosave.js'
-import { eventPlanningError, hasEventPlanning, normalizeEventTaskPlan, normalizeIntentRecognition } from '../lib/eventTaskPlan.js'
+import { eventPlanningError, hasEventPlanning, normalizeEventTaskPlan } from '../lib/eventTaskPlan.js'
 import DraftAnalysisView from './DraftAnalysisView.vue'
 import DraftHistorySidebar from './DraftHistorySidebar.vue'
 import DraftImportState from './DraftImportState.vue'
@@ -53,6 +54,13 @@ const isLoadingEvents = ref(false)
 const importState = reactive({ status: 'idle', error: '', job: null })
 const mainRef = ref(null)
 
+// A response belongs to the draft view that started it, not a later history selection.
+let draftContextVersion = 0
+let historyRequestVersion = 0
+let eventsRequestVersion = 0
+let disposed = false
+const isCurrentDraft = (version) => !disposed && version === draftContextVersion
+
 const currentEventId = computed(() => (
   eventResult.value?.eventId
   || eventResult.value?.event?.eventId
@@ -62,7 +70,7 @@ const currentEventId = computed(() => (
 const analysisSections = computed(() => buildDraftAnalysisSections(eventResult.value || {}))
 const currentAnalysis = computed(() => eventResult.value?.analysis || eventResult.value?.event?.analysis || {})
 const eventPlanningAvailable = computed(() => hasEventPlanning(currentAnalysis.value))
-const draftIntentRecognition = computed(() => eventPlanningAvailable.value ? normalizeIntentRecognition(currentAnalysis.value.intentRecognition) : null)
+const draftIntentRecognition = computed(() => eventPlanningAvailable.value ? resolveDraftIntentRecognition(currentAnalysis.value.intentRecognition) : null)
 const draftEventTaskPlan = computed(() => eventPlanningAvailable.value ? normalizeEventTaskPlan(currentAnalysis.value.eventTaskPlan) : null)
 const draftEventPlanningError = computed(() => eventPlanningAvailable.value
   ? eventPlanningError(draftIntentRecognition.value, draftEventTaskPlan.value)
@@ -91,15 +99,6 @@ function replaceCurrentAnalysis(nextAnalysis) {
       event: { ...eventResult.value.event, analysis: nextAnalysis },
     }
   }
-}
-
-function resolveDraftIntent(resolved) {
-  if (!eventPlanningAvailable.value || !['event_timeline', 'other'].includes(resolved)) return
-  pageError.value = ''
-  replaceCurrentAnalysis({
-    ...currentAnalysis.value,
-    intentRecognition: { ...draftIntentRecognition.value, resolved },
-  })
 }
 
 function updateDraftEventTask(payload = {}) {
@@ -222,15 +221,17 @@ function syncOutlineDraft(value) {
 
 const autosave = createDraftAutosave({
   save: async (snapshot) => {
+    const contextVersion = draftContextVersion
     validateOutline(snapshot)
     const saved = await manualUpdateDraftOutline({
       outlineId: selectedOutline.value.outlineId,
       outline: snapshot,
       editNote: '',
     })
-    selectedOutline.value = saved
+    if (isCurrentDraft(contextVersion)) selectedOutline.value = saved
   },
   onState: (status, error) => {
+    if (disposed) return
     saveStatus.value = status
     saveError.value = error ? messageOf(error) : ''
   },
@@ -241,16 +242,19 @@ watch(outlineDraft, (value) => {
   autosave.schedule(cloneOutline(value))
 }, { deep: true, flush: 'sync' })
 
-async function loadEvents() {
-  if (!props.currentUser) return
+async function loadEvents({ reportErrors = true } = {}) {
+  if (disposed || !props.currentUser) return
+  const requestVersion = ++eventsRequestVersion
+  const contextVersion = draftContextVersion
   isLoadingEvents.value = true
   try {
     const result = await getDraftEvents({ page: 1, pageSize: 50 })
+    if (disposed || requestVersion !== eventsRequestVersion) return
     eventList.value = Array.isArray(result?.items) ? result.items : []
   } catch (error) {
-    pageError.value = messageOf(error)
+    if (reportErrors && isCurrentDraft(contextVersion) && requestVersion === eventsRequestVersion) pageError.value = messageOf(error)
   } finally {
-    isLoadingEvents.value = false
+    if (!disposed && requestVersion === eventsRequestVersion) isLoadingEvents.value = false
   }
 }
 
@@ -261,6 +265,11 @@ function resetImportState() {
 }
 
 function resetCurrentDraft() {
+  draftContextVersion += 1
+  historyRequestVersion += 1
+  isAnalyzing.value = false
+  isGeneratingOutline.value = false
+  isRevising.value = false
   eventResult.value = null
   selectedOutline.value = null
   syncingOutline = true
@@ -275,6 +284,7 @@ function resetCurrentDraft() {
 }
 
 async function startDraft() {
+  if (isAnalyzing.value) return
   sourceError.value = ''
   analysisError.value = ''
   pageError.value = ''
@@ -292,19 +302,22 @@ async function startDraft() {
   }
 
   resetCurrentDraft()
+  const contextVersion = draftContextVersion
   stage.value = 'analysis'
   isAnalyzing.value = true
   try {
-    eventResult.value = await analyzeDraftEvent(payload)
-    await loadEvents()
+    const result = await analyzeDraftEvent(payload)
+    if (isCurrentDraft(contextVersion)) eventResult.value = result
+    await loadEvents({ reportErrors: isCurrentDraft(contextVersion) })
   } catch (error) {
-    analysisError.value = messageOf(error)
+    if (isCurrentDraft(contextVersion)) analysisError.value = messageOf(error)
   } finally {
-    isAnalyzing.value = false
+    if (isCurrentDraft(contextVersion)) isAnalyzing.value = false
   }
 }
 
 async function createOutline() {
+  if (isGeneratingOutline.value || isAnalyzing.value) return
   pageError.value = ''
   if (!currentEventId.value) {
     pageError.value = '请先完成事件分析'
@@ -315,6 +328,7 @@ async function createOutline() {
     return
   }
   isGeneratingOutline.value = true
+  const contextVersion = draftContextVersion
   try {
     const created = await generateDraftOutline({
       eventId: currentEventId.value,
@@ -326,52 +340,58 @@ async function createOutline() {
           }
         : {}),
     })
+    if (!isCurrentDraft(contextVersion)) return
     selectedOutline.value = created
     syncOutlineDraft(created.outline)
     stage.value = 'outline'
   } catch (error) {
-    pageError.value = messageOf(error)
+    if (isCurrentDraft(contextVersion)) pageError.value = messageOf(error)
   } finally {
-    isGeneratingOutline.value = false
+    if (isCurrentDraft(contextVersion)) isGeneratingOutline.value = false
   }
 }
 
 async function flushBeforeLeaving() {
+  const contextVersion = draftContextVersion
   try {
     await autosave.flush()
-    return saveStatus.value !== 'error'
+    return isCurrentDraft(contextVersion) && saveStatus.value !== 'error'
   } catch (error) {
-    pageError.value = `当前提纲保存失败：${messageOf(error)}`
+    if (isCurrentDraft(contextVersion)) pageError.value = `当前提纲保存失败：${messageOf(error)}`
     return false
   }
 }
 
 async function reviseOutline() {
+  if (isRevising.value) return
   pageError.value = ''
   if (!revisionFeedback.value.trim() || !selectedOutline.value?.outlineId) return
   if (!(await flushBeforeLeaving())) return
+  const contextVersion = draftContextVersion
   isRevising.value = true
   try {
     const revised = await refineDraftOutline({
       outlineId: selectedOutline.value.outlineId,
       userFeedback: revisionFeedback.value.trim(),
     })
+    if (!isCurrentDraft(contextVersion)) return
     selectedOutline.value = revised
     syncOutlineDraft(revised.outline)
     revisionFeedback.value = ''
   } catch (error) {
-    pageError.value = messageOf(error)
+    if (isCurrentDraft(contextVersion)) pageError.value = messageOf(error)
   } finally {
-    isRevising.value = false
+    if (isCurrentDraft(contextVersion)) isRevising.value = false
   }
 }
 
 async function retrySave() {
+  const contextVersion = draftContextVersion
   pageError.value = ''
   try {
     await autosave.retry()
   } catch (error) {
-    pageError.value = `当前提纲保存失败：${messageOf(error)}`
+    if (isCurrentDraft(contextVersion)) pageError.value = `当前提纲保存失败：${messageOf(error)}`
   }
 }
 
@@ -427,22 +447,27 @@ function buildDraftReportPayload(imported, reportTitle) {
 }
 
 async function importToDeepReport() {
+  if (stage.value === 'importing') return
   pageError.value = ''
   if (!selectedOutline.value?.outlineId) return
   if (!(await flushBeforeLeaving())) return
+  const contextVersion = draftContextVersion
+  const reportTitleFallback = outlineDraft.value.reportTitle
   stage.value = 'importing'
   importState.status = 'creating'
   importState.error = ''
   try {
     const imported = await importDraftOutline({ outlineId: selectedOutline.value.outlineId })
-    const reportTitle = imported.plan?.reportTitle || outlineDraft.value.reportTitle || '未命名编报'
+    const reportTitle = imported.plan?.reportTitle || reportTitleFallback || '未命名编报'
     const created = await createReportJob(buildDraftReportPayload(imported, reportTitle))
+    if (!isCurrentDraft(contextVersion)) return
     const job = { ...created, payload: { topic: reportTitle, report_type: 'K报' } }
     importState.status = 'completed'
     importState.job = job
     stage.value = 'completed'
     emit('report-job-created', job)
   } catch (error) {
+    if (!isCurrentDraft(contextVersion)) return
     importState.status = 'error'
     importState.error = messageOf(error)
   }
@@ -456,10 +481,14 @@ function sourceFromEvent(result) {
 
 async function openEvent(eventId) {
   if (!eventId || stage.value === 'importing') return
+  const requestVersion = ++historyRequestVersion
   pageError.value = ''
   if (!(await flushBeforeLeaving())) return
+  if (disposed || requestVersion !== historyRequestVersion) return
   try {
     const result = await getDraftEvent(eventId)
+    if (disposed || requestVersion !== historyRequestVersion) return
+    resetCurrentDraft()
     eventResult.value = result
     sourceInput.value = sourceFromEvent(result)
     selectedOutline.value = result.latestOutline || null
@@ -476,12 +505,15 @@ async function openEvent(eventId) {
     stage.value = restoredDraftStage(result)
     historyOpen.value = false
   } catch (error) {
-    pageError.value = messageOf(error)
+    if (!disposed && requestVersion === historyRequestVersion) pageError.value = messageOf(error)
   }
 }
 
 async function startNewEvent() {
+  if (stage.value === 'importing') return
+  const requestVersion = ++historyRequestVersion
   if (!(await flushBeforeLeaving())) return
+  if (disposed || requestVersion !== historyRequestVersion) return
   sourceInput.value = ''
   sourceError.value = ''
   resetCurrentDraft()
@@ -496,9 +528,10 @@ function handleBeforeUnload(event) {
 }
 
 onMounted(async () => {
+  const requestVersion = historyRequestVersion
   window.addEventListener('beforeunload', handleBeforeUnload)
   await loadEvents()
-  if (props.initialEventId) await openEvent(props.initialEventId)
+  if (!disposed && requestVersion === historyRequestVersion && props.initialEventId) await openEvent(props.initialEventId)
 })
 
 watch(() => props.initialEventId, (eventId) => {
@@ -514,6 +547,10 @@ watch(stage, () => {
 }, { flush: 'post' })
 
 onBeforeUnmount(() => {
+  disposed = true
+  draftContextVersion += 1
+  historyRequestVersion += 1
+  eventsRequestVersion += 1
   window.removeEventListener('beforeunload', handleBeforeUnload)
   void autosave.flush().catch(() => undefined).finally(() => autosave.dispose())
 })
@@ -581,7 +618,6 @@ onBeforeUnmount(() => {
           @back="stage = 'input'"
           @retry="startDraft"
           @generate="createOutline"
-          @resolve-intent="resolveDraftIntent"
           @update-task="updateDraftEventTask"
         />
 

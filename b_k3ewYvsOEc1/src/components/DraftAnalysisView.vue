@@ -23,7 +23,7 @@ defineProps({
   planningError: { type: String, default: '' },
 })
 
-const emit = defineEmits(['back', 'generate', 'retry', 'resolve-intent', 'update-task'])
+const emit = defineEmits(['back', 'generate', 'retry', 'update-task'])
 </script>
 
 <template>
@@ -62,9 +62,9 @@ const emit = defineEmits(['back', 'generate', 'retry', 'resolve-intent', 'update
       <div v-if="!loading && !error" class="draft-event-planning">
         <EventTaskPlanEditor
           v-if="planningAvailable"
+          :show-intent="false"
           :intent-recognition="intentRecognition"
           :event-task-plan="eventTaskPlan"
-          @resolve-intent="emit('resolve-intent', $event)"
           @update-task="emit('update-task', $event)"
         />
         <div v-else class="draft-event-planning-missing">

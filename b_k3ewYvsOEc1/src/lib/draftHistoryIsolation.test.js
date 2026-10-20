@@ -1,0 +1,245 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+import { babelParse, compileScript, parse } from '@vue/compiler-sfc'
+import * as vue from 'vue'
+import * as flow from './draftAssistantFlow.js'
+import * as autosave from './draftAutosave.js'
+import * as planning from './eventTaskPlan.js'
+
+const source = readFileSync(new URL('../components/DraftAssistant.vue', import.meta.url), 'utf8')
+const { descriptor } = parse(source)
+const script = compileScript(descriptor, { id: 'draft-history-test', genDefaultAs: 'component' })
+const imports = babelParse(script.content, { sourceType: 'module' }).program.body
+  .filter((node) => node.type === 'ImportDeclaration')
+let setupCode = script.content
+for (const node of [...imports].reverse()) {
+  setupCode = setupCode.slice(0, node.start) + setupCode.slice(node.end)
+}
+
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+const settle = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve() }
+const outline = (id) => ({
+  outlineId: `outline-${id}`,
+  eventId: id,
+  outline: {
+    reportTitle: `Title ${id}`,
+    outlineItems: [{ title: 'Section', summary: 'Facts', children: [] }],
+  },
+})
+const event = (id, withOutline = false) => ({
+  event: { eventId: id, title: id, rawInput: { materials: `Materials ${id}` } },
+  analysis: { oneSentenceSummary: `Summary ${id}` },
+  latestOutline: withOutline ? outline(id) : null,
+})
+
+function mountLogic(t, overrides = {}) {
+  const scope = vue.effectScope()
+  const unmounts = []
+  const emissions = []
+  const api = {
+    getDraftEvents: async () => ({ items: [] }),
+    getDraftEvent: async (id) => event(id),
+    ...overrides,
+  }
+  const modules = {
+    vue: { ...vue, onMounted: () => {}, onBeforeUnmount: (fn) => unmounts.push(fn) },
+    '../lib/api.js': api,
+    '../lib/draftAssistantFlow.js': flow,
+    '../lib/draftAutosave.js': autosave,
+    '../lib/eventTaskPlan.js': planning,
+  }
+  const bindings = { window: { addEventListener() {}, removeEventListener() {} } }
+  for (const node of imports) {
+    const module = modules[node.source.value]
+    for (const spec of node.specifiers) {
+      bindings[spec.local.name] = module
+        ? (module[spec.imported?.name || 'default'] || (() => { throw new Error(`Unexpected call: ${spec.local.name}`) }))
+        : {}
+    }
+  }
+  const component = new Function(...Object.keys(bindings), `${setupCode}\nreturn component;`)(...Object.values(bindings))
+  const state = scope.run(() => component.setup(
+    { currentUser: { id: 'test-user' }, initialEventId: '' },
+    { expose() {}, emit: (...args) => emissions.push(args) },
+  ))
+  const unmount = () => { unmounts.forEach((fn) => fn()); scope.stop() }
+  t.after(unmount)
+  return { state, emissions, unmount }
+}
+
+test('history selection clears another draft loading state and ignores its late analysis', async (t) => {
+  const analysis = deferred()
+  const { state: s } = mountLogic(t, { analyzeDraftEvent: () => analysis.promise })
+  s.sourceInput.value = 'Draft A'
+  const pending = s.startDraft()
+  assert.equal(s.isAnalyzing.value, true)
+  await s.openEvent('B')
+  assert.equal(s.isAnalyzing.value, false)
+  assert.equal(s.currentEventId.value, 'B')
+  analysis.resolve(event('A'))
+  await pending
+  assert.equal(s.currentEventId.value, 'B')
+  assert.equal(s.sourceInput.value, 'Materials B')
+  assert.equal(s.analysisSections.value[0].content, 'Summary B')
+})
+
+test('late analysis failures do not appear on another history record', async (t) => {
+  const analysis = deferred()
+  const { state: s } = mountLogic(t, { analyzeDraftEvent: () => analysis.promise })
+  s.sourceInput.value = 'Draft A'
+  const pending = s.startDraft()
+  await s.openEvent('B')
+  analysis.reject(new Error('A request failed'))
+  await pending
+  assert.equal(s.analysisError.value, '')
+  assert.equal(s.pageError.value, '')
+})
+
+test('late analysis completion cannot stop a newer analysis spinner', async (t) => {
+  const a = deferred(), b = deferred()
+  let call = 0
+  const { state: s } = mountLogic(t, { analyzeDraftEvent: () => (++call === 1 ? a.promise : b.promise) })
+  s.sourceInput.value = 'Draft A'
+  const first = s.startDraft()
+  await s.startNewEvent()
+  s.sourceInput.value = 'Draft B'
+  const second = s.startDraft()
+  a.resolve(event('A'))
+  await first
+  assert.equal(s.isAnalyzing.value, true)
+  assert.equal(s.currentEventId.value, '')
+  b.resolve(event('B'))
+  await second
+  assert.equal(s.isAnalyzing.value, false)
+  assert.equal(s.currentEventId.value, 'B')
+})
+
+test('rapid history clicks apply only the last selection even when responses arrive out of order', async (t) => {
+  const b = deferred(), c = deferred()
+  const { state: s } = mountLogic(t, { getDraftEvent: (id) => id === 'B' ? b.promise : c.promise })
+  const first = s.openEvent('B')
+  await settle()
+  const second = s.openEvent('C')
+  await settle()
+  c.resolve(event('C'))
+  await second
+  b.resolve(event('B'))
+  await first
+  assert.equal(s.currentEventId.value, 'C')
+})
+
+test('new draft invalidates pending history reads', async (t) => {
+  const history = deferred()
+  const { state: s } = mountLogic(t, { getDraftEvent: () => history.promise })
+  const pending = s.openEvent('A')
+  await settle()
+  await s.startNewEvent()
+  history.resolve(event('A', true))
+  await pending
+  assert.equal(s.stage.value, 'input')
+  assert.equal(s.currentEventId.value, '')
+})
+
+test('outline generation stays isolated across history switches and newer requests', async (t) => {
+  const a = deferred(), b = deferred()
+  const { state: s } = mountLogic(t, { generateDraftOutline: ({ eventId }) => eventId === 'A' ? a.promise : b.promise })
+  await s.openEvent('A')
+  const first = s.createOutline()
+  await s.openEvent('B')
+  assert.equal(s.isGeneratingOutline.value, false)
+  const second = s.createOutline()
+  a.resolve(outline('A'))
+  await first
+  assert.equal(s.isGeneratingOutline.value, true)
+  assert.equal(s.selectedOutline.value, null)
+  b.resolve(outline('B'))
+  await second
+  assert.equal(s.selectedOutline.value.outlineId, 'outline-B')
+  assert.equal(s.isGeneratingOutline.value, false)
+})
+
+test('late outline revision does not replace the opened history outline', async (t) => {
+  const revision = deferred()
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async (id) => event(id, true),
+    refineDraftOutline: () => revision.promise,
+  })
+  await s.openEvent('A')
+  s.revisionFeedback.value = 'Revise A'
+  const pending = s.reviseOutline()
+  await settle()
+  await s.openEvent('B')
+  assert.equal(s.isRevising.value, false)
+  revision.resolve(outline('A'))
+  await pending
+  assert.equal(s.selectedOutline.value.outlineId, 'outline-B')
+})
+
+test('history navigation still waits for the original outline autosave', async (t) => {
+  const save = deferred()
+  let savedId
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async (id) => event(id, true),
+    manualUpdateDraftOutline: ({ outlineId }) => { savedId = outlineId; return save.promise },
+  })
+  await s.openEvent('A')
+  await settle()
+  s.outlineDraft.value.reportTitle = 'Edited A'
+  const switching = s.openEvent('B')
+  await settle()
+  assert.equal(savedId, 'outline-A')
+  assert.equal(s.currentEventId.value, 'A')
+  save.resolve(outline('A'))
+  await switching
+  assert.equal(s.currentEventId.value, 'B')
+  assert.equal(s.outlineDraft.value.reportTitle, 'Title B')
+})
+
+test('unmounted draft ignores pending analysis responses', async (t) => {
+  const analysis = deferred()
+  const { state: s, unmount } = mountLogic(t, { analyzeDraftEvent: () => analysis.promise })
+  s.sourceInput.value = 'Draft A'
+  const pending = s.startDraft()
+  unmount()
+  analysis.resolve(event('A'))
+  await pending
+  assert.equal(s.eventResult.value, null)
+})
+
+test('uncertain intent defaults to five-dimensional planning without claiming model recognition', async (t) => {
+  const result = event('A')
+  result.analysis.intentRecognition = { detected: 'uncertain', resolved: null, reason: 'Incomplete model response', source: 'fallback' }
+  result.analysis.eventTaskPlan = {
+    version: 1,
+    tasks: planning.EVENT_TASK_DEFINITIONS.map((task) => ({ ...task, objective: task.title, searchQueries: ['Query'], enabled: true })),
+  }
+  let submitted
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async () => result,
+    generateDraftOutline: async (input) => { submitted = input; return outline('A') },
+  })
+  await s.openEvent('A')
+  assert.equal(s.draftEventPlanningError.value, '')
+  await s.createOutline()
+  assert.equal(submitted.intentRecognition.resolved, 'event_timeline')
+  assert.equal(submitted.intentRecognition.detected, 'uncertain')
+  assert.equal(submitted.intentRecognition.source, 'fallback')
+  assert.equal(submitted.eventTaskPlan.tasks.length, 5)
+  s.stage.value = 'analysis'
+  for (const task of submitted.eventTaskPlan.tasks) s.updateDraftEventTask({ id: task.id, changes: { enabled: false } })
+  assert.match(s.draftEventPlanningError.value, /至少需要保留一个/)
+})
+
+test('explicit ordinary intent and historical choices remain unchanged', () => {
+  assert.equal(flow.resolveDraftIntentRecognition({ detected: 'other', source: 'model' }).resolved, 'other')
+  assert.equal(flow.resolveDraftIntentRecognition({ detected: 'uncertain', resolved: 'other' }).resolved, 'other')
+  const view = readFileSync(new URL('../components/DraftAnalysisView.vue', import.meta.url), 'utf8')
+  assert.match(view, /:show-intent="false"/)
+  assert.doesNotMatch(view, /@resolve-intent/)
+})
