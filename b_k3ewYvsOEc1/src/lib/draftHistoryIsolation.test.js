@@ -252,7 +252,7 @@ test('unmounted draft ignores pending analysis responses', async (t) => {
   assert.equal(s.eventResult.value, null)
 })
 
-test('uncertain intent defaults to five-dimensional planning without claiming model recognition', async (t) => {
+test('outline generation preserves the existing API snapshot without requiring task editing', async (t) => {
   const result = event('A')
   result.analysis.intentRecognition = { detected: 'uncertain', resolved: null, reason: 'Incomplete model response', source: 'fallback' }
   result.analysis.eventTaskPlan = {
@@ -265,21 +265,40 @@ test('uncertain intent defaults to five-dimensional planning without claiming mo
     generateDraftOutline: async (input) => { submitted = input; return outline('A') },
   })
   await s.openEvent('A')
-  assert.equal(s.draftEventPlanningError.value, '')
   await s.createOutline()
   assert.equal(submitted.intentRecognition.resolved, 'event_timeline')
   assert.equal(submitted.intentRecognition.detected, 'uncertain')
   assert.equal(submitted.intentRecognition.source, 'fallback')
   assert.equal(submitted.eventTaskPlan.tasks.length, 5)
-  s.stage.value = 'analysis'
-  for (const task of submitted.eventTaskPlan.tasks) s.updateDraftEventTask({ id: task.id, changes: { enabled: false } })
-  assert.match(s.draftEventPlanningError.value, /至少需要保留一个/)
+  assert.equal(s.stage.value, 'outline')
+  assert.equal(s.pageError.value, '')
 })
 
 test('explicit ordinary intent and historical choices remain unchanged', () => {
   assert.equal(flow.resolveDraftIntentRecognition({ detected: 'other', source: 'model' }).resolved, 'other')
   assert.equal(flow.resolveDraftIntentRecognition({ detected: 'uncertain', resolved: 'other' }).resolved, 'other')
   const view = readFileSync(new URL('../components/DraftAnalysisView.vue', import.meta.url), 'utf8')
-  assert.match(view, /:show-intent="false"/)
-  assert.doesNotMatch(view, /@resolve-intent/)
+  assert.doesNotMatch(view, /EventTaskPlanEditor|draft-event-planning|五维|planningError|@resolve-intent/)
+  assert.doesNotMatch(source, /updateDraftEventTask|draftEventPlanningError/)
+})
+
+test('five-dimensional task editing remains in the AI report planning module only', () => {
+  const canvas = readFileSync(new URL('../components/DataCanvas.vue', import.meta.url), 'utf8')
+  assert.match(canvas, /<EventTaskPlanEditor/)
+  assert.match(canvas, /@update-task=/)
+  const view = readFileSync(new URL('../components/DraftAnalysisView.vue', import.meta.url), 'utf8')
+  assert.match(view, /v-for="section in sections"/)
+  assert.match(view, /loading \|\| generating \|\| Boolean\(error\)/)
+  assert.match(view, /emit\('generate'\)/)
+})
+
+test('older analysis without a task snapshot can still generate an outline', async (t) => {
+  let submitted
+  const { state: s } = mountLogic(t, {
+    generateDraftOutline: async (input) => { submitted = input; return outline('A') },
+  })
+  await s.openEvent('A')
+  await s.createOutline()
+  assert.deepEqual(submitted, { eventId: 'A', outlinePreference: '' })
+  assert.equal(s.stage.value, 'outline')
 })
