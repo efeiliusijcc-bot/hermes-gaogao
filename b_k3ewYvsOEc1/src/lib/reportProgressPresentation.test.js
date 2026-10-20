@@ -109,5 +109,5 @@ test('report loading restores the pre-orb indicators without replacing stage or 
   assert.match(mainStyles, /\.source-status-orbit \{[\s\S]*?width: 78px;[\s\S]*?height: 78px;/)
   assert.match(dataCanvasSource, /<ReportProgressStageFlow :stages="progressStageFlow" \/>/)
   assert.match(dataCanvasSource, /<details class="source-technical-details" open>/)
-  assert.match(dataCanvasSource, /<div v-if="isPlanning"[\s\S]*?class="nexus-loader scale-75 mx-auto"[\s\S]*?正在生成编报规划/)
+  assert.match(dataCanvasSource, /<div v-(?:else-)?if="isPlanning"[\s\S]*?class="nexus-loader scale-75 mx-auto"[\s\S]*?正在生成编报规划/)
 })

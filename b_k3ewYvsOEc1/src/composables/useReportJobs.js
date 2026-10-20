@@ -26,6 +26,7 @@ import { buildPlanningContextPayload } from '../lib/reportPlanningContext.js'
 import { REPORT_HISTORY_CREATED_AFTER } from '../lib/reportHistoryCutoff.js'
 import { executionLogIdentity, mergeExecutionLogEntries } from '../lib/reportExecutionLogs.js'
 import { attachEventPlanningSteps, eventPlanningError } from '../lib/eventTaskPlan.js'
+import { awaitPlanningSubmission, clonePlanningValue, createReportPlanningDraft } from '../lib/reportPlanningDraft.js'
 
 const DRAFT_KEY = 'nexus-report-history-overrides'
 
@@ -144,17 +145,84 @@ export function useReportJobs() {
   const outputDepth = ref('detailed')
 
   const isGenerating = ref(false)
-  const isPlanning = ref(false)
-  const reportPlan = ref(null)
-  const planStepIndex = ref(0)
-  const planSelections = ref({})
-  const planSearchSelections = ref([])
-  const planSourceInput = ref('')
-  const planSupplement = ref('')
-  const databaseSourceEnabled = ref(true)
+  const planning = createReportPlanningDraft()
+  const planningDraft = planning.draft
+  const planningVisible = planning.visible
+  const planningStorageWarning = planning.storageWarning
+  const isPlanning = computed(() => planningDraft.value?.status === 'generating')
+  const reportPlan = planning.editorField('reportPlan')
+  const planStepIndex = planning.editorField('planStepIndex')
+  const planSelections = planning.editorField('planSelections')
+  const planSearchSelections = planning.editorField('planSearchSelections')
+  const planSourceInput = planning.editorField('planSourceInput')
+  const planSupplement = planning.editorField('planSupplement')
+  const databaseSourceEnabled = planning.editorField('databaseSourceEnabled')
   const useMyPreferences = ref(false)
   const deepReportEnabled = ref(true)
-  const planError = ref('')
+  const planError = planning.editorField('planError')
+  const planningConflict = ref(false)
+  let pendingPlanningAction = null
+  let planningAccount = null
+  let planningAccountRevision = 0
+  const formFields = { title, reportType, countryOrRegion, currentPosition, scenario,
+    targetCity, visitTime, contextText, parameterValues, activeParameters, outputDepth,
+    useMyPreferences, deepReportEnabled }
+  function snapshotPlanningForm() {
+    return clonePlanningValue(Object.fromEntries(Object.entries(formFields).map(([key, value]) => [key, value.value])))
+  }
+  function suspendPlanning() {
+    if (planningVisible.value && planningDraft.value?.status === 'submitting') {
+      generationRequestId += 1
+      isGenerating.value = false
+    }
+    planning.suspend()
+  }
+  function setPlanningAccount(id) {
+    const next = String(id || '')
+    if (next === planningAccount) return
+    planningAccount = next
+    planningAccountRevision += 1
+    generationRequestId += 1
+    isGenerating.value = false
+    planningConflict.value = false
+    pendingPlanningAction = null
+    planning.setAccount(next)
+  }
+  function resumePlanning() {
+    if (!planningDraft.value) return
+    clearScreenForNextReport()
+    for (const [key, field] of Object.entries(formFields)) {
+      if (key in planningDraft.value.form) field.value = clonePlanningValue(planningDraft.value.form[key])
+    }
+    vectorSourceStatus.value = planningDraft.value.vectorStatus
+    planningVisible.value = true
+  }
+  function discardPlanning() {
+    if (!planningDraft.value || planningDraft.value.status === 'submitting') return false
+    if (!window.confirm('放弃当前未完成规划？已选内容和补充材料将被清除。')) return false
+    planning.discard()
+    return true
+  }
+  function updatePlanningBuffer({ field, value }) {
+    if (planningDraft.value && ['manualSourceDraft', 'manualDirectionDraft'].includes(field)) {
+      planningDraft.value.editor[field] = String(value)
+    }
+  }
+  function requestNewPlanning(action) {
+    if (!planningDraft.value) return action()
+    pendingPlanningAction = action
+    planningConflict.value = true
+  }
+  function resolvePlanningConflict(choice) {
+    const action = pendingPlanningAction
+    pendingPlanningAction = null
+    planningConflict.value = false
+    if (choice === 'continue') resumePlanning()
+    if (choice === 'replace' && planningDraft.value?.status !== 'submitting') {
+      planning.discard()
+      action?.()
+    }
+  }
   const generatedHtml = ref('')
   const phase = ref('idle')
   const processLogs = ref([])
@@ -358,6 +426,7 @@ export function useReportJobs() {
   }
 
   function backgroundActiveWorkspace() {
+    suspendPlanning()
     const unfinishedWorkspace = getUnfinishedWorkspaceSnapshot()
     if (!unfinishedWorkspace?.job?.jobId) return false
 
@@ -1000,6 +1069,8 @@ export function useReportJobs() {
   }
 
   function clearScreenForNextReport() {
+    suspendPlanning()
+    historyOpenRequestId += 1
     const preservedWorkspace = getUnfinishedWorkspaceSnapshot()
     generationRequestId += 1
     resetExecutionLogs()
@@ -1016,7 +1087,6 @@ export function useReportJobs() {
     databaseSourcesLoading.value = false
     databaseSourcesRequestId += 1
     isGenerating.value = false
-    isPlanning.value = false
     phase.value = 'idle'
     loadingStep.value = '等待输入任务'
     savedNotice.value = ''
@@ -1032,7 +1102,6 @@ export function useReportJobs() {
     visitTime.value = ''
     outputDepth.value = 'detailed'
     deepReportEnabled.value = true
-    resetReportPlan()
     currentView.value = 'generator'
   }
 
@@ -1055,18 +1124,6 @@ export function useReportJobs() {
     )
     savedNotice.value = '已保存当前历史报告标题'
     pushLog(savedNotice.value)
-  }
-
-  function resetReportPlan() {
-    isPlanning.value = false
-    reportPlan.value = null
-    planStepIndex.value = 0
-    planSelections.value = {}
-    planSearchSelections.value = []
-    planSourceInput.value = ''
-    planSupplement.value = ''
-    databaseSourceEnabled.value = true
-    planError.value = ''
   }
 
   function isVectorSourceUsable(status = vectorSourceStatus.value) {
@@ -1097,28 +1154,23 @@ export function useReportJobs() {
   }
 
   async function loadVectorSourceStatus() {
-    vectorSourceStatusLoading.value = true
     try {
-      vectorSourceStatus.value = await fetchVectorSourceStatus()
+      return await fetchVectorSourceStatus()
     } catch (error) {
-      vectorSourceStatus.value = {
+      return {
         enabled: false,
         available: false,
         indexedRows: 0,
         fallbackReason: error instanceof Error ? error.message : String(error),
       }
-    } finally {
-      vectorSourceStatusLoading.value = false
     }
-    databaseSourceEnabled.value = isVectorSourceUsable(vectorSourceStatus.value)
-    return vectorSourceStatus.value
   }
 
-  function selectedNetworkSourceIds() {
+  function selectedNetworkSourceIds(form) {
     const haystack = [
-      title.value,
-      contextText.value,
-      Object.values(parameterValues.value || {}).join(' '),
+      form.title,
+      form.contextText,
+      Object.values(form.parameterValues || {}).join(' '),
     ].join(' ')
     const selected = new Set()
     for (const rule of NETWORK_SOURCE_RULES) {
@@ -1128,8 +1180,8 @@ export function useReportJobs() {
     return selected
   }
 
-  function buildSourceScopeStep() {
-    const recommendedIds = selectedNetworkSourceIds()
+  function buildSourceScopeStep(form, status) {
+    const recommendedIds = selectedNetworkSourceIds(form)
     const networkOptions = K_SOURCE_SCOPE_STEP.options.map((option) => {
       const recommended = recommendedIds.has(option.id)
       return {
@@ -1144,15 +1196,15 @@ export function useReportJobs() {
     return {
       ...K_SOURCE_SCOPE_STEP,
       description: '优先使用已入库信源；下方联网方向用于补充检索，实际采用以命中结果为准。',
-      options: [databaseSourceOption(), ...networkOptions],
+      options: [databaseSourceOption(status), ...networkOptions],
     }
   }
 
-  function normalizeKReportPlan(plan) {
-    if (reportType.value !== 'write-hb-k' || !plan) return plan
+  function normalizeKReportPlan(plan, form, status) {
+    if (form.reportType !== 'write-hb-k' || !plan) return plan
     const originalSteps = Array.isArray(plan.steps) ? plan.steps : []
     const reportSectionSteps = originalSteps.filter((step) => step?.type === 'report_section')
-    const sourceStep = buildSourceScopeStep()
+    const sourceStep = buildSourceScopeStep(form, status)
     const usedStepIds = new Set()
     const sectionSteps = K_SECTION_DEFS.map((sectionDef) => {
       const matchedStep = findKSectionStep(reportSectionSteps, sectionDef, usedStepIds)
@@ -1223,16 +1275,16 @@ export function useReportJobs() {
     return sourceLikeCount >= Math.min(2, options.length)
   }
 
-  function buildContext(extraSections = []) {
-    const allowedParams = new Set(REPORT_PARAMETERS[reportType.value] || [])
-    const sections = activeParameters.value
+  function buildContext(extraSections = [], form = snapshotPlanningForm()) {
+    const allowedParams = new Set(REPORT_PARAMETERS[form.reportType] || [])
+    const sections = form.activeParameters
       .filter((param) => allowedParams.has(param))
       .map((param) => {
-        const value = String(parameterValues.value[param] || '').trim()
+        const value = String(form.parameterValues[param] || '').trim()
         return value ? `【${param}】\n${value}` : ''
       })
       .filter(Boolean)
-    const freeText = contextText.value.trim()
+    const freeText = form.contextText.trim()
     if (freeText) sections.push(`【综合补充说明】\n${freeText}`)
     for (const section of extraSections) {
       if (section) sections.push(section)
@@ -1240,15 +1292,16 @@ export function useReportJobs() {
     return sections.join('\n\n')
   }
 
-  function buildPlanningContext() {
-    const plan = reportPlan.value
+  function buildPlanningContext(draft) {
+    const { form, editor, vectorStatus } = draft
+    const plan = editor.reportPlan
     const selectedQueries = plan?.searchQueries?.length
-      ? planSearchSelections.value.filter((query) => plan.searchQueries?.includes(query))
+      ? editor.planSearchSelections.filter((query) => plan.searchQueries?.includes(query))
       : []
     const selectedModules = []
     const selectedSources = []
     for (const step of plan?.steps || []) {
-      const selectedIds = new Set(planSelections.value[step.id] || [])
+      const selectedIds = new Set(editor.planSelections[step.id] || [])
       const selected = step.options?.filter((option) => selectedIds.has(option.id)) || []
       if (!selected.length) continue
       const selectedOptions = selected.map((option) => ({
@@ -1280,40 +1333,40 @@ export function useReportJobs() {
       })
     }
 
-    const allowedParams = new Set(REPORT_PARAMETERS[reportType.value] || [])
+    const allowedParams = new Set(REPORT_PARAMETERS[form.reportType] || [])
     const selectedParameterValues = {}
-    for (const [key, value] of Object.entries(parameterValues.value)) {
+    for (const [key, value] of Object.entries(form.parameterValues)) {
       if (allowedParams.has(key) && String(value || '').trim()) selectedParameterValues[key] = String(value).trim()
     }
 
-    const userProvidedSources = planSourceInput.value
+    const userProvidedSources = editor.planSourceInput
       .split(/\r?\n|；|;/)
       .map((item) => item.trim())
       .filter(Boolean)
     const context = {
       kind: 'structured_report_context',
       version: 2,
-      topic: title.value.trim(),
-      reportType: reportType.value,
+      topic: form.title.trim(),
+      reportType: form.reportType,
       intentRecognition: plan?.intentRecognition || null,
       eventTaskPlan: plan?.eventTaskPlan || null,
       selectedSearchQueries: selectedQueries,
       selectedSources,
       userProvidedSources,
       databaseSourceOptions: {
-        enabled: Boolean(databaseSourceEnabled.value && isVectorSourceUsable()),
+        enabled: Boolean(editor.databaseSourceEnabled && isVectorSourceUsable(vectorStatus)),
         mode: 'summary_first',
         lookbackDays: 90,
         maxMetadataRows: 50,
         maxContentRows: 8,
         mcpServer: 'pg-sources',
         storageMode: 'pgvector_single_table',
-        sourceTable: vectorSourceStatus.value?.sourceTable || 'vector_materials_qwen3',
+        sourceTable: vectorStatus?.sourceTable || 'vector_materials_qwen3',
       },
       selectedModules,
       parameterValues: selectedParameterValues,
-      freeTextContext: contextText.value.trim(),
-      supplement: planSupplement.value.trim(),
+      freeTextContext: form.contextText.trim(),
+      supplement: editor.planSupplement.trim(),
       instructions: {
         researchPhase: 'Use PostgreSQL pgvector source recall first when databaseSourceOptions.enabled is true, then use accepted internet sources as needed. Do not override report_plan, databaseSourceOptions, userPreferenceContext, or draftAssistantContext. Return evidence cards, key findings, verification-needed items, and information gaps as internal material.',
         writeHbPhase: 'Use write-hb after research to draft the final report by sectionTitle. Expand only the selectedDirections under each selected report section.',
@@ -1348,30 +1401,30 @@ export function useReportJobs() {
     }
   }
 
-  function buildPayload(extraContext = '') {
-    const subject = title.value.trim()
+  function buildPayload(extraContext = '', form = snapshotPlanningForm()) {
+    const subject = form.title.trim()
     const isStructuredContext = String(extraContext || '').trim().startsWith('{')
-    const context = isStructuredContext ? String(extraContext).trim() : (buildContext(extraContext ? [extraContext] : []) || subject)
+    const context = isStructuredContext ? String(extraContext).trim() : (buildContext(extraContext ? [extraContext] : [], form) || subject)
 
-    if (reportType.value === 'person-intelligence-report') {
+    if (form.reportType === 'person-intelligence-report') {
       return {
         skill: 'person-intelligence-report',
         payload: {
           target_name: subject,
-          country_or_region: countryOrRegion.value.trim() || '待研判',
-          current_position: currentPosition.value.trim() || '待研判',
+          country_or_region: form.countryOrRegion.trim() || '待研判',
+          current_position: form.currentPosition.trim() || '待研判',
           report_type: 'visiting_dignitary',
           visit_context: context,
           useMyPreferences: false,
           focus_areas: ['基本情况', '政治立场', '风险点', '接待建议'],
-          output_depth: outputDepth.value,
+          output_depth: form.outputDepth,
           deepReportEnabled: true,
           language: 'zh-CN',
         },
       }
     }
 
-    if (reportType.value === 'write-hb-k' || reportType.value === 'write-hb-hb') {
+    if (form.reportType === 'write-hb-k' || form.reportType === 'write-hb-hb') {
       const planningPayload = isStructuredContext
         ? buildPlanningContextPayload({ topic: subject, knownContext: context })
         : { topic: subject, known_context: context }
@@ -1379,7 +1432,7 @@ export function useReportJobs() {
         skill: 'write-hb',
         payload: {
           ...planningPayload,
-          report_type: reportType.value === 'write-hb-hb' ? 'HB报' : 'K报',
+          report_type: form.reportType === 'write-hb-hb' ? 'HB报' : 'K报',
           useMyPreferences: false,
           deepReportEnabled: true,
           focus_areas: isStructuredContext ? buildPlanningFocusAreas(extraContext) : ['国家', '地方', '政策', '社会', '传播'],
@@ -1391,10 +1444,10 @@ export function useReportJobs() {
     return {
       skill: 'risk-assessment-reports',
       payload: {
-        scenario: scenario.value,
+        scenario: form.scenario,
         target_country: subject,
-        target_city: targetCity.value.trim(),
-        visit_time: visitTime.value.trim(),
+        target_city: form.targetCity.trim(),
+        visit_time: form.visitTime.trim(),
         known_context: context,
         useMyPreferences: false,
         deepReportEnabled: true,
@@ -1404,11 +1457,15 @@ export function useReportJobs() {
     }
   }
 
-  async function refreshHealth() {
+  async function refreshHealth(shouldApply = () => true) {
+    const canApply = typeof shouldApply === 'function' ? shouldApply : () => true
     try {
-      health.value = await fetchHermesHealth()
+      const result = await fetchHermesHealth()
+      if (!canApply()) return
+      health.value = result
       pushLog(`健康检测：${health.value.status}`)
     } catch (error) {
+      if (!canApply()) return
       health.value = {
         ok: false,
         status: 'down',
@@ -1629,54 +1686,83 @@ export function useReportJobs() {
   }
 
   function cancelReportPlan() {
-    resetReportPlan()
+    suspendPlanning()
   }
 
-  async function handleGenerate() {
-    if (isGenerating.value || isPlanning.value || !title.value.trim() || !reportType.value) return
+  function handleGenerate() {
+    if (isGenerating.value || !title.value.trim() || !reportType.value || !planningAccount) return
+    const form = snapshotPlanningForm()
+    return requestNewPlanning(() => generatePlanning(planning.start(form)))
+  }
 
-    isPlanning.value = true
+  function retryPlanning() {
+    if (!planningDraft.value || !['error', 'interrupted'].includes(planningDraft.value.status)) return
+    return generatePlanning(planning.begin('generating'))
+  }
+
+  async function generatePlanning(token) {
+    if (!token) return
+    const form = clonePlanningValue(planningDraft.value.form)
     planError.value = ''
     reportPlan.value = null
     planStepIndex.value = 0
 
     try {
-      await loadVectorSourceStatus()
-      const allowedParams = new Set(REPORT_PARAMETERS[reportType.value] || [])
+      const vectorStatus = await loadVectorSourceStatus()
+      if (!planning.matches(token)) return
+      planningDraft.value.vectorStatus = vectorStatus
+      databaseSourceEnabled.value = isVectorSourceUsable(vectorStatus)
+      if (planningVisible.value) vectorSourceStatus.value = vectorStatus
+      const allowedParams = new Set(REPORT_PARAMETERS[form.reportType] || [])
       const parameters = {}
-      for (const [key, value] of Object.entries(parameterValues.value)) {
+      for (const [key, value] of Object.entries(form.parameterValues)) {
         if (allowedParams.has(key) && String(value || '').trim()) parameters[key] = String(value).trim()
       }
       const plan = await createReportPlan({
-        topic: title.value.trim(),
-        reportType: reportType.value,
-        context: buildContext(),
+        topic: form.title.trim(),
+        reportType: form.reportType,
+        context: buildContext([], form),
         parameters,
       })
-      const normalizedPlan = attachEventPlanningSteps(normalizeKReportPlan(plan))
+      if (!planning.matches(token)) return
+      const normalizedPlan = attachEventPlanningSteps(normalizeKReportPlan(plan, form, vectorStatus))
+      if (!normalizedPlan || !Array.isArray(normalizedPlan.steps)) throw new Error('规划结果无效，请重试。')
       reportPlan.value = normalizedPlan
       initializePlanSelections(normalizedPlan)
+      planningDraft.value.status = 'ready'
     } catch (error) {
+      if (!planning.matches(token)) return
       planError.value = error instanceof Error ? error.message : String(error)
+      planningDraft.value.status = 'error'
     } finally {
-      isPlanning.value = false
+      if (planning.matches(token)) planning.flush()
     }
   }
 
+  function retryPlanningSubmission() {
+    if (planningDraft.value?.status !== 'uncertain') return
+    if (!window.confirm('请先查看历史记录，确认没有创建同一编报任务。确认重新提交可能产生重复任务，是否继续？')) return
+    planningDraft.value.status = 'ready'
+    return confirmReportPlan()
+  }
+
   async function confirmReportPlan() {
-    if (isGenerating.value || !title.value.trim() || !reportType.value) return
+    if (isGenerating.value || planningDraft.value?.status !== 'ready') return
     const planningIssue = eventPlanningError(reportPlan.value?.intentRecognition, reportPlan.value?.eventTaskPlan)
     if (planningIssue) {
       planError.value = planningIssue
       return
     }
 
+    const draft = clonePlanningValue(planningDraft.value)
+    const payload = buildPayload(buildPlanningContext(draft), draft.form)
+    const token = planning.begin('submitting')
+    const accountAtSubmit = planningAccountRevision
     const requestId = ++generationRequestId
-    const plannedContext = buildPlanningContext()
+    planningDraft.value.submissionError = ''
     resetExecutionLogs()
     openedHistoryJobId.value = null
     isGenerating.value = true
-    isPlanning.value = false
     generatedHtml.value = ''
     errorMessage.value = ''
     processLogs.value = []
@@ -1690,31 +1776,55 @@ export function useReportJobs() {
     savedNotice.value = ''
 
     let submittedJobId = ''
+    let requestSent = false
     try {
       pushLog('提交报告生成任务到后端。')
       if (!getAuthToken()) {
         throw new Error('请先登录后再创建编报任务。')
       }
-      await refreshHealth()
-      const created = await createReportJob(buildPayload(plannedContext))
+      await refreshHealth(() => planning.matches(token) && requestId === generationRequestId)
+      if (!planning.matches(token)) return
+      requestSent = true
+      const created = await awaitPlanningSubmission(createReportJob(payload))
+      if (accountAtSubmit !== planningAccountRevision) return
+      if (typeof created?.jobId !== 'string' || !created.jobId.trim()) {
+        throw new Error('服务端未返回有效任务编号，提交结果待核实。')
+      }
       submittedJobId = created.jobId
+      const createdJob = {
+        ...created, ...payload, status: created.status || 'queued',
+        createdAt: created.createdAt || new Date().toISOString(),
+      }
+      if (planning.matches(token)) planning.discard()
       if (requestId !== generationRequestId) {
-        const backgroundJob = { jobId: created.jobId, status: created.status }
+        const backgroundJob = createdJob
         upsertJobInList(backgroundJob)
         upsertJobInRecent(backgroundJob)
         return
       }
-      job.value = { jobId: created.jobId, status: created.status }
+      job.value = createdJob
       activeWorkspaceSnapshot.value = makeWorkspaceSnapshot({ job: job.value })
       upsertJobInList(job.value)
       upsertJobInRecent(job.value)
-      resetReportPlan()
       pushLog(`任务已创建：${created.jobId}`)
       subscribeJobEvents(created.jobId)
       void loadProgressState(created.jobId, () => job.value?.jobId === created.jobId)
       await pollUntilDone(created.jobId)
     } catch (error) {
+      if (accountAtSubmit !== planningAccountRevision) return
       const backgroundMessage = error instanceof Error ? error.message : String(error)
+      if (!submittedJobId && planning.matches(token)) {
+        // Transport/server errors can occur after the backend accepted the POST.
+        const rejected = !requestSent || (error?.status >= 400 && error?.status < 500 && error.status !== 408)
+        planningDraft.value.status = rejected ? 'ready' : 'uncertain'
+        planningDraft.value.submissionError = backgroundMessage
+        planning.flush()
+        if (requestId === generationRequestId) {
+          phase.value = 'idle'
+          errorMessage.value = ''
+        }
+        return
+      }
       if (requestId !== generationRequestId && !submittedJobId) return
       if (submittedJobId && !isVisibleJob(submittedJobId)) {
         if (activeWorkspaceSnapshot.value?.job?.jobId !== submittedJobId) return
@@ -1743,7 +1853,10 @@ export function useReportJobs() {
   }
 
   async function loadJobList(switchView = true, overrides = {}) {
-    if (switchView) currentView.value = 'list'
+    if (switchView) {
+      suspendPlanning()
+      currentView.value = 'list'
+    }
     const requestId = ++jobListRequestId
     try {
       if (overrides.page !== undefined) listPage.value = overrides.page
@@ -1811,6 +1924,7 @@ export function useReportJobs() {
   }
 
   async function openReportFromList(item) {
+    suspendPlanning()
     generationRequestId += 1
     const requestId = ++historyOpenRequestId
     const unfinishedWorkspace = getUnfinishedWorkspaceSnapshot(item.jobId)
@@ -1863,6 +1977,7 @@ export function useReportJobs() {
   }
 
   async function monitorJobFromList(item) {
+    suspendPlanning()
     generationRequestId += 1
     historyOpenRequestId += 1
     const requestId = historyOpenRequestId
@@ -2044,6 +2159,7 @@ export function useReportJobs() {
   }
 
   onMounted(async () => {
+    window.addEventListener('pagehide', planning.flush)
     await refreshHealth()
     await loadJobList(false)
     await refreshRecentReports()
@@ -2065,6 +2181,8 @@ export function useReportJobs() {
   })
 
   onUnmounted(() => {
+    window.removeEventListener('pagehide', planning.flush)
+    planning.dispose()
     closeJobEvents()
     if (listSearchTimer) {
       window.clearTimeout(listSearchTimer)
@@ -2077,6 +2195,19 @@ export function useReportJobs() {
   })
 
   return {
+    updatePlanningBuffer,
+    planningDraft,
+    planningVisible,
+    planningStorageWarning,
+    planningConflict,
+    setPlanningAccount,
+    suspendPlanning,
+    resumePlanning,
+    discardPlanning,
+    requestNewPlanning,
+    resolvePlanningConflict,
+    retryPlanning,
+    retryPlanningSubmission,
     currentView,
     title,
     reportType,

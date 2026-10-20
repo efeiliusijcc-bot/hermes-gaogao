@@ -87,7 +87,8 @@ test('wires isolated switching and concurrent next-report controls into Hermes',
   assert.match(jobs, /upsertJobInList\(item, \{ promote: false \}\)/)
   assert.match(jobs, /!isViewingHistoryJob\.value/)
   assert.match(jobs, /const preservedWorkspace = getUnfinishedWorkspaceSnapshot\(\)/)
-  assert.match(jobs, /isGenerating\.value = false\s*\n\s*isPlanning\.value = false/)
+  assert.match(jobs, /const isPlanning = computed\(\(\) => planningDraft\.value\?\.status === 'generating'\)/)
+  assert.match(jobs, /function clearScreenForNextReport\(\) \{\s*suspendPlanning\(\)/)
   assert.match(jobs, /loadingStep\.value = '等待输入任务'/)
 
   assert.match(app, /function showReportWorkspace\(\)/)

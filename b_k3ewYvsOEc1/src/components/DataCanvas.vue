@@ -53,6 +53,9 @@ const props = defineProps({
   isHistoryMode: Boolean,
   isGenerating: Boolean,
   isPlanning: Boolean,
+  planningDraft: Object,
+  planningVisible: Boolean,
+  planningStorageWarning: String,
   reportPlan: Object,
   planStepIndex: {
     type: Number,
@@ -133,6 +136,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
+  'resume-plan', 'discard-plan', 'retry-plan', 'retry-plan-submission', 'update-planning-buffer', 'import-report',
   'list',
   'delete-report',
   'new-report',
@@ -258,8 +262,14 @@ const liveLogShouldStick = ref(true)
 const drawerLogShouldStick = ref(true)
 const liveLogHasNewItems = ref(false)
 const drawerLogHasNewItems = ref(false)
-const manualSourceDraft = ref('')
-const manualDirectionDraft = ref('')
+const manualSourceDraft = computed({
+  get: () => props.planningDraft?.editor.manualSourceDraft || '',
+  set: (value) => emit('update-planning-buffer', { field: 'manualSourceDraft', value }),
+})
+const manualDirectionDraft = computed({
+  get: () => props.planningDraft?.editor.manualDirectionDraft || '',
+  set: (value) => emit('update-planning-buffer', { field: 'manualDirectionDraft', value }),
+})
 let qaEventSource = null
 let qaStreamRecoveryTimer = null
 let sourceListRequestId = 0
@@ -1978,26 +1988,14 @@ async function importSelectedQaAsReportContext() {
     }
   }
 
-  selectHomeMode('report')
   const titleCandidate = buildQaReportTitle(firstQuestion)
-  if (!props.title?.trim() && titleCandidate) emit('update:title', titleCandidate)
-  const nextContext = [props.contextText, sections.join('\n\n')]
-    .filter((item) => String(item || '').trim())
-    .join('\n\n')
-  emit('update:contextText', nextContext)
-  qaImportNotice.value = `已导入 ${sessionMap.size} 个聊天、${selectedItems.length} 轮问答作为编报背景`
+  emit('import-report', { title: titleCandidate, contextText: sections.join('\n\n'), append: true })
 }
 
 function importQaAsReportContext() {
   if (!qaAnswer.value.trim()) return
-  selectHomeMode('report')
   const titleCandidate = buildQaReportTitle(qaCurrentQuestion.value)
-  if (!props.title?.trim() && titleCandidate) emit('update:title', titleCandidate)
-  const nextContext = [props.contextText, qaAnswer.value.trim()]
-    .filter(Boolean)
-    .join('\n\n')
-  emit('update:contextText', nextContext)
-  qaImportNotice.value = '已作为编报背景导入'
+  emit('import-report', { title: titleCandidate, contextText: qaAnswer.value.trim(), append: true })
 }
 
 function isPlanOptionSelected(stepId, optionId) {
@@ -3699,13 +3697,7 @@ function importSourceListItemFromMenu(source) {
 
 function importSourceListItemAsReportContext(source) {
   const context = sourceToBackgroundText(source)
-  emit('new-report')
-  nextTick(() => {
-    homeMode.value = 'report'
-    emit('update:title', source.title.slice(0, 200))
-    emit('update:contextText', context)
-    qaImportNotice.value = '已作为编报背景导入'
-  })
+  emit('import-report', { title: source.title.slice(0, 200), contextText: context })
 }
 
 function scrollToTop() {
@@ -4332,7 +4324,7 @@ function exportPdf() {
     </div>
 
     <div
-      v-if="reportPlan || isPlanning || planError"
+      v-if="planningVisible && homeMode === 'report' && !isHistoryMode"
       class="plan-modal-backdrop absolute inset-0 z-30 flex items-center justify-center backdrop-blur-sm px-6"
     >
       <section class="plan-modal-panel w-full max-w-4xl rounded-[24px] border overflow-hidden flex flex-col">
@@ -4344,10 +4336,27 @@ function exportPdf() {
               先按主题生成检索方向和子任务，勾选需要纳入正式编报的内容后再提交。
             </p>
           </div>
-          <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="emit('cancel-plan')">取消</button>
+          <button class="sci-btn text-[10px] px-3 py-2 shrink-0 whitespace-nowrap" type="button" @click="emit('cancel-plan')">稍后继续</button>
+        </div>
+        <p v-if="planningStorageWarning" class="px-6 py-2 text-amber-700" role="status">{{ planningStorageWarning }}</p>
+        <div v-if="planningDraft?.status === 'submitting'" class="px-6 py-10">
+          正在提交编报，请勿重复提交。
+        </div>
+        <div v-else-if="planningDraft?.status === 'uncertain'" class="px-6 py-8">
+          <h3 class="font-bold mb-3">提交结果待核实</h3>
+          <p>请先查看历史记录，确认是否已创建任务。</p>
+          <div class="flex flex-wrap gap-3 mt-5">
+            <button type="button" class="sci-btn px-3 py-2" @click="emit('list')">查看历史</button>
+            <button type="button" class="sci-btn px-3 py-2" @click="emit('retry-plan-submission')">确认后重试提交</button>
+          </div>
+        </div>
+        <div v-else-if="planningDraft?.status === 'interrupted'" class="px-6 py-8">
+          <h3 class="font-bold mb-3">规划生成已中断</h3>
+          <p>原始输入已保留。</p>
+          <button type="button" class="sci-btn px-3 py-2 mt-5" @click="emit('retry-plan')">重新生成规划</button>
         </div>
 
-        <div v-if="isPlanning" class="plan-modal-scroll px-6 py-14 text-center">
+        <div v-else-if="isPlanning" class="plan-modal-scroll px-6 py-14 text-center">
           <div class="nexus-loader scale-75 mx-auto">
             <div class="loader-ring ring-a"></div>
             <div class="loader-ring ring-b"></div>
@@ -4362,14 +4371,15 @@ function exportPdf() {
             {{ planError }}
           </div>
           <div class="mt-5 flex justify-end gap-2">
-            <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="emit('cancel-plan')">返回修改</button>
-            <button class="sci-btn text-[10px] px-3 py-2 border-neon-cyan" style="color: #0369a1" type="button" @click="emit('generate')">
+            <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="emit('cancel-plan')">稍后继续</button>
+            <button class="sci-btn text-[10px] px-3 py-2 border-neon-cyan" style="color: #0369a1" type="button" @click="emit('retry-plan')">
               重新生成规划
             </button>
           </div>
         </div>
 
-        <div v-else class="plan-modal-body">
+        <div v-else-if="reportPlan" class="plan-modal-body">
+          <p v-if="planningDraft?.submissionError" role="alert" class="px-6 pt-4 text-red-700">{{ planningDraft.submissionError }}</p>
           <div class="flex-shrink-0 px-6 pt-5">
             <div class="rounded-2xl border border-neon-cyan/12 bg-black/16 px-4 py-3 mb-5">
               <div class="font-mono text-sm text-[#0f172a] mb-2">{{ reportPlan.title }}</div>
@@ -4555,7 +4565,8 @@ function exportPdf() {
               上一步
             </button>
             <div class="flex items-center gap-2">
-              <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="emit('cancel-plan')">取消</button>
+              <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="emit('discard-plan')">放弃规划</button>
+              <button class="sci-btn text-[10px] px-3 py-2" type="button" @click="emit('cancel-plan')">稍后继续</button>
               <button
                 v-if="!isLastPlanStep"
                 class="sci-btn text-[10px] px-3 py-2 border-neon-cyan"
@@ -4570,7 +4581,7 @@ function exportPdf() {
                 v-else
                 class="sci-btn text-[10px] px-4 py-2 border-neon-green text-neon-green shadow-[0_0_18px_rgba(0,255,159,0.12)]"
                 type="button"
-                :disabled="Boolean(planEventValidationError)"
+                :disabled="Boolean(planEventValidationError) || planningDraft?.status !== 'ready'"
                 @click="emit('confirm-plan')"
               >
                 确认并开始编写
@@ -4582,6 +4593,20 @@ function exportPdf() {
     </div>
 
     <div ref="reportRef" class="main-scroll flex-1 overflow-auto px-8 py-7">
+      <section v-if="planningDraft && !planningVisible && homeMode === 'report' && !isHistoryMode" class="planning-draft-notice" aria-label="未完成规划">
+        <div class="min-w-0">
+          <h2 class="font-bold">未完成规划</h2>
+          <p class="break-words">{{ planningDraft.form.title }}</p>
+          <p class="text-xs text-slate-500">更新于 {{ new Date(planningDraft.updatedAt).toLocaleString('zh-CN') }}</p>
+          <p v-if="planningDraft.status === 'uncertain'" class="text-amber-700">提交结果待核实</p>
+          <p v-if="planningDraft.status === 'interrupted'" class="text-amber-700">规划生成已中断</p>
+          <p v-if="planningStorageWarning" role="status" class="text-amber-700">{{ planningStorageWarning }}</p>
+        </div>
+        <div class="flex flex-wrap gap-2 shrink-0">
+          <button type="button" class="sci-btn px-3 py-2" @click="emit('resume-plan')">继续规划</button>
+          <button type="button" class="sci-btn px-3 py-2" :disabled="planningDraft.status === 'submitting'" @click="emit('discard-plan')">放弃规划</button>
+        </div>
+      </section>
       <div v-if="phase === 'idle'" class="min-h-full flex items-start justify-center py-10">
         <section class="main-content home-dual-mode w-full" :class="{ 'qa-main-content': homeMode === 'qa' }">
           <div v-if="homeMode === 'report'" class="input-panel mx-auto text-left p-5 md:p-6">
@@ -6078,3 +6103,11 @@ function exportPdf() {
 
   </main>
 </template>
+
+<style scoped>
+.planning-draft-notice { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid #dce3ed; }
+.planning-draft-notice p { margin-top: 6px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .planning-draft-notice { align-items: stretch; flex-direction: column; }
+}
+</style>

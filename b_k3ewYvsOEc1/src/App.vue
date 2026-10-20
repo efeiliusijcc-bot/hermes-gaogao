@@ -12,9 +12,22 @@ import { useReportJobs } from './composables/useReportJobs.js'
 import { deriveUserModules } from './lib/permissionModules.js'
 import { normalizeManualSection } from './lib/userManualNavigation.js'
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 const {
+  updatePlanningBuffer,
+  planningDraft,
+  planningVisible,
+  planningStorageWarning,
+  planningConflict,
+  setPlanningAccount,
+  suspendPlanning,
+  resumePlanning,
+  discardPlanning,
+  requestNewPlanning,
+  resolvePlanningConflict,
+  retryPlanning,
+  retryPlanningSubmission,
   currentView,
   title,
   reportType,
@@ -131,6 +144,18 @@ const {
   setNotice: setAuthNotice,
 } = useAuth()
 const qaSessions = ref(loadStoredQaSessions())
+const authReady = ref(false)
+const planningConflictPanel = ref(null)
+watch(planningConflict, async (open) => {
+  if (open) {
+    await nextTick()
+    planningConflictPanel.value?.focus()
+  }
+})
+
+watch(() => authUser.value?.id, (id) => {
+  if (authReady.value) setPlanningAccount(id)
+}, { flush: 'sync' })
 
 const selectedQaSession = computed(() => {
   return qaSessions.value.find((session) => session.id === selectedQaSessionId.value) || null
@@ -179,6 +204,43 @@ const currentWorkspace = computed(() => {
   return 'report'
 })
 
+watch([currentWorkspace, currentView, showUserManagement], () => {
+  if (currentWorkspace.value !== 'report' || currentView.value !== 'generator' || showUserManagement.value) {
+    suspendPlanning()
+  }
+}, { flush: 'sync' })
+
+function continueReportPlanning() {
+  showUserManagement.value = false
+  showDraftAssistant.value = false
+  showDailyAwareness.value = false
+  homeMode.value = 'report'
+  resumePlanning()
+}
+
+function choosePlanningConflict(choice) {
+  if (choice === 'continue') {
+    showUserManagement.value = false
+    showDraftAssistant.value = false
+    showDailyAwareness.value = false
+    homeMode.value = 'report'
+  }
+  resolvePlanningConflict(choice)
+}
+
+function importReportContext(input) {
+  const preserveInput = input.append && !planningDraft.value && !isHistoryMode.value
+  const importedTitle = preserveInput ? (title.value.trim() || input.title) : input.title
+  const importedContext = preserveInput
+    ? [contextText.value, input.contextText].filter(Boolean).join('\n\n')
+    : input.contextText
+  requestNewPlanning(() => {
+    returnHome()
+    title.value = importedTitle || ''
+    contextText.value = importedContext || ''
+  })
+}
+
 function hasModule(module) {
   return userModules.value.includes(module)
 }
@@ -203,6 +265,7 @@ async function handleLogin(credentials) {
 }
 
 function handleLogout() {
+  setPlanningAccount('')
   logoutUser()
   showUserManagement.value = false
   showDraftAssistant.value = false
@@ -439,13 +502,15 @@ function startReportFromSidebar() {
     setAuthNotice('当前账号暂无编报权限，请联系管理员分配权限。')
     return
   }
-  showUserManagement.value = false
-  showDraftAssistant.value = false
-  showDailyAwareness.value = false
-  showPersonalSettings.value = false
-  homeMode.value = 'report'
-  selectedQaSessionId.value = ''
-  resetForNewReport()
+  requestNewPlanning(() => {
+    showUserManagement.value = false
+    showDraftAssistant.value = false
+    showDailyAwareness.value = false
+    showPersonalSettings.value = false
+    homeMode.value = 'report'
+    selectedQaSessionId.value = ''
+    resetForNewReport()
+  })
 }
 
 function openReportHistoryList() {
@@ -478,13 +543,15 @@ function resetForNewReportFromCanvas() {
     setAuthNotice('当前账号暂无编报权限，请联系管理员分配权限。')
     return
   }
-  showUserManagement.value = false
-  showDraftAssistant.value = false
-  showDailyAwareness.value = false
-  showPersonalSettings.value = false
-  homeMode.value = 'report'
-  selectedQaSessionId.value = ''
-  resetForNewReport()
+  requestNewPlanning(() => {
+    showUserManagement.value = false
+    showDraftAssistant.value = false
+    showDailyAwareness.value = false
+    showPersonalSettings.value = false
+    homeMode.value = 'report'
+    selectedQaSessionId.value = ''
+    resetForNewReport()
+  })
 }
 
 function returnHome() {
@@ -521,8 +588,10 @@ watch(authUser, (user) => {
   qaSessions.value = loadStoredQaSessions()
 })
 
-onMounted(() => {
-  void initializeAuth()
+onMounted(async () => {
+  await initializeAuth()
+  authReady.value = true
+  setPlanningAccount(authUser.value?.id)
 })
 
 function jobStatusType(status) {
@@ -655,6 +724,15 @@ function formatArchiveTime(value) {
       />
 
       <DataCanvas
+        :planning-draft="planningDraft"
+        :planning-visible="planningVisible"
+        :planning-storage-warning="planningStorageWarning"
+        @resume-plan="continueReportPlanning"
+        @discard-plan="discardPlanning"
+        @retry-plan="retryPlanning"
+        @retry-plan-submission="retryPlanningSubmission"
+        @update-planning-buffer="updatePlanningBuffer"
+        @import-report="importReportContext"
         v-model:title="title"
         v-model:reportType="reportType"
         v-model:contextText="contextText"
@@ -676,7 +754,7 @@ function formatArchiveTime(value) {
         :detailLoadError="detailLoadError"
         :isHistoryMode="isHistoryMode"
         :isGenerating="isGenerating"
-        :isPlanning="isPlanning"
+        :isPlanning="isPlanning && planningVisible"
         :reportPlan="reportPlan"
         :planStepIndex="planStepIndex"
         :planSelections="planSelections"
@@ -737,7 +815,7 @@ function formatArchiveTime(value) {
             >
               {{ hasGeneratingWorkspace ? '返回生成编报' : '返回当前编报' }}
             </button>
-            <button class="sci-btn archive-action-btn archive-action-primary" type="button" @click="resetForNewReport">
+            <button class="sci-btn archive-action-btn archive-action-primary" type="button" @click="resetForNewReportFromCanvas">
               <Plus :size="16" aria-hidden="true" /> 新建编报
             </button>
             <button
@@ -879,5 +957,27 @@ function formatArchiveTime(value) {
         </section>
       </div>
     </main>
+    <div v-if="planningConflict" class="planning-conflict-backdrop" @click.self="choosePlanningConflict('cancel')" @keydown.esc="choosePlanningConflict('cancel')">
+      <section ref="planningConflictPanel" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="planning-conflict-title" class="planning-conflict-panel">
+        <h2 id="planning-conflict-title">已有未完成规划</h2>
+        <p>{{ planningDraft?.form.title }}</p>
+        <p v-if="planningDraft?.status === 'submitting'">任务正在提交，请稍候。暂不能放弃并新建。</p>
+        <p v-else-if="planningDraft?.status === 'uncertain'">提交结果待核实，放弃前请先查看历史记录，避免重复编报。</p>
+        <div class="planning-conflict-actions">
+          <button type="button" class="sci-btn" @click="choosePlanningConflict('cancel')">返回</button>
+          <button type="button" class="sci-btn" :disabled="planningDraft?.status === 'submitting'" @click="choosePlanningConflict('replace')">放弃并新建</button>
+          <button type="button" class="sci-btn" autofocus @click="choosePlanningConflict('continue')">继续原规划</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.planning-conflict-backdrop { position: fixed; inset: 0; z-index: 100; background: #0f172a55; display: grid; place-items: center; padding: 20px; }
+.planning-conflict-panel { width: min(100%, 480px); background: white; border: 1px solid #dce3ed; border-radius: 8px; padding: 24px; color: #182235; }
+.planning-conflict-panel h2 { font-size: 18px; font-weight: 700; margin-bottom: 12px; }
+.planning-conflict-panel p { overflow-wrap: anywhere; margin-bottom: 16px; }
+.planning-conflict-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.planning-conflict-actions button { padding: 8px 12px; }
+</style>
