@@ -6,6 +6,7 @@ import * as vue from 'vue'
 import * as flow from './draftAssistantFlow.js'
 import * as autosave from './draftAutosave.js'
 import * as planning from './eventTaskPlan.js'
+import * as analysisStore from './draftAnalysisStore.js'
 
 const source = readFileSync(new URL('../components/DraftAssistant.vue', import.meta.url), 'utf8')
 const { descriptor } = parse(source)
@@ -54,6 +55,7 @@ function mountLogic(t, overrides = {}, initialProps = {}) {
     '../lib/draftAssistantFlow.js': flow,
     '../lib/draftAutosave.js': autosave,
     '../lib/eventTaskPlan.js': planning,
+    '../lib/draftAnalysisStore.js': analysisStore,
   }
   const bindings = { window: { addEventListener() {}, removeEventListener() {} } }
   for (const node of imports) {
@@ -301,4 +303,43 @@ test('older analysis without a task snapshot can still generate an outline', asy
   await s.createOutline()
   assert.deepEqual(submitted, { eventId: 'A', outlinePreference: '' })
   assert.equal(s.stage.value, 'outline')
+})
+
+test('accepted background analysis cannot replace B after navigating during submission', async t => {
+  const pending = deferred()
+  const store = analysisStore.createDraftAnalysisStore({
+    api: { list: async () => ({ items: [] }), submit: () => pending.promise },
+    local: null, session: null, schedule: () => 1, unschedule() {}, uuid: () => 'request-A',
+  })
+  t.after(() => store.dispose())
+  store.setAccount('test-user')
+  await settle()
+  const { state: s } = mountLogic(t, {}, { analysisStore: store })
+  s.sourceInput.value = '事件 A 的材料，供受控后台分析'
+  const start = s.startDraft()
+  await s.openEvent('B')
+  pending.resolve({ jobId: 'A', eventId: 'A', status: 'running', createdAt: new Date().toISOString() })
+  await start
+  assert.equal(s.currentEventId.value, 'B')
+  assert.equal(s.analysisLoading.value, false)
+  assert.equal(s.eventResult.value.event.eventId, 'B')
+  assert.equal(store.activeJob().eventId, 'A')
+})
+
+test('failed or queued new histories block outline; old completed outline remains usable', async t => {
+  let outlines = 0
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async id => ({ ...event(id, id === 'old'), analysisJob: id === 'old' ? null : { jobId: id, status: id } }),
+    generateDraftOutline: async () => { outlines++; return outline('queued') },
+  })
+  await s.openEvent('queued')
+  assert.equal(s.analysisLoading.value, true)
+  await s.createOutline()
+  await s.openEvent('failed')
+  await s.createOutline()
+  assert.equal(outlines, 0)
+  assert.match(s.displayedAnalysisError.value, /失败/)
+  await s.openEvent('old')
+  assert.equal(s.stage.value, 'outline')
+  assert.equal(s.selectedOutline.value.outlineId, 'outline-old')
 })

@@ -4,6 +4,9 @@ import ControlPanel from './components/ControlPanel.vue'
 import DataCanvas from './components/DataCanvas.vue'
 import DailyAwareness from './components/DailyAwareness.vue'
 import DraftAssistant from './components/DraftAssistant.vue'
+import DraftAnalysisNotice from './components/DraftAnalysisNotice.vue'
+import { createDraftAnalysisStore } from './lib/draftAnalysisStore.js'
+import { AUTH_USER_KEY, getStoredAuthUser, submitDraftAnalysisJob, getDraftAnalysisJobs, retryDraftAnalysisJob } from './lib/api.js'
 import PersonalSettings from './components/PersonalSettings.vue'
 import UserManual from './components/UserManual.vue'
 import UserManagement from './components/UserManagement.vue'
@@ -12,7 +15,7 @@ import { useReportJobs } from './composables/useReportJobs.js'
 import { deriveUserModules } from './lib/permissionModules.js'
 import { normalizeManualSection } from './lib/userManualNavigation.js'
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const {
   updatePlanningBuffer,
@@ -132,6 +135,7 @@ const showPersonalSettings = ref(false)
 const showUserManual = ref(false)
 const manualInitialSection = ref('report')
 const draftInitialEventId = ref('')
+const draftOpenRequest = ref(null)
 const nexusHeaderRef = ref(null)
 const {
   currentUser: authUser,
@@ -143,6 +147,29 @@ const {
   logout: logoutUser,
   setNotice: setAuthNotice,
 } = useAuth()
+const draftAnalysis = createDraftAnalysisStore({
+  api: { submit: submitDraftAnalysisJob, list: getDraftAnalysisJobs, retry: retryDraftAnalysisJob },
+})
+const refreshDraftAnalysis = () => { void draftAnalysis.refresh() }
+const syncDraftAccount = (event) => {
+  if (event.key !== AUTH_USER_KEY || getStoredAuthUser()?.id === authUser.value?.id) return
+  draftAnalysis.logout()
+  authUser.value = null
+  void initializeAuth()
+}
+onMounted(() => {
+  window.addEventListener('online', refreshDraftAnalysis)
+  window.addEventListener('offline', refreshDraftAnalysis)
+  document.addEventListener('visibilitychange', refreshDraftAnalysis)
+  window.addEventListener('storage', syncDraftAccount)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('online', refreshDraftAnalysis)
+  window.removeEventListener('offline', refreshDraftAnalysis)
+  document.removeEventListener('visibilitychange', refreshDraftAnalysis)
+  window.removeEventListener('storage', syncDraftAccount)
+  draftAnalysis.dispose()
+})
 const qaSessions = ref(loadStoredQaSessions())
 const authReady = ref(false)
 const planningConflictPanel = ref(null)
@@ -203,6 +230,14 @@ const currentWorkspace = computed(() => {
   if (!showUserManagement.value && !showDraftAssistant.value && homeMode.value === 'qa') return 'qa'
   return 'report'
 })
+watch(currentWorkspace, workspace => draftAnalysis.setWorkspace(workspace))
+watch(() => authUser.value?.id, id => {
+  if (!id || !hasModule('draft')) draftAnalysis.logout()
+  else {
+    draftAnalysis.setAccount(id)
+    if (draftAnalysis.state.workspace === 'draft' && hasModule('draft')) openDraftAssistant()
+  }
+}, { immediate: true })
 
 watch([currentWorkspace, currentView, showUserManagement], () => {
   if (currentWorkspace.value !== 'report' || currentView.value !== 'generator' || showUserManagement.value) {
@@ -265,6 +300,7 @@ async function handleLogin(credentials) {
 }
 
 function handleLogout() {
+  draftAnalysis.logout()
   setPlanningAccount('')
   logoutUser()
   showUserManagement.value = false
@@ -318,10 +354,17 @@ function openDraftAssistant() {
     return
   }
   backgroundActiveWorkspace()
+  draftOpenRequest.value = null
   showPersonalSettings.value = false
   showUserManagement.value = false
   showDailyAwareness.value = false
   showDraftAssistant.value = true
+}
+
+function openBackgroundDraft(eventId) {
+  openDraftAssistant()
+  draftOpenRequest.value = { eventId }
+  draftAnalysis.selectEvent(eventId)
 }
 
 function openDailyAwareness() {
@@ -663,10 +706,20 @@ function formatArchiveTime(value) {
       @close="showPersonalSettings = false"
     />
 
+    <DraftAnalysisNotice
+      v-if="authUser && hasModule('draft')"
+      :store="draftAnalysis"
+      @open="openBackgroundDraft"
+    />
+
     <DraftAssistant
       v-if="showDraftAssistant"
+      :key="authUser?.id || 'guest'"
       :current-user="authUser"
       :initial-event-id="draftInitialEventId"
+      :analysis-store="draftAnalysis"
+      :open-request="draftOpenRequest"
+      @initial-event-consumed="draftInitialEventId = ''"
       @back="returnHome"
       @request-login="requestDraftLogin"
       @report-job-created="openDraftReportJob"

@@ -29,6 +29,8 @@ import { DailyAwarenessWorkerService } from './daily-awareness-worker.service.js
 import { DeepReportSourceCollectionService } from './deep-report-source-collection.service.js';
 import { DraftAssistantController } from './draft-assistant.controller.js';
 import { DraftAssistantService } from './draft-assistant.service.js';
+import { DraftAnalysisJobsService } from './draft-analysis-jobs.service.js';
+import { DraftAnalysisWorkerService } from './draft-analysis-worker.service.js';
 import { HealthController } from './health.controller.js';
 import { HermesGatewayDeviceService } from './hermes-gateway-device.service.js';
 import { HermesService } from './hermes.service.js';
@@ -109,6 +111,8 @@ import { RetrievalModule } from './reports/retrieval/retrieval.module.js';
     DailyAwarenessWorkerService,
     DeepReportSourceCollectionService,
     DraftAssistantService,
+    DraftAnalysisJobsService,
+    DraftAnalysisWorkerService,
     VectorSourceService,
   ],
 })

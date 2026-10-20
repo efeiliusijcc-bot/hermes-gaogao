@@ -373,6 +373,21 @@ export function analyzeDraftEvent(payload) {
   })
 }
 
+export function submitDraftAnalysisJob(payload) {
+  return request('/draft-assistant/analysis-jobs', { method: 'POST', body: JSON.stringify(payload), signal: AbortSignal.timeout(15000) })
+}
+
+export function getDraftAnalysisJobs(clientRequestId = '') {
+  const query = clientRequestId ? `?clientRequestId=${encodeURIComponent(clientRequestId)}` : ''
+  return request(`/draft-assistant/analysis-jobs${query}`, { signal: AbortSignal.timeout(15000) })
+}
+
+export function retryDraftAnalysisJob(jobId, clientRequestId) {
+  return request(`/draft-assistant/analysis-jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: 'POST', body: JSON.stringify({ clientRequestId }), signal: AbortSignal.timeout(15000),
+  })
+}
+
 export function getDraftEvents(params = {}) {
   const query = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {

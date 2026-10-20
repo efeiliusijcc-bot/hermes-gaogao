@@ -6,12 +6,16 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
+  blocked: { type: Boolean, default: false },
+  submitting: { type: Boolean, default: false },
+  connectionLost: { type: Boolean, default: false },
+  hasActiveJob: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'submit'])
+const emit = defineEmits(['update:modelValue', 'submit', 'return-active'])
 
 function submit() {
-  if (props.loading) return
+  if (props.loading || props.blocked || props.submitting) return
   emit('submit')
 }
 
@@ -43,15 +47,19 @@ function handleKeydown(event) {
       />
       <div class="draft-source-actions">
         <span class="draft-source-count">{{ modelValue.length.toLocaleString('zh-CN') }} / 12,000</span>
-        <button type="submit" :disabled="loading" aria-label="开始拟稿" title="开始拟稿">
+        <button type="submit" :disabled="loading || blocked || submitting" aria-label="开始拟稿" title="开始拟稿">
           <LoaderCircle v-if="loading" :size="18" class="draft-spin" aria-hidden="true" />
           <ArrowUp v-else :size="19" aria-hidden="true" />
-          <span>{{ loading ? '正在分析' : '开始拟稿' }}</span>
+          <span>{{ submitting ? '正在确认提交' : loading ? '正在分析' : '开始拟稿' }}</span>
         </button>
       </div>
     </form>
 
     <p v-if="error" class="draft-source-error" role="alert">{{ error }}</p>
+    <p v-if="connectionLost || blocked || submitting" class="draft-source-pending" role="status">
+      {{ connectionLost ? '连接中断，正在确认任务状态' : submitting ? '正在确认任务是否已受理' : hasActiveJob ? '已有一条分析任务，可继续编辑材料' : '正在确认后台任务状态' }}
+      <button v-if="hasActiveJob" type="button" @click="emit('return-active')">返回查看</button>
+    </p>
   </section>
 </template>
 
@@ -88,6 +96,8 @@ function handleKeydown(event) {
 .draft-source-actions button:disabled { background: #9ca3af; cursor: wait; }
 .draft-source-actions button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.22); outline-offset: 2px; }
 .draft-source-error { margin: 12px 0 0; color: #b91c1c; font-size: 13px; text-align: center; }
+.draft-source-pending { color: #64748b; font-size: 13px; line-height: 1.6; }
+.draft-source-pending button { margin-left: 8px; border: 0; background: transparent; color: #2563eb; cursor: pointer; }
 .draft-spin { animation: draft-spin 800ms linear infinite; }
 @keyframes draft-spin { to { transform: rotate(360deg); } }
 

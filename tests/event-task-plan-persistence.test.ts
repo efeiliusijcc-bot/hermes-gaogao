@@ -157,6 +157,7 @@ test('draft analysis confirmation flows into report_plans and report artifacts',
     generateOutline: DraftAssistantService['generateOutline'];
     importOutlineToReportPlan: DraftAssistantService['importOutlineToReportPlan'];
     loadEventForUser: () => Promise<Record<string, unknown>>;
+    latestAnalysisJob: () => Promise<null>;
     updateEventAnalysis: (eventId: string, analysis: Record<string, unknown>) => Promise<void>;
     listSources: () => Promise<unknown[]>;
     listAttitudes: () => Promise<unknown[]>;
@@ -166,6 +167,7 @@ test('draft analysis confirmation flows into report_plans and report artifacts',
     loadOutlineForUser: () => Promise<Record<string, unknown>>;
     getPool: () => Promise<{ query: (sql: string, params: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }>;
   };
+  draft.latestAnalysisJob = async () => null;
   const initial = eventPlanning('拟稿事件');
   const event: Record<string, unknown> = {
     eventId: 'event-draft',
@@ -253,7 +255,9 @@ test('draft outline generation blocks unresolved stored intent even when a rolli
   const draft = new DraftAssistantService({} as never) as unknown as {
     generateOutline: DraftAssistantService['generateOutline'];
     loadEventForUser: () => Promise<Record<string, unknown>>;
+    latestAnalysisJob: () => Promise<null>;
   };
+  draft.latestAnalysisJob = async () => null;
   draft.loadEventForUser = async () => ({
     eventId: 'event-uncertain',
     ownerId: operator.id,

@@ -2,6 +2,7 @@
 import crypto from 'crypto';
 import { createRequire } from 'module';
 import OpenAI from 'openai';
+import { budgetedPool, checkOperationBudget, operationRequestOptions } from './operation-budget.js';
 import { buildDailyMaterialWindow } from './daily-awareness.utils.js';
 import { ResearchKeysService } from './research-keys.service.js';
 import type { CandidateRanks, CandidateScores } from './reports/retrieval/retrieval.types.js';
@@ -335,6 +336,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
   }
 
   async search(input: VectorSearchInput): Promise<VectorSearchResult> {
+    checkOperationBudget();
     const available = await this.ensureReady();
     if (!available) return this.emptyResult('unavailable', this.lastError || 'Vector database is unavailable');
 
@@ -399,6 +401,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
         updatedAt: new Date().toISOString(),
       };
     } catch (error) {
+      checkOperationBudget();
       this.lastError = this.safeError(error);
       return this.emptyResult('fallback', this.lastError);
     }
@@ -694,7 +697,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async getPool(): Promise<PgPool> {
-    if (this.pool) return this.pool;
+    if (this.pool) return budgetedPool(this.pool);
     const { Pool } = require('pg') as { Pool: new (config: Record<string, unknown>) => PgPool };
     this.pool = new Pool({
       connectionString: this.databaseUrl(),
@@ -702,7 +705,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
     });
-    return this.pool;
+    return budgetedPool(this.pool);
   }
 
   private databaseUrl(): string {
@@ -1241,7 +1244,7 @@ export class VectorSourceService implements OnModuleInit, OnModuleDestroy {
       model: ACTIVE_VECTOR_CONFIG.embeddingModel,
       input: texts.map((text) => text.slice(0, ACTIVE_VECTOR_CONFIG.embeddingInputChars)),
       ...(!ACTIVE_VECTOR_CONFIG.omitEmbeddingDimensions && ACTIVE_VECTOR_CONFIG.embeddingDimensions ? { dimensions: ACTIVE_VECTOR_CONFIG.embeddingDimensions } : {}),
-    });
+    }, operationRequestOptions());
     return response.data.map((item) => item.embedding);
   }
 

@@ -10,8 +10,11 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import OpenAI from 'openai';
+import { randomUUID } from 'node:crypto';
 import type { AuthUser } from './auth-user.interface.js';
 import { createAuthPool, type PgPool } from './auth-database.js';
+import { checkOperationBudget, operationRequestOptions } from './operation-budget.js';
+import { draftAnalysisJob } from './draft-analysis-schema.js';
 import {
   DIRECT_QA_API_KEY,
   DIRECT_QA_BASE_URL,
@@ -126,61 +129,57 @@ export class DraftAssistantService implements OnModuleDestroy {
     if (this.pool) await this.pool.end();
   }
 
-  async analyze(input: DraftAnalyzeInput, user: AuthUser) {
-    const title = this.requiredText(input.title, 'title', 512);
-    const materials = this.text(input.materials, 20000);
-    const category = this.text(input.category, 128);
-    const region = this.text(input.region, 128);
-    const links = this.normalizeLinks(input.links);
-    const maxRows = this.clampNumber(input.maxRows, 12, 1, 30);
-    const lookbackDays = this.clampNumber(input.lookbackDays, 365, 0, 3650);
-    const pool = await this.getPool();
+  normalizeAnalyzeInput(input: DraftAnalyzeInput) {
+    return {
+      title: this.requiredText(input.title, 'title', 512),
+      materials: this.text(input.materials, 20000),
+      category: this.text(input.category, 128),
+      region: this.text(input.region, 128),
+      links: this.normalizeLinks(input.links),
+      maxRows: this.clampNumber(input.maxRows, 12, 1, 30),
+      lookbackDays: this.clampNumber(input.lookbackDays, 365, 0, 3650),
+    };
+  }
 
-    const eventResult = await pool.query(
-      `INSERT INTO events (owner_id, title, category, region, raw_input)
-       VALUES ($1, $2, $3, $4, $5::jsonb)
-       RETURNING event_id`,
-      [user.id, title, category || null, region || null, JSON.stringify({ title, materials, links, category, region })],
-    );
-    const eventId = String(eventResult.rows[0]?.event_id || '');
-
+  async prepareAnalysis(input: DraftAnalyzeInput, step: (value: string) => Promise<void>) {
+    const { title, materials, category, region, links, maxRows, lookbackDays } = this.normalizeAnalyzeInput(input);
+    await step('retrieving');
+    checkOperationBudget();
     const vectorResult = await this.vectorSources.search({
       topic: title,
       knownContext: { materials, links, category, region },
       maxRows,
       lookbackDays,
     });
-    await this.insertVectorSources(eventId, user.id, vectorResult.sources);
-    await this.insertLinkSources(eventId, user.id, links);
-
+    checkOperationBudget();
+    const sources: DraftSourceResponse[] = [
+      ...vectorResult.sources.map((source) => this.vectorSource(source)),
+      ...links.map((link) => this.linkSource(link)),
+    ].map((source) => ({ ...source, sourceId: randomUUID(), createdAt: new Date().toISOString() }));
+    await step('analyzing');
+    let analysis: unknown;
     try {
-      const sources = await this.listSources(eventId);
-      let analysis: unknown;
-      try {
-        analysis = await this.generateAnalysis({ title, materials, category, region, sources });
-      } catch {
-        analysis = {
-          ...DEFAULT_ANALYSIS,
-          intentRecognition: fallbackIntentRecognition('模型分析暂不可用，无法可靠判断事件意图，请用户确认。'),
-          eventTaskPlan: buildEventTaskPlan(title, true),
-        };
-      }
-      const normalizedAnalysis = this.ensureMinimumAnalysis(
-        this.normalizeAnalysis(analysis, title, true),
-        { title, materials, category, region, sources },
-      );
-      await this.updateEventAnalysis(eventId, normalizedAnalysis);
-      await this.replaceAttitudes(eventId, user.id, normalizedAnalysis.attitudes);
-
-      return {
-        eventId,
-        analysis: normalizedAnalysis,
-        sources: await this.listSources(eventId),
+      analysis = await this.generateAnalysis({ title, materials, category, region, sources });
+    } catch {
+      checkOperationBudget();
+      analysis = {
+        ...DEFAULT_ANALYSIS,
+        intentRecognition: fallbackIntentRecognition('模型分析暂不可用，无法可靠判断事件意图，请用户确认。'),
+        eventTaskPlan: buildEventTaskPlan(title, true),
       };
-    } catch (error) {
-      await this.deleteEventQuietly(eventId);
-      throw error;
     }
+    checkOperationBudget();
+    return {
+      analysis: this.ensureMinimumAnalysis(this.normalizeAnalysis(analysis, title, true), { title, materials, category, region, sources }),
+      sources,
+    };
+  }
+
+  async savePreparedAnalysis(eventId: string, ownerId: string, prepared: Awaited<ReturnType<DraftAssistantService['prepareAnalysis']>>, db: Pick<PgPool, 'query'>) {
+    await db.query('DELETE FROM event_sources WHERE event_id = $1', [eventId]);
+    for (const source of prepared.sources) await this.insertSource(eventId, ownerId, source, db);
+    await this.updateEventAnalysis(eventId, prepared.analysis, db);
+    await this.replaceAttitudes(eventId, ownerId, prepared.analysis.attitudes, db);
   }
 
   async listEvents(user: AuthUser, pageInput?: unknown, pageSizeInput?: unknown): Promise<{ items: DraftEventSummary[]; page: number; pageSize: number; total: number }> {
@@ -194,7 +193,8 @@ export class DraftAssistantService implements OnModuleDestroy {
     const countResult = await pool.query(`SELECT count(*)::int AS count FROM events e ${where}`, params);
     const rows = await pool.query(
       `SELECT e.event_id, e.title, e.summary, e.category, e.region, e.importance_score, e.risk_score,
-              e.created_at, u.username AS owner_username
+              e.created_at, u.username AS owner_username,
+              (SELECT row_to_json(j) FROM draft_analysis_jobs j WHERE j.event_id = e.event_id ORDER BY j.created_at DESC LIMIT 1) AS analysis_job
          FROM events e
          LEFT JOIN users u ON u.id = e.owner_id
          ${where}
@@ -203,7 +203,7 @@ export class DraftAssistantService implements OnModuleDestroy {
       [...params, pageSize, offset],
     );
     return {
-      items: rows.rows.map((row) => this.toEventSummary(row, this.isAdmin(user))),
+      items: rows.rows.map((row) => ({ ...this.toEventSummary(row, this.isAdmin(user)), analysisJob: draftAnalysisJob(row.analysis_job as Record<string, unknown> | undefined) })),
       page,
       pageSize,
       total: Number(countResult.rows[0]?.count || 0),
@@ -217,15 +217,26 @@ export class DraftAssistantService implements OnModuleDestroy {
     const outlines = await this.listOutlines(event.eventId, user);
     return {
       event,
+      analysisJob: await this.latestAnalysisJob(eventId),
       sources,
       attitudes,
       latestOutline: outlines[0] || null,
     };
   }
 
+  private async latestAnalysisJob(eventId: string) {
+    const pool = await this.getPool();
+    const result = await pool.query('SELECT * FROM draft_analysis_jobs WHERE event_id = $1 ORDER BY created_at DESC LIMIT 1', [eventId]);
+    return draftAnalysisJob(result.rows[0]);
+  }
+
   async generateOutline(input: DraftOutlineInput, user: AuthUser) {
     const eventId = this.requiredText(input.eventId, 'eventId', 80);
     const event = await this.loadEventForUser(eventId, user);
+    const analysisJob = await this.latestAnalysisJob(eventId);
+    if (analysisJob && analysisJob.status !== 'succeeded') {
+      throw new BadRequestException({ error: '事件分析尚未成功完成，请等待或重试分析。' });
+    }
     const storedIntent = event.analysis.intentRecognition;
     const storedEventTaskPlan = event.analysis.eventTaskPlan;
     if (storedIntent && storedEventTaskPlan) {
@@ -669,7 +680,7 @@ export class DraftAssistantService implements OnModuleDestroy {
   private async callChatCompletion(options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming) {
     if (!this.llm) throw new ServiceUnavailableException({ error: 'LLM client is not initialized' });
     try {
-      return await this.llm.chat.completions.create(options);
+      return await this.llm.chat.completions.create(options, operationRequestOptions());
     } catch (error) {
       throw new ServiceUnavailableException({ error: this.llmErrorMessage(error) });
     }
@@ -918,8 +929,8 @@ export class DraftAssistantService implements OnModuleDestroy {
     return this.text(JSON.stringify(value), 2000);
   }
 
-  private async updateEventAnalysis(eventId: string, analysis: DraftAnalysisJson) {
-    const pool = await this.getPool();
+  private async updateEventAnalysis(eventId: string, analysis: DraftAnalysisJson, db?: Pick<PgPool, 'query'>) {
+    const pool = db || await this.getPool();
     await pool.query(
       `UPDATE events
           SET summary = $2,
@@ -944,8 +955,8 @@ export class DraftAssistantService implements OnModuleDestroy {
     );
   }
 
-  private async replaceAttitudes(eventId: string, ownerId: string, attitudes: DraftAttitude[]) {
-    const pool = await this.getPool();
+  private async replaceAttitudes(eventId: string, ownerId: string, attitudes: DraftAttitude[], db?: Pick<PgPool, 'query'>) {
+    const pool = db || await this.getPool();
     await pool.query('DELETE FROM event_attitudes WHERE event_id = $1', [eventId]);
     for (const attitude of attitudes) {
       await pool.query(
@@ -968,9 +979,8 @@ export class DraftAssistantService implements OnModuleDestroy {
     }
   }
 
-  private async insertVectorSources(eventId: string, ownerId: string, sources: VectorSourceItem[]) {
-    for (const source of sources) {
-      await this.insertSource(eventId, ownerId, {
+  private vectorSource(source: VectorSourceItem): Omit<DraftSourceResponse, 'sourceId' | 'createdAt'> {
+    return {
         sourceTitle: source.title,
         sourceUrl: source.url || null,
         publisher: source.websiteName,
@@ -982,13 +992,11 @@ export class DraftAssistantService implements OnModuleDestroy {
         supportedFacts: [],
         supportedAttitudes: [],
         credibilityScore: this.clampNumber(source.relevanceScore, 0, 0, 1),
-      });
-    }
+    };
   }
 
-  private async insertLinkSources(eventId: string, ownerId: string, links: string[]) {
-    for (const link of links) {
-      await this.insertSource(eventId, ownerId, {
+  private linkSource(link: string): Omit<DraftSourceResponse, 'sourceId' | 'createdAt'> {
+    return {
         sourceTitle: link,
         sourceUrl: link,
         publisher: '',
@@ -1000,17 +1008,16 @@ export class DraftAssistantService implements OnModuleDestroy {
         supportedFacts: [],
         supportedAttitudes: [],
         credibilityScore: 0,
-      });
-    }
+    };
   }
 
-  private async insertSource(eventId: string, ownerId: string, source: Omit<DraftSourceResponse, 'sourceId' | 'createdAt'>) {
-    const pool = await this.getPool();
+  private async insertSource(eventId: string, ownerId: string, source: DraftSourceResponse, db?: Pick<PgPool, 'query'>) {
+    const pool = db || await this.getPool();
     await pool.query(
       `INSERT INTO event_sources
         (event_id, owner_id, source_title, source_url, publisher, author, published_at, content_text,
-         source_summary, relevance_reason, supported_facts, supported_attitudes, credibility_score)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13)`,
+         source_summary, relevance_reason, supported_facts, supported_attitudes, credibility_score, source_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15)`,
       [
         eventId,
         ownerId,
@@ -1025,6 +1032,8 @@ export class DraftAssistantService implements OnModuleDestroy {
         JSON.stringify(source.supportedFacts),
         JSON.stringify(source.supportedAttitudes),
         source.credibilityScore,
+        source.sourceId,
+        source.createdAt,
       ],
     );
   }

@@ -86,6 +86,11 @@ function prepareHistoryTitle(event) {
               <span class="draft-history-title-track">{{ item.title || '未命名编报' }}</span>
             </span>
             <time>{{ formatHistoryTime(item.updatedAt || item.createdAt) }}</time>
+            <span v-if="item.analysisJob && item.analysisJob.status !== 'succeeded'" class="draft-history-status"
+              :class="{ failed: item.analysisJob.status === 'failed' }">
+              {{ item.analysisJob.status === 'queued' ? '等待分析' : item.analysisJob.status === 'running' ? '分析中' : '分析失败' }}
+            </span>
+            <span v-else-if="item.analysisUnread" class="draft-history-status">分析结果未查看</span>
           </button>
           <div v-if="!loading && !filteredEvents.length" class="draft-history-empty">没有匹配的拟稿记录</div>
         </div>
@@ -135,6 +140,8 @@ function prepareHistoryTitle(event) {
 .draft-history-row:hover .draft-history-title-track.is-overflowing,
 .draft-history-row:focus-visible .draft-history-title-track.is-overflowing { max-width: none; overflow: visible; text-overflow: clip; animation: draft-history-title-scroll var(--draft-title-duration) linear infinite alternate; }
 .draft-history-row time { color: #9aa1ab; font-size: 10px; }
+.draft-history-status { grid-column: 1 / -1; padding-bottom: 6px; color: #2563eb; font-size: 12px; }
+.draft-history-status.failed { color: #b91c1c; }
 .draft-history-empty { padding: 24px 10px; color: #8a929e; text-align: center; font-size: 12px; }
 .draft-history-account { flex: 0 0 auto; margin-top: 10px; border-top: 1px solid #e2e5ea; padding-top: 10px; }
 .draft-history-account .header-user-text { display: grid; flex: 1; }

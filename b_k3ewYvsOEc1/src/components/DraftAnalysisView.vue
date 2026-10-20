@@ -1,7 +1,9 @@
 <script setup>
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ArrowLeft, ListTree, LoaderCircle, RefreshCw } from '@lucide/vue'
+import { analysisStepLabel } from '../lib/draftAnalysisStore.js'
 
-defineProps({
+const props = defineProps({
   sourceInput: { type: String, default: '' },
   sections: {
     type: Array,
@@ -16,9 +18,26 @@ defineProps({
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
   generating: { type: Boolean, default: false },
+  analysisJob: { type: Object, default: null },
+  historyLoading: { type: Boolean, default: false },
+  submitting: { type: Boolean, default: false },
+  connectionLost: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['back', 'generate', 'retry'])
+const now = ref(Date.now())
+let clock
+watch(() => props.loading, loading => {
+  clearInterval(clock)
+  if (loading) clock = setInterval(() => { now.value = Date.now() }, 1000)
+}, { immediate: true })
+onBeforeUnmount(() => clearInterval(clock))
+const elapsed = computed(() => {
+  const start = Date.parse(props.analysisJob?.createdAt || '')
+  if (!Number.isFinite(start)) return ''
+  const end = Date.parse(props.analysisJob?.completedAt || '') || now.value
+  return `已用 ${Math.max(0, Math.floor((end - start) / 1000))} 秒`
+})
 </script>
 
 <template>
@@ -33,18 +52,20 @@ const emit = defineEmits(['back', 'generate', 'retry'])
         <div class="draft-analysis-mark" aria-hidden="true"><ListTree :size="19" /></div>
         <div>
           <h1 id="draft-analysis-title">事件分析</h1>
-          <p>已按当前材料整理关键信息</p>
+          <p>{{ loading ? '事件材料分析' : error ? '本次分析未完成' : '已按当前材料整理关键信息' }}</p>
         </div>
       </header>
 
       <div v-if="loading" class="draft-analysis-loading" aria-live="polite">
         <LoaderCircle :size="22" class="draft-spin" aria-hidden="true" />
-        <span>正在分析事件材料...</span>
+        <span>{{ historyLoading ? '正在加载历史记录' : submitting ? '正在提交拟稿任务' : connectionLost ? '连接中断，正在确认任务状态' : analysisJob ? analysisStepLabel(analysisJob) : '正在分析事件材料...' }}
+          <small v-if="analysisJob && !historyLoading">{{ elapsed }}</small>
+        </span>
       </div>
 
       <div v-else-if="error" class="draft-analysis-error" role="alert">
         <p>{{ error }}</p>
-        <button type="button" @click="emit('retry')"><RefreshCw :size="16" aria-hidden="true" />重新分析</button>
+        <button type="button" @click="emit('retry')"><RefreshCw :size="16" aria-hidden="true" />重试分析</button>
       </div>
 
       <div v-else class="draft-analysis-sections">
@@ -56,7 +77,7 @@ const emit = defineEmits(['back', 'generate', 'retry'])
     </div>
 
     <footer class="draft-analysis-actions">
-      <button class="secondary" type="button" :disabled="loading || generating" @click="emit('back')">
+      <button class="secondary" type="button" :disabled="generating" @click="emit('back')">
         <ArrowLeft :size="17" aria-hidden="true" />返回重新输入
       </button>
       <button class="primary" type="button" :disabled="loading || generating || Boolean(error)" @click="emit('generate')">
@@ -78,6 +99,7 @@ const emit = defineEmits(['back', 'generate', 'retry'])
 .draft-analysis-mark { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid #d9e5f7; background: #f4f8fe; color: #315f9d; border-radius: 8px; }
 .draft-analysis-response h1 { margin: 0; color: #111827; font-size: 20px; line-height: 1.4; }
 .draft-analysis-response header p { margin: 2px 0 0; color: #8a929f; font-size: 12px; }
+.draft-analysis-loading small { display: block; margin-top: 8px; color: #64748b; font-size: 12px; font-weight: 400; }
 .draft-analysis-sections { margin-left: 48px; }
 .draft-analysis-sections article { padding: 20px 0; border-bottom: 1px solid #e8ebf0; }
 .draft-analysis-sections h2 { margin: 0; color: #253047; font-size: 15px; line-height: 1.5; }

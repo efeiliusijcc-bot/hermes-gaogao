@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { DraftAnalysisJobsService } from './draft-analysis-jobs.service.js';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthUser } from './auth-user.interface.js';
 import { CurrentUser } from './current-user.decorator.js';
@@ -10,12 +11,41 @@ import { RequirePermissions } from './require-permissions.decorator.js';
 @Controller('/api/draft-assistant')
 @UseGuards(AuthGuard, PermissionsGuard)
 export class DraftAssistantController {
-  constructor(private readonly draftAssistant: DraftAssistantService) {}
+  constructor(
+    @Inject(DraftAssistantService) private readonly draftAssistant: DraftAssistantService,
+    @Inject(DraftAnalysisJobsService) private readonly analysisJobs: DraftAnalysisJobsService,
+  ) {}
 
   @Post('analyze')
   @RequirePermissions('draft_assistant:create')
   analyze(@Body() body: DraftAnalyzeInput, @CurrentUser() user: AuthUser) {
-    return this.draftAssistant.analyze(body || {}, user);
+    return this.analysisJobs.analyzeSync(body || {}, user);
+  }
+
+  @Post('analysis-jobs')
+  @HttpCode(202)
+  @RequirePermissions('draft_assistant:create')
+  submitAnalysis(@Body() body: DraftAnalyzeInput & { clientRequestId?: string }, @CurrentUser() user: AuthUser) {
+    return this.analysisJobs.submit(body || {}, user);
+  }
+
+  @Get('analysis-jobs')
+  @RequirePermissions('draft_assistant:read')
+  listAnalysis(@Query('clientRequestId') requestId: string, @CurrentUser() user: AuthUser) {
+    return this.analysisJobs.list(user, requestId);
+  }
+
+  @Get('analysis-jobs/:jobId')
+  @RequirePermissions('draft_assistant:read')
+  getAnalysis(@Param('jobId') jobId: string, @CurrentUser() user: AuthUser) {
+    return this.analysisJobs.get(jobId, user);
+  }
+
+  @Post('analysis-jobs/:jobId/retry')
+  @HttpCode(202)
+  @RequirePermissions('draft_assistant:create')
+  retryAnalysis(@Param('jobId') jobId: string, @Body() body: { clientRequestId?: string }, @CurrentUser() user: AuthUser) {
+    return this.analysisJobs.submit(body || {}, user, jobId);
   }
 
   @Get('events')

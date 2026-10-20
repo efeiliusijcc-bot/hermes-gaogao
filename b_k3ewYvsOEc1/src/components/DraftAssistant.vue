@@ -20,6 +20,7 @@ import {
 } from '../lib/draftAssistantFlow.js'
 import { createDraftAutosave } from '../lib/draftAutosave.js'
 import { hasEventPlanning, normalizeEventTaskPlan } from '../lib/eventTaskPlan.js'
+import { isActiveAnalysis } from '../lib/draftAnalysisStore.js'
 import DraftAnalysisView from './DraftAnalysisView.vue'
 import DraftHistorySidebar from './DraftHistorySidebar.vue'
 import DraftImportState from './DraftImportState.vue'
@@ -30,9 +31,11 @@ import DraftSourceComposer from './DraftSourceComposer.vue'
 const props = defineProps({
   currentUser: { type: Object, default: null },
   initialEventId: { type: String, default: '' },
+  analysisStore: { type: Object, default: null },
+  openRequest: { type: Object, default: null },
 })
 
-const emit = defineEmits(['back', 'request-login', 'report-job-created', 'open-settings'])
+const emit = defineEmits(['back', 'request-login', 'report-job-created', 'open-settings', 'initial-event-consumed'])
 
 const stage = ref('input')
 const sourceInput = ref('')
@@ -51,6 +54,8 @@ const isAnalyzing = ref(false)
 const isGeneratingOutline = ref(false)
 const isRevising = ref(false)
 const isLoadingEvents = ref(false)
+const isLoadingHistory = ref(false)
+const selectedHistoryId = ref('')
 const importState = reactive({ status: 'idle', error: '', job: null })
 const mainRef = ref(null)
 
@@ -59,10 +64,12 @@ let draftContextVersion = 0
 let historyRequestVersion = 0
 let eventsRequestVersion = 0
 let disposed = false
+let pendingViewRequest = null
 const isCurrentDraft = (version) => !disposed && version === draftContextVersion
 
 const currentEventId = computed(() => (
-  eventResult.value?.eventId
+  selectedHistoryId.value
+  || eventResult.value?.eventId
   || eventResult.value?.event?.eventId
   || selectedOutline.value?.eventId
   || ''
@@ -73,6 +80,20 @@ const eventPlanningAvailable = computed(() => hasEventPlanning(currentAnalysis.v
 const draftIntentRecognition = computed(() => eventPlanningAvailable.value ? resolveDraftIntentRecognition(currentAnalysis.value.intentRecognition) : null)
 const draftEventTaskPlan = computed(() => eventPlanningAvailable.value ? normalizeEventTaskPlan(currentAnalysis.value.eventTaskPlan) : null)
 const isImporting = computed(() => stage.value === 'importing' || stage.value === 'completed')
+const currentAnalysisJob = computed(() => props.analysisStore?.jobForEvent(currentEventId.value) || eventResult.value?.analysisJob || null)
+const analysisLoading = computed(() => isAnalyzing.value || isActiveAnalysis(currentAnalysisJob.value)
+  || (!currentEventId.value && Boolean(props.analysisStore?.state.pending)))
+const displayedAnalysisError = computed(() => currentAnalysisJob.value?.status === 'failed'
+  ? currentAnalysisJob.value.errorMessage || '事件分析失败，请重试分析。' : analysisError.value)
+const activeAnalysisJob = computed(() => props.analysisStore?.activeJob() || null)
+const analysisBlocked = computed(() => Boolean(props.analysisStore && (
+  activeAnalysisJob.value || props.analysisStore.state.pending || !props.analysisStore.state.initialized
+)))
+const historyEvents = computed(() => eventList.value.map(item => ({
+  ...item, analysisJob: props.analysisStore?.jobForEvent(item.eventId) || item.analysisJob,
+  analysisUnread: Boolean(props.analysisStore?.jobForEvent(item.eventId)?.status === 'succeeded'
+    && !props.analysisStore.state.readJobs.includes(props.analysisStore.jobForEvent(item.eventId).jobId)),
+})))
 
 function emptyOutline() {
   return {
@@ -204,11 +225,11 @@ watch(outlineDraft, (value) => {
   autosave.schedule(cloneOutline(value))
 }, { deep: true, flush: 'sync' })
 
-async function loadEvents({ reportErrors = true } = {}) {
+async function loadEvents({ reportErrors = true, background = false } = {}) {
   if (disposed || !props.currentUser) return
   const requestVersion = ++eventsRequestVersion
   const contextVersion = draftContextVersion
-  isLoadingEvents.value = true
+  if (!background) isLoadingEvents.value = true
   try {
     const result = await getDraftEvents({ page: 1, pageSize: 50 })
     if (disposed || requestVersion !== eventsRequestVersion) return
@@ -227,11 +248,14 @@ function resetImportState() {
 }
 
 function resetCurrentDraft() {
+  pendingViewRequest = null
   draftContextVersion += 1
   historyRequestVersion += 1
   isAnalyzing.value = false
   isGeneratingOutline.value = false
   isRevising.value = false
+  selectedHistoryId.value = ''
+  isLoadingHistory.value = false
   eventResult.value = null
   selectedOutline.value = null
   syncingOutline = true
@@ -246,7 +270,7 @@ function resetCurrentDraft() {
 }
 
 async function startDraft() {
-  if (isAnalyzing.value) return
+  if (isAnalyzing.value || analysisBlocked.value) return
   sourceError.value = ''
   analysisError.value = ''
   pageError.value = ''
@@ -267,7 +291,24 @@ async function startDraft() {
   const contextVersion = draftContextVersion
   stage.value = 'analysis'
   isAnalyzing.value = true
+  const submittedText = sourceInput.value
   try {
+    if (props.analysisStore) {
+      const submitted = props.analysisStore.submit(payload)
+      pendingViewRequest = { key: props.analysisStore.state.pending?.clientRequestId, contextVersion }
+      const result = await submitted
+      if (result && props.analysisStore.state.composer === submittedText) props.analysisStore.setComposer('')
+      if (isCurrentDraft(contextVersion)) {
+        isAnalyzing.value = false
+        if (result) await openEvent(result.eventId)
+        else if (!props.analysisStore.state.pending) {
+          stage.value = 'input'
+          sourceError.value = props.analysisStore.state.submitError
+        }
+      }
+      await loadEvents({ reportErrors: false })
+      return
+    }
     const result = await analyzeDraftEvent(payload)
     if (isCurrentDraft(contextVersion)) eventResult.value = result
     await loadEvents({ reportErrors: isCurrentDraft(contextVersion) })
@@ -279,9 +320,9 @@ async function startDraft() {
 }
 
 async function createOutline() {
-  if (isGeneratingOutline.value || isAnalyzing.value) return
+  if (isGeneratingOutline.value || analysisLoading.value || isLoadingHistory.value) return
   pageError.value = ''
-  if (!currentEventId.value) {
+  if (!currentEventId.value || !eventResult.value || (currentAnalysisJob.value && currentAnalysisJob.value.status !== 'succeeded')) {
     pageError.value = '请先完成事件分析'
     return
   }
@@ -443,12 +484,21 @@ async function openEvent(eventId, { prefillOnly = false } = {}) {
   pageError.value = ''
   if (!(await flushBeforeLeaving())) return
   if (disposed || requestVersion !== historyRequestVersion) return
+  resetCurrentDraft()
+  const contextVersion = draftContextVersion
+  selectedHistoryId.value = eventId
+  props.analysisStore?.selectEvent(eventId)
+  sourceInput.value = ''
+  stage.value = 'analysis'
+  isLoadingHistory.value = true
   try {
     const result = await getDraftEvent(eventId)
-    if (disposed || requestVersion !== historyRequestVersion) return
-    resetCurrentDraft()
+    if (!isCurrentDraft(contextVersion)) return
     sourceInput.value = sourceFromEvent(result)
     if (prefillOnly) {
+      selectedHistoryId.value = ''
+      props.analysisStore?.selectEvent('')
+      props.analysisStore?.setComposer(sourceInput.value)
       sourceError.value = ''
       stage.value = 'input'
       historyOpen.value = false
@@ -466,11 +516,25 @@ async function openEvent(eventId, { prefillOnly = false } = {}) {
       queueMicrotask(() => { syncingOutline = false })
       saveStatus.value = 'idle'
     }
-    stage.value = restoredDraftStage(result)
+    stage.value = result.analysisJob && result.analysisJob.status !== 'succeeded' ? 'analysis' : restoredDraftStage(result)
     historyOpen.value = false
   } catch (error) {
-    if (!disposed && requestVersion === historyRequestVersion) pageError.value = messageOf(error)
+    if (isCurrentDraft(contextVersion)) { pageError.value = messageOf(error); analysisError.value = '历史记录加载失败，请重新选择该记录。' }
+  } finally {
+    if (isCurrentDraft(contextVersion)) isLoadingHistory.value = false
   }
+}
+
+async function retryAnalysis() {
+  if (!props.analysisStore || !currentAnalysisJob.value) return startDraft()
+  if (props.analysisStore.state.submitting || props.analysisStore.state.pending || activeAnalysisJob.value) {
+    pageError.value = '已有一条事件分析正在进行，请先等待该任务结束。'
+    return
+  }
+  const contextVersion = draftContextVersion
+  const result = await props.analysisStore.submit({}, currentAnalysisJob.value.jobId)
+  if (isCurrentDraft(contextVersion) && result) await openEvent(result.eventId)
+  else if (isCurrentDraft(contextVersion)) pageError.value = props.analysisStore.state.submitError
 }
 
 async function startNewEvent() {
@@ -478,9 +542,10 @@ async function startNewEvent() {
   const requestVersion = ++historyRequestVersion
   if (!(await flushBeforeLeaving())) return
   if (disposed || requestVersion !== historyRequestVersion) return
-  sourceInput.value = ''
+  sourceInput.value = props.analysisStore?.state.composer || ''
   sourceError.value = ''
   resetCurrentDraft()
+  props.analysisStore?.selectEvent('')
   stage.value = 'input'
   historyOpen.value = false
 }
@@ -497,11 +562,43 @@ onMounted(async () => {
   await loadEvents()
   if (!disposed && requestVersion === historyRequestVersion && props.initialEventId) {
     await openEvent(props.initialEventId, { prefillOnly: true })
+    emit('initial-event-consumed')
+  } else if (!disposed && requestVersion === historyRequestVersion && props.analysisStore?.state.selectedEventId) {
+    await openEvent(props.analysisStore.state.selectedEventId)
+  } else if (!disposed && requestVersion === historyRequestVersion) {
+    sourceInput.value = props.analysisStore?.state.composer || ''
   }
 })
 
+watch(sourceInput, value => {
+  if (stage.value === 'input') props.analysisStore?.setComposer(value)
+})
+watch(() => props.analysisStore?.state.jobs, () => {
+  void loadEvents({ reportErrors: false, background: true })
+}, { deep: true })
+watch(() => `${currentAnalysisJob.value?.jobId}:${currentAnalysisJob.value?.status}`, async () => {
+  const current = currentAnalysisJob.value
+  if (!current || current.status !== 'succeeded' || stage.value !== 'analysis' || isLoadingHistory.value) return
+  const contextVersion = draftContextVersion
+  try {
+    const result = await getDraftEvent(current.eventId)
+    if (isCurrentDraft(contextVersion) && stage.value === 'analysis' && currentAnalysisJob.value?.jobId === current.jobId) eventResult.value = result
+  } catch {
+    if (isCurrentDraft(contextVersion)) analysisError.value = '分析已保存，结果暂时无法加载，请重新打开该记录。'
+  }
+})
 watch(() => props.initialEventId, (eventId) => {
-  if (eventId && eventId !== currentEventId.value) void openEvent(eventId, { prefillOnly: true })
+  if (eventId && eventId !== currentEventId.value) {
+    void openEvent(eventId, { prefillOnly: true }).then(() => emit('initial-event-consumed'))
+  }
+})
+watch(() => props.openRequest, request => {
+  if (request?.eventId) void openEvent(request.eventId)
+})
+watch(() => props.analysisStore?.state.accepted, accepted => {
+  if (accepted && pendingViewRequest?.key === accepted.clientRequestId && isCurrentDraft(pendingViewRequest.contextVersion)) {
+    void openEvent(accepted.eventId)
+  }
 })
 
 watch(() => props.currentUser, (user) => {
@@ -534,7 +631,7 @@ onBeforeUnmount(() => {
       <DraftHistorySidebar
         :open="historyOpen"
         :current-event-id="currentEventId"
-        :events="eventList"
+        :events="historyEvents"
         :loading="isLoadingEvents"
         :current-user="currentUser"
         @close="historyOpen = false"
@@ -567,6 +664,11 @@ onBeforeUnmount(() => {
           v-model="sourceInput"
           :loading="isAnalyzing"
           :error="sourceError"
+          :blocked="analysisBlocked"
+          :has-active-job="Boolean(activeAnalysisJob)"
+          :connection-lost="Boolean(analysisStore?.state.connectionLost)"
+          :submitting="Boolean(analysisStore?.state.submitting || analysisStore?.state.pending)"
+          @return-active="activeAnalysisJob && openEvent(activeAnalysisJob.eventId)"
           @submit="startDraft"
         />
 
@@ -574,11 +676,15 @@ onBeforeUnmount(() => {
           v-else-if="stage === 'analysis'"
           :source-input="sourceInput"
           :sections="analysisSections"
-          :loading="isAnalyzing"
-          :error="analysisError"
+          :loading="analysisLoading || isLoadingHistory"
+          :history-loading="isLoadingHistory"
+          :submitting="Boolean(analysisStore?.state.submitting || (!currentEventId && analysisStore?.state.pending))"
+          :analysis-job="currentAnalysisJob"
+          :connection-lost="Boolean(analysisStore?.state.connectionLost)"
+          :error="displayedAnalysisError"
           :generating="isGeneratingOutline"
-          @back="stage = 'input'"
-          @retry="startDraft"
+          @back="startNewEvent"
+          @retry="retryAnalysis"
           @generate="createOutline"
         />
 

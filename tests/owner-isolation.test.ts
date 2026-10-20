@@ -11,6 +11,7 @@ import { DailyAwarenessController } from '../server/daily-awareness.controller.j
 import { DailyAwarenessService } from '../server/daily-awareness.service.js';
 import { DraftAssistantController } from '../server/draft-assistant.controller.js';
 import { DraftAssistantService } from '../server/draft-assistant.service.js';
+import { DraftAnalysisJobsService } from '../server/draft-analysis-jobs.service.js';
 import { PermissionsGuard } from '../server/permissions.guard.js';
 import { QaSessionSourcesService } from '../server/qa-session-sources.service.js';
 import { ReportsController } from '../server/reports.controller.js';
@@ -347,6 +348,10 @@ async function testMissingModulePermissionReturns403() {
   @Module({
     controllers: [ReportsController, ChatController, DraftAssistantController, DailyAwarenessController],
     providers: [
+      { provide: DraftAnalysisJobsService, useValue: {
+        analyzeSync: async () => ({ eventId: 'event-a', analysis: {}, sources: [] }),
+        list: async () => ({ items: [] }),
+      } },
       Reflector,
       {
         provide: AuthService,
