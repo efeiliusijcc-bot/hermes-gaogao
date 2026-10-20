@@ -2781,32 +2781,34 @@ function firstPositiveCount(...values) {
   return null
 }
 
-function firstAvailableCount(...values) {
-  for (const value of values) {
-    const number = Number(value)
-    if (Number.isFinite(number) && number >= 0) return number
-  }
-  return null
+function maxAvailableCount(...values) {
+  const counts = values
+    .filter((value) => value !== null && value !== undefined && value !== '')
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value >= 0)
+  return counts.length ? Math.max(...counts) : null
 }
 
 function loadedSourceCountFor(group) {
   if (activeSourceType.value === group) {
     if (sourceListLoading.value && sourceListTotal.value === null && !sourceListItems.value.length) return null
-    return firstAvailableCount(sourceListTotal.value, sourceListItems.value.length)
+    return maxAvailableCount(sourceListTotal.value, sourceListItems.value.length)
   }
   return null
 }
 
 const sourceOverviewStats = computed(() => {
   const summary = sourceListSummary.value || {}
-  const databaseRecall = firstAvailableCount(
+  const databaseRecall = maxAvailableCount(
     summary.databaseRecallCount,
     loadedSourceCountFor('database_recall'),
     normalizedSources.value.length,
   )
-  const toolSearch = firstAvailableCount(
+  const toolSearch = maxAvailableCount(
     summary.toolSearchCount,
     loadedSourceCountFor('tool_search'),
+    // Empty API results use the same report-reference fallback as the list.
+    summary.toolSearchCount > 0 ? null : (localSourcePool('tool_search').length || null),
   )
   const structuredSources = firstPositiveCount(summary.structuredSourceCount, normalizedSources.value.length)
   const reportCitations = firstPositiveCount(summary.reportReferenceCount, reportCitationNumbers.value.length)
@@ -3562,7 +3564,7 @@ async function loadSourceListPage(page = 1, { preserveOnError = false } = {}) {
     sourceCurrentPage.value = 1
     sourceListTotal.value = requestType === 'candidate_hits'
       ? (!usedUntypedFallback && normalized.total !== null ? normalized.total : (sourceCandidateHitTotal() || sourceListItems.value.length))
-      : (normalized.total ?? sourceListItems.value.length)
+      : Math.max(normalized.total ?? 0, sourceListItems.value.length)
     sourceListHasMore.value = normalized.hasMore ||
       (typeof normalized.total === 'number' && sourceListItems.value.length < normalized.total)
   } finally {
