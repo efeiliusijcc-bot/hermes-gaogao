@@ -26,7 +26,9 @@ watch(() => [props.jobId, props.running], () => {
     try {
       const result = await fetchResearchToolLog(props.jobId)
       if (current !== generation) return
-      items.value = (result.items || []).filter((item) => ['Tavily Search', 'web_fetch', 'Web Fetch'].includes(item.tool))
+      items.value = (result.items || []).filter((item) => (
+        ['Tavily Search', 'web_fetch', 'Web Fetch'].includes(item.tool) && item.status !== 'failed'
+      ))
       unavailable.value = Boolean(result.unavailable)
     } catch {
       if (current === generation) unavailable.value = true
