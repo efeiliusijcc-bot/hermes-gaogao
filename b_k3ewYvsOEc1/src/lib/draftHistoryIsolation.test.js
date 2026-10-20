@@ -38,9 +38,10 @@ const event = (id, withOutline = false) => ({
   latestOutline: withOutline ? outline(id) : null,
 })
 
-function mountLogic(t, overrides = {}) {
+function mountLogic(t, overrides = {}, initialProps = {}) {
   const scope = vue.effectScope()
   const unmounts = []
+  const mounts = []
   const emissions = []
   const api = {
     getDraftEvents: async () => ({ items: [] }),
@@ -48,7 +49,7 @@ function mountLogic(t, overrides = {}) {
     ...overrides,
   }
   const modules = {
-    vue: { ...vue, onMounted: () => {}, onBeforeUnmount: (fn) => unmounts.push(fn) },
+    vue: { ...vue, onMounted: (fn) => mounts.push(fn), onBeforeUnmount: (fn) => unmounts.push(fn) },
     '../lib/api.js': api,
     '../lib/draftAssistantFlow.js': flow,
     '../lib/draftAutosave.js': autosave,
@@ -64,14 +65,53 @@ function mountLogic(t, overrides = {}) {
     }
   }
   const component = new Function(...Object.keys(bindings), `${setupCode}\nreturn component;`)(...Object.values(bindings))
+  const props = vue.reactive({ currentUser: { id: 'test-user' }, initialEventId: '', ...initialProps })
   const state = scope.run(() => component.setup(
-    { currentUser: { id: 'test-user' }, initialEventId: '' },
+    props,
     { expose() {}, emit: (...args) => emissions.push(args) },
   ))
   const unmount = () => { unmounts.forEach((fn) => fn()); scope.stop() }
   t.after(unmount)
-  return { state, emissions, unmount }
+  return { state, emissions, unmount, props, mount: async () => { for (const fn of mounts) await fn() } }
 }
+
+test('daily import only prefills the composer until the user starts drafting', async (t) => {
+  let analyzeCalls = 0
+  const { state: s, mount } = mountLogic(t, {
+    getDraftEvent: async () => ({
+      event: { eventId: 'daily', title: 'Daily title', summary: 'Daily summary', rawInput: { source: 'daily_awareness' } },
+      analysis: { oneSentenceSummary: 'Previously saved analysis' },
+      latestOutline: outline('daily'),
+    }),
+    analyzeDraftEvent: async (payload) => {
+      analyzeCalls++
+      assert.ok(JSON.stringify(payload).includes('Edited material'))
+      return event('generated')
+    },
+  }, { initialEventId: 'daily' })
+  await mount()
+  assert.equal(s.stage.value, 'input')
+  assert.equal(s.sourceInput.value, 'Daily title\n\nDaily summary')
+  assert.equal(s.eventResult.value, null)
+  assert.equal(s.selectedOutline.value, null)
+  assert.equal(analyzeCalls, 0)
+  s.sourceInput.value += '\nEdited material'
+  await s.startDraft()
+  assert.equal(analyzeCalls, 1)
+  assert.equal(s.stage.value, 'analysis')
+})
+
+test('a new imported event prefills an already mounted assistant without restoring analysis', async (t) => {
+  const { state: s, props } = mountLogic(t)
+  await s.openEvent('history')
+  assert.equal(s.stage.value, 'analysis')
+  props.initialEventId = 'daily'
+  await vue.nextTick()
+  await settle()
+  assert.equal(s.stage.value, 'input')
+  assert.equal(s.sourceInput.value, 'Materials daily')
+  assert.equal(s.eventResult.value, null)
+})
 
 test('history selection clears another draft loading state and ignores its late analysis', async (t) => {
   const analysis = deferred()

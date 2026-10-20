@@ -479,7 +479,7 @@ function sourceFromEvent(result) {
   return [result?.event?.title, result?.event?.summary].filter(Boolean).join('\n\n')
 }
 
-async function openEvent(eventId) {
+async function openEvent(eventId, { prefillOnly = false } = {}) {
   if (!eventId || stage.value === 'importing') return
   const requestVersion = ++historyRequestVersion
   pageError.value = ''
@@ -489,8 +489,14 @@ async function openEvent(eventId) {
     const result = await getDraftEvent(eventId)
     if (disposed || requestVersion !== historyRequestVersion) return
     resetCurrentDraft()
-    eventResult.value = result
     sourceInput.value = sourceFromEvent(result)
+    if (prefillOnly) {
+      sourceError.value = ''
+      stage.value = 'input'
+      historyOpen.value = false
+      return
+    }
+    eventResult.value = result
     selectedOutline.value = result.latestOutline || null
     revisionFeedback.value = ''
     analysisError.value = ''
@@ -531,11 +537,13 @@ onMounted(async () => {
   const requestVersion = historyRequestVersion
   window.addEventListener('beforeunload', handleBeforeUnload)
   await loadEvents()
-  if (!disposed && requestVersion === historyRequestVersion && props.initialEventId) await openEvent(props.initialEventId)
+  if (!disposed && requestVersion === historyRequestVersion && props.initialEventId) {
+    await openEvent(props.initialEventId, { prefillOnly: true })
+  }
 })
 
 watch(() => props.initialEventId, (eventId) => {
-  if (eventId && eventId !== currentEventId.value) void openEvent(eventId)
+  if (eventId && eventId !== currentEventId.value) void openEvent(eventId, { prefillOnly: true })
 })
 
 watch(() => props.currentUser, (user) => {
