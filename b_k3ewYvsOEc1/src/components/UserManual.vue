@@ -126,7 +126,7 @@ onBeforeUnmount(() => {
             <span class="manual-title-icon" aria-hidden="true"><BookOpenText :size="20" /></span>
             <div>
               <h1 id="user-manual-title">AI深度编报系统使用手册</h1>
-              <p>四个业务模块共用一份手册，当前已定位到对应章节</p>
+              <p><time datetime="2026-10-26">2026-10-26 更新</time> · 按当前操作流程核对，已定位到对应章节</p>
             </div>
           </div>
           <button ref="closeButtonRef" class="manual-close" type="button" aria-label="关闭使用手册" title="关闭" @click="closeManual">
@@ -154,7 +154,7 @@ onBeforeUnmount(() => {
             </nav>
             <div class="manual-sidebar-note">
               <CheckCircle2 :size="16" aria-hidden="true" />
-              <span>系统会自动保存可恢复的任务与历史记录。</span>
+              <span>规划草稿与后台任务的保存方式不同，请查看对应章节的恢复说明。</span>
             </div>
           </aside>
 
@@ -177,13 +177,13 @@ onBeforeUnmount(() => {
                     <span class="figure-line wide"></span><span class="figure-line"></span><span class="figure-line wide"></span>
                   </div>
                   <div class="figure-main">
-                    <div class="figure-tabs"><b>创建任务</b><span>规划确认</span><span>生成结果</span></div>
-                    <div class="figure-field">报告主题与背景材料</div>
-                    <div class="figure-step-row"><span>1 方向</span><span>2 信源</span><span>3 补充</span></div>
-                    <div class="figure-primary">开始深度编报</div>
+                    <div class="figure-tabs"><b>报告标题</b><span>补充背景</span></div>
+                    <div class="figure-field">填写主题和材料，再生成规划</div>
+                    <div class="figure-step-row"><span>1 生成规划</span><span>2 逐项确认</span><span>3 提交编写</span></div>
+                    <div class="figure-primary">生成编报规划</div>
                   </div>
                 </div>
-                <p>界面示意：左侧查看历史任务，中间完成创建、规划和结果查看。</p>
+                <p>流程示意，非实际页面截图：生成规划不等于提交报告，需确认后才开始编写。</p>
               </div>
 
               <div class="manual-block">
@@ -191,21 +191,33 @@ onBeforeUnmount(() => {
                 <ol class="manual-steps">
                   <li><b>填写报告主题。</b><span>主题尽量包含主体、事项、时间范围和关注方向，例如“某机构近期对华合作动向及风险研判”。</span></li>
                   <li><b>补充背景材料。</b><span>可粘贴事件线索、已知事实、网址或内部材料。背景越具体，规划方向越稳定。</span></li>
-                  <li><b>生成报告规划。</b><span>系统会拆分研究方向、检索词和信源范围。此时尚未开始生成成稿，可继续调整。</span></li>
-                  <li><b>逐项确认规划。</b><span>检查研究方向、联网搜索信源和数据库信源。普通用户只能看到其权限范围内的信源。</span></li>
-                  <li><b>开始深度编报。</b><span>确认后进入资料采集、交叉核验、写作和质检流程。生成期间可以切换模块，任务会在后台继续。</span></li>
+                  <li><b>点击“生成编报规划”。</b><span>系统生成规划，此时尚未提交编报任务。根据主题，可能先出现意图识别和事件脉络任务，按页面提示确认。</span></li>
+                  <li><b>逐项确认规划。</b><span>K报依次核对信源范围、基本情况、涉我风险、对策建议和补充方向。可勾选方向、添加自定义方向及补充信源；不可用的数据库信源不能选择。</span></li>
+                  <li><b>点击“确认并开始编写”。</b><span>提交成功后进入数据库检索、资料深度采集、素材整合、报告撰写和成稿自检。生成期间可切换模块，再从编报历史打开任务。</span></li>
                 </ol>
+              </div>
+
+              <div class="manual-block">
+                <h3>规划暂存、切页与恢复</h3>
+                <ul class="manual-list">
+                  <li><b>稍后继续：</b>收起弹窗并保留当前规划。切换历史报告、QA问答、每日动态感知或拟稿助手，也会暂存并收起，不会自动启动编报。</li>
+                  <li><b>继续规划：</b>返回编报首页后，在“未完成规划”中查看主题和更新时间，点击后恢复步骤、勾选项、自定义方向及补充材料；不会自动弹窗。</li>
+                  <li><b>放弃规划：</b>确认后才清除草稿。有草稿时发起新编报或导入编报背景，先选择“继续原规划”或“放弃并新建”；关闭提示保持原状态。</li>
+                  <li><b>保存范围：</b>每个账号、每个标签页最多保留一份规划，仅在当前标签页会话中保存。刷新可恢复；关闭标签页后不保证保留，不跨设备同步；退出登录或切换账号会清除旧账号的当前会话草稿。</li>
+                  <li><b>生成中刷新：</b>会显示“规划生成已中断”，保留原输入，需手动点击“重新生成规划”。已提交的后台编报任务不属于这份规划草稿。</li>
+                </ul>
+                <div class="manual-warning"><AlertTriangle :size="17" /><span>若出现“当前仅临时保存，刷新可能丢失”，请勿依赖刷新恢复。若出现“提交结果待核实”，先“查看历史”确认是否已创建任务，再决定是否“确认后重试提交”；系统不会自动再次提交。</span></div>
               </div>
 
               <div class="manual-two-column">
                 <div class="manual-block">
                   <h3>结果页怎么查看</h3>
                   <ul class="manual-list">
-                    <li><b>报告正文：</b>阅读、编辑并导出最终报告。</li>
+                    <li><b>报告正文：</b>阅读成稿并导出。当前页面不提供正文在线编辑，需要修改时可导出 Word 后编辑。</li>
                     <li><b>信源概览：</b>核对标题、机构、发布时间、相关性与原文。</li>
                     <li><b>规划选择：</b>回看本次实际采用的研究方向和信源范围。</li>
                     <li><b>引用依据：</b>核对正文引用编号与对应证据。</li>
-                    <li><b>任务进度：</b>查看每个处理阶段及技术日志。</li>
+                    <li><b>任务进度：</b>查看运行概览和执行阶段，阶段详情保留“输入输出”和“日志”，不再提供阶段“概览”或“调用链”页签。</li>
                     <li><b>成稿自检：</b>查看结构、事实、引用等标准的具体核验说明。</li>
                   </ul>
                 </div>
@@ -213,7 +225,7 @@ onBeforeUnmount(() => {
                   <Download :size="19" aria-hidden="true" />
                   <div>
                     <h3>导出前建议</h3>
-                    <p>先检查正文中的引用编号，再到“引用依据”和“信源概览”确认原文。完成必要修改后再导出 Word 或 PDF。</p>
+                    <p>先检查正文中的引用编号，再到“引用依据”和“信源概览”确认原文。Word 可下载后编辑；“导出 PDF”会打开浏览器打印窗口，请选择保存为 PDF。</p>
                   </div>
                 </div>
               </div>
@@ -223,10 +235,11 @@ onBeforeUnmount(() => {
                 <div class="manual-status-grid">
                   <div><span class="status-dot queued"></span><b>排队中</b><p>任务已提交，等待服务资源；无需重复点击。</p></div>
                   <div><span class="status-dot running"></span><b>生成中</b><p>可在历史记录中重新打开并查看实时进度。</p></div>
-                  <div><span class="status-dot success"></span><b>已完成</b><p>成稿和信源已保存，可继续编辑或导出。</p></div>
-                  <div><span class="status-dot failed"></span><b>失败</b><p>打开任务查看错误阶段和日志，再决定重试。</p></div>
+                  <div><span class="status-dot success"></span><b>已完成</b><p>可读取成稿、核对信源并导出。</p></div>
+                  <div><span class="status-dot failed"></span><b>失败</b><p>查看任务提示和阶段日志；反复失败时向管理员提供任务编号和时间。</p></div>
                 </div>
-                <div class="manual-warning"><AlertTriangle :size="17" /><span>若只有部分资料采集成功，先核对信源和成稿完整度。不要仅凭“部分完成”状态直接对外使用。</span></div>
+                <p>深度采集的工具调用列表仅展示 Tavily Search 和 Web Fetch 的非失败记录，不代表后台全部调用都成功。请结合任务总状态、阶段日志和成稿完整度判断；没有保存的调用信息可能显示为“--”。</p>
+                <div class="manual-warning"><AlertTriangle :size="17" /><span>任务“已完成”不等于所有事实都已核实。对外使用前仍应检查引用、原文和待核实内容。</span></div>
               </div>
             </section>
 
@@ -245,7 +258,7 @@ onBeforeUnmount(() => {
                 <div class="qa-figure-grid">
                   <div class="figure-sidebar"><b>问答历史</b><span class="figure-line wide"></span><span class="figure-line"></span><span class="figure-line wide"></span></div>
                   <div class="qa-thread"><div class="question-bubble">提出包含时间与范围的问题</div><div class="answer-block"><b>回答</b><span></span><span></span><span class="short"></span></div><div class="qa-input">继续追问… <b>发送</b></div></div>
-                  <div class="qa-sources"><b>参考信源</b><span>01 官方来源</span><span>02 数据库材料</span><span>03 联网搜索</span></div>
+                  <div class="qa-sources"><b>参考来源</b><span>标题 / 摘要</span><span>来源与时间</span><span>打开来源</span></div>
                 </div>
                 <p>界面示意：历史会话、连续对话和参考信源相互对应。</p>
               </div>
@@ -264,12 +277,12 @@ onBeforeUnmount(() => {
                 <div class="manual-block">
                   <h3>连续追问与历史记录</h3>
                   <p>同一会话内可直接追问“这些事件中哪些与我国相关”。系统会结合前文理解上下文。主题变化较大时，建议新建会话，避免旧上下文干扰。</p>
-                  <p>左侧历史记录会保存会话。点击任一记录可恢复问题、回答和信源；新建问答不会删除旧会话。</p>
+                  <p>左侧历史记录可重新打开会话；新建问答不会删除已有会话。当前会话列表按账号保存在本浏览器，不应当作跨设备同步的资料档案。</p>
                 </div>
                 <div class="manual-block">
                   <h3>核对回答依据</h3>
                   <ul class="manual-list">
-                    <li>点击回答中的引用编号查看对应来源。</li>
+                    <li>在“参考来源”中搜索、筛选或展开材料，点击“打开来源”核对原文。</li>
                     <li>优先核对官方来源、原始文件和发布时间。</li>
                     <li>来源标题相关不等于内容支持结论，应打开摘要或原文确认。</li>
                     <li>复制回答前保留必要引用，避免事实与依据分离。</li>
@@ -278,10 +291,16 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="manual-block">
+                <h3>把问答带入编报</h3>
+                <p>回答完成后，可点击“一键导入当前回答”，或通过“加入背景选择”选择多轮问答，再点击“导入到编报背景”。导入只填充报告标题和补充背景，不会直接生成报告；之后仍需点击“生成编报规划”并确认提交。</p>
+                <p>如果已有未完成规划，会先提示“继续原规划”或“放弃并新建”，不会静默覆盖原规划。</p>
+              </div>
+
+              <div class="manual-block">
                 <h3>常见状态</h3>
                 <div class="manual-faq">
                   <details><summary>回答一直处于生成中</summary><p>先等待当前请求结束，不要连续发送相同问题。切换页面后可从历史会话恢复。</p></details>
-                  <details><summary>回答为空或没有参考信源</summary><p>缩小问题范围并补充明确实体、日期或材料。若仍为空，当前权限范围内可能没有可用资料。</p></details>
+                  <details><summary>回答为空或没有参考来源</summary><p>缩小问题范围并补充明确实体、日期或材料。没有结构化来源不等于结论已经证实；还需检查材料范围、权限及服务提示。</p></details>
                   <details><summary>回答失败</summary><p>保留当前问题，查看界面错误提示后重试。多次失败时记录发生时间和问题内容，交由管理员核查服务日志。</p></details>
                 </div>
               </div>
@@ -301,7 +320,7 @@ onBeforeUnmount(() => {
                 <div class="manual-figure-bar"><strong>每日动态感知</strong><span>使用手册</span></div>
                 <div class="daily-figure-grid">
                   <div class="figure-sidebar"><b>历史简报</b><span class="figure-line wide"></span><span class="figure-line"></span><span class="figure-line wide"></span></div>
-                  <div class="daily-main"><div class="daily-toolbar"><b>业务日期</b><span>文档视图</span><span>卡片视图</span></div><div class="daily-filter"><span>全部</span><span>政治</span><span>经济</span><span>安全</span></div><div class="daily-event"><i></i><div><b>重点事件标题</b><span>事件摘要与影响判断</span></div></div><div class="daily-event"><i></i><div><b>重点事件标题</b><span>事件摘要与影响判断</span></div></div></div>
+                  <div class="daily-main"><div class="daily-toolbar"><b>当前展示日期</b><span>正文</span><span>卡片</span></div><div class="daily-filter"><span>全部</span><span>危安</span><span>涉华</span><span>涉政</span></div><div class="daily-event"><i></i><div><b>重点事件标题</b><span>事件摘要与影响判断</span></div></div><div class="daily-event"><i></i><div><b>重点事件标题</b><span>事件摘要与影响判断</span></div></div></div>
                 </div>
                 <p>界面示意：从历史简报切换日期，在正文或卡片视图中查看事件。</p>
               </div>
@@ -310,8 +329,8 @@ onBeforeUnmount(() => {
                 <h3>查看当日简报</h3>
                 <ol class="manual-steps">
                   <li><b>确认业务日期。</b><span>页面展示的是简报对应的业务日期，不一定等同于当前访问时间。</span></li>
-                  <li><b>选择阅读视图。</b><span>文档视图适合连续阅读和导出；卡片视图适合快速扫描、分类筛选和展开单条事件。</span></li>
-                  <li><b>按类别筛选。</b><span>使用类别入口缩小事件范围；切回“全部”恢复完整清单。</span></li>
+                  <li><b>选择阅读视图。</b><span>“正文”适合连续阅读；“卡片”适合快速扫描、分类筛选和展开单条事件。</span></li>
+                  <li><b>按类别筛选。</b><span>在卡片视图中使用类别入口缩小范围；类别和数量以当期简报为准，切回“全部”恢复完整清单。</span></li>
                   <li><b>展开事件。</b><span>查看事件概述、重点主体、时间地点、影响判断及来源链接。</span></li>
                   <li><b>核对原始信源。</b><span>对准备引用的事实，打开来源链接确认标题、发布时间和原文语境。</span></li>
                 </ol>
@@ -320,20 +339,21 @@ onBeforeUnmount(() => {
               <div class="manual-two-column">
                 <div class="manual-block">
                   <h3>历史、复制与导出</h3>
-                  <p>左侧历史简报按日期排列，点击即可切换。复制用于快速引用当前内容；导出 Word 用于形成可编辑文档。导出前应确认业务日期和筛选条件。</p>
+                  <p>左侧历史简报按日期排列，点击即可切换。注意“今日业务日期”与“当前展示”可能不同；今日简报尚未就绪或生成未成功时，会提示正在展示最近一期。</p>
+                  <p>分类筛选只影响卡片列表；复制和 Word 导出针对当前所选日期的整期简报，不是仅导出筛选出的卡片。操作前先核对“当前展示”的日期。</p>
                 </div>
                 <div class="manual-block">
                   <h3>转入拟稿助手</h3>
-                  <p>有权限时，可将单条事件导入拟稿助手。系统会带入事件主题、摘要和来源，随后仍需在事件分析阶段核对信息是否完整。</p>
+                  <p>有权限时，点击单条事件的“导入拟稿助手”。导入只填入拟稿助手输入框，不会自动分析或生成报告。先检查、补充材料，再由用户点击“开始拟稿”。</p>
                 </div>
               </div>
 
               <div class="manual-block">
-                <h3>内容状态说明</h3>
+                <h3>简报版本与内容完整度</h3>
                 <div class="manual-status-grid three">
-                  <div><span class="status-dot success"></span><b>可用</b><p>简报已生成，可阅读、复制或导出。</p></div>
-                  <div><span class="status-dot running"></span><b>生成中</b><p>等待当日任务完成，历史简报仍可查看。</p></div>
-                  <div><span class="status-dot failed"></span><b>异常</b><p>内容缺失或质量状态异常时，不应直接用于成稿。</p></div>
+                  <div><span class="status-dot success"></span><b>标准版</b><p>按标准内容展示，引用前仍需核对原始来源。</p></div>
+                  <div><span class="status-dot running"></span><b>部分摘要版</b><p>部分条目摘要不完整，需补查原文。</p></div>
+                  <div><span class="status-dot queued"></span><b>简要版</b><p>主要保留标题等简要信息，不宜直接作为完整事实依据。</p></div>
                 </div>
               </div>
             </section>
@@ -352,42 +372,48 @@ onBeforeUnmount(() => {
                 <div class="manual-figure-bar"><strong>拟稿助手</strong><span>使用手册</span></div>
                 <div class="draft-figure-grid">
                   <div class="figure-sidebar"><b>拟稿历史</b><span class="figure-line wide"></span><span class="figure-line"></span><span class="figure-line wide"></span></div>
-                  <div class="draft-flow"><div><b>1</b><span>输入材料</span></div><em></em><div><b>2</b><span>事件分析</span></div><em></em><div><b>3</b><span>编辑提纲</span></div><em></em><div><b>4</b><span>导入编报</span></div></div>
+                  <div class="draft-flow"><div><b>1</b><span>开始拟稿</span></div><em></em><div><b>2</b><span>事件分析</span></div><em></em><div><b>3</b><span>编辑提纲</span></div><em></em><div><b>4</b><span>确认并创建</span></div></div>
                 </div>
-                <p>界面示意：拟稿按四个阶段推进，历史记录可恢复当前进度。</p>
+                <p>流程示意：先手动开始分析，确认提纲后直接创建深度编报任务。</p>
               </div>
 
               <div class="manual-block">
                 <h3>完整拟稿流程</h3>
                 <ol class="manual-steps">
-                  <li><b>输入原始材料。</b><span>粘贴新闻、简报、会议纪要或自行整理的事实。至少包含一个明确事件主题。</span></li>
-                  <li><b>检查事件分析。</b><span>重点核对事件概括、核心主体、时间与地点、关键事实和涉我风险。显示“暂无明确内容”时，应返回补充材料后重新分析。</span></li>
-                  <li><b>生成提纲。</b><span>系统根据事件分析生成章节结构。生成后可拖动阅读、逐项修改标题与要点。</span></li>
+                  <li><b>输入并开始拟稿。</b><span>在“编报主体和相关材料”输入框填写主题、事实和链接，最多 12,000 字符。点击“开始拟稿”（窄屏显示向上箭头）才会提交事件分析。</span></li>
+                  <li><b>检查事件分析。</b><span>分析完成后核对事件概括、核心主体、时间与地点、关键事实和涉我风险。缺少信息时可“返回重新输入”补充材料；无需在这里确认五维任务。</span></li>
+                  <li><b>点击“生成提纲”。</b><span>确认分析内容后生成章节结构，再在“编辑当前提纲”中逐项修改标题和说明；分析未完成或失败时不能生成提纲。</span></li>
                   <li><b>编辑或使用 AI 修改。</b><span>手动修改适合精确调整；AI 修改应给出具体要求，例如“把第二部分改为按时间排序”。</span></li>
-                  <li><b>确认并导入深度编报。</b><span>确认提纲后导入，系统会把拟稿材料和提纲带入编报规划，之后仍需确认信源和研究方向。</span></li>
+                  <li><b>确认并创建深度编报。</b><span>先进入“确认提纲”核对内容，可“返回修改”。点击“确认并创建深度编报”后直接创建深度编报任务，不再进入首页的规划弹窗；创建成功后查看该报告任务的进度。</span></li>
                 </ol>
               </div>
 
               <div class="manual-two-column">
                 <div class="manual-block">
                   <h3>自动保存与历史恢复</h3>
-                  <p>提纲编辑会自动保存。左侧拟稿历史显示已有任务，点击可恢复材料、分析和提纲。切换记录前先留意页面的保存状态提示。</p>
+                  <p>提纲编辑会自动保存。左侧拟稿历史可恢复已有材料、分析和提纲；窄屏通过“查看拟稿历史”按钮打开历史列表。离开前先确认保存状态；保存失败时点击“重试”，不要直接关闭页面。</p>
                 </div>
                 <div class="manual-block manual-callout green">
                   <History :size="19" aria-hidden="true" />
                   <div>
                     <h3>避免重复创建</h3>
-                    <p>页面刷新或暂时离开后，先从拟稿历史恢复任务。只有主题确实变化时再新建拟稿。</p>
+                    <p>同一账号同时只能有一条进行中的事件分析。已有任务时可继续编辑输入材料，但应先“返回查看”该任务，勿重复提交。</p>
                   </div>
                 </div>
               </div>
 
               <div class="manual-block">
+                <h3>后台分析与跨页恢复</h3>
+                <p>事件分析任务受理后，切换模块或刷新页面不会取消后台分析；重新登录后可从拟稿历史查看状态。离开拟稿页面时，会显示“拟稿分析中”等提醒，完成后显示“拟稿分析已完成”，点击“返回查看”打开对应记录。</p>
+                <p>不要把“连接中断”当作任务已失败：页面会继续确认后台状态。只有明确显示失败后，才使用“重试分析”。后台分析完成不会自动生成提纲或提交深度编报，仍由用户确认下一步。</p>
+              </div>
+
+              <div class="manual-block">
                 <h3>异常处理</h3>
                 <div class="manual-faq">
-                  <details><summary>事件分析字段显示“暂无明确内容”</summary><p>这表示当前材料或解析结果没有提供对应字段。补充人物、机构、日期、地点和关键事实后重新分析，不要用概括性文字代替事实。</p></details>
+                  <details><summary>事件分析提示材料不足或待核实</summary><p>这表示当前材料没有提供足够的对应事实。补充人物、机构、日期、地点和可靠来源后重新分析，不要用概括性文字代替事实。</p></details>
                   <details><summary>提纲修改后没有保存</summary><p>先保留当前内容，观察保存提示并稍后重试。不要立即切换历史记录，以免未保存内容丢失。</p></details>
-                  <details><summary>导入深度编报失败</summary><p>检查是否已确认提纲以及账号是否具备编报权限。失败后可从拟稿历史恢复，无需重新录入全部材料。</p></details>
+                  <details><summary>创建深度编报失败或结果不明</summary><p>先查看编报历史，确认是否已有同主题任务，避免网络中断后重复创建。明确失败后再检查权限和页面提示；拟稿材料与已保存提纲可从历史恢复。</p></details>
                 </div>
               </div>
             </section>
