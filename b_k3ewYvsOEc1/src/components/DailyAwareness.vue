@@ -6,7 +6,6 @@ import {
   getCurrentDailyAwareness,
   getDailyAwarenessByDate,
   getDailyAwarenessHistory,
-  importDailyEventToDraft,
 } from '../lib/api.js'
 import { normalizePublishedDates, renderMarkdown } from '../lib/markdown.js'
 import { displayUserRoleNames } from '../lib/permissionModules.js'
@@ -176,15 +175,17 @@ function isEventImported(itemId) {
 }
 
 async function importToDraft(event) {
-  if (!event?.itemId || !canImportToDraft.value) return
+  if (!event?.itemId || !canImportToDraft.value || importingItemId.value || importedEventIds.value.has(event.itemId)) return
   importingItemId.value = event.itemId
   errorMessage.value = ''
   noticeMessage.value = ''
   try {
-    const result = await importDailyEventToDraft(event.itemId)
+    // Persist the history only when the analysis job is accepted.
+    const materials = [event.title || event.eventTitle, event.basicSituation || event.backgroundContext]
+      .filter(Boolean).join('\n\n').trim()
     importedEventIds.value = new Set([...importedEventIds.value, event.itemId])
     noticeMessage.value = '已导入拟稿助手。'
-    if (result?.eventId) emit('open-draft-event', { eventId: result.eventId })
+    emit('open-draft-event', { materials })
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {

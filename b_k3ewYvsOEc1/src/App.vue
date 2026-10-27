@@ -384,6 +384,11 @@ function openDailyAwareness() {
 }
 
 function openDraftFromDaily(payload) {
+  draftOpenRequest.value = null
+  if (typeof payload?.materials === 'string') {
+    draftAnalysis.setComposer(payload.materials)
+    draftAnalysis.selectEvent('')
+  }
   draftInitialEventId.value = payload?.eventId || ''
   showDailyAwareness.value = false
   showUserManagement.value = false
