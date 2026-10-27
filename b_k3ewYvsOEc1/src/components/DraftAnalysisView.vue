@@ -20,6 +20,7 @@ const props = defineProps({
   generating: { type: Boolean, default: false },
   analysisJob: { type: Object, default: null },
   historyLoading: { type: Boolean, default: false },
+  resultLoading: { type: Boolean, default: false },
   submitting: { type: Boolean, default: false },
   connectionLost: { type: Boolean, default: false },
 })
@@ -58,7 +59,7 @@ const elapsed = computed(() => {
 
       <div v-if="loading" class="draft-analysis-loading" aria-live="polite">
         <LoaderCircle :size="22" class="draft-spin" aria-hidden="true" />
-        <span>{{ historyLoading ? '正在加载历史记录' : submitting ? '正在提交拟稿任务' : connectionLost ? '连接中断，正在确认任务状态' : analysisJob ? analysisStepLabel(analysisJob) : '正在分析事件材料...' }}
+        <span>{{ historyLoading ? '正在加载历史记录' : resultLoading ? '正在加载分析结果...' : submitting ? '正在提交拟稿任务' : connectionLost ? '连接中断，正在确认任务状态' : analysisJob ? analysisStepLabel(analysisJob) : '正在分析事件材料...' }}
           <small v-if="analysisJob && !historyLoading">{{ elapsed }}</small>
         </span>
       </div>

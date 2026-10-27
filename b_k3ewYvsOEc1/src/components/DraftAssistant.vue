@@ -55,6 +55,7 @@ const isGeneratingOutline = ref(false)
 const isRevising = ref(false)
 const isLoadingEvents = ref(false)
 const isLoadingHistory = ref(false)
+const isLoadingAnalysisResult = ref(false)
 const selectedHistoryId = ref('')
 const importState = reactive({ status: 'idle', error: '', job: null })
 const mainRef = ref(null)
@@ -81,7 +82,7 @@ const draftIntentRecognition = computed(() => eventPlanningAvailable.value ? res
 const draftEventTaskPlan = computed(() => eventPlanningAvailable.value ? normalizeEventTaskPlan(currentAnalysis.value.eventTaskPlan) : null)
 const isImporting = computed(() => stage.value === 'importing' || stage.value === 'completed')
 const currentAnalysisJob = computed(() => props.analysisStore?.jobForEvent(currentEventId.value) || eventResult.value?.analysisJob || null)
-const analysisLoading = computed(() => isAnalyzing.value || isActiveAnalysis(currentAnalysisJob.value)
+const analysisLoading = computed(() => isAnalyzing.value || isLoadingAnalysisResult.value || isActiveAnalysis(currentAnalysisJob.value)
   || (!currentEventId.value && Boolean(props.analysisStore?.state.pending)))
 const displayedAnalysisError = computed(() => currentAnalysisJob.value?.status === 'failed'
   ? currentAnalysisJob.value.errorMessage || '事件分析失败，请重试分析。' : analysisError.value)
@@ -256,6 +257,7 @@ function resetCurrentDraft() {
   isRevising.value = false
   selectedHistoryId.value = ''
   isLoadingHistory.value = false
+  isLoadingAnalysisResult.value = false
   eventResult.value = null
   selectedOutline.value = null
   syncingOutline = true
@@ -576,15 +578,26 @@ watch(sourceInput, value => {
 watch(() => props.analysisStore?.state.jobs, () => {
   void loadEvents({ reportErrors: false, background: true })
 }, { deep: true })
-watch(() => `${currentAnalysisJob.value?.jobId}:${currentAnalysisJob.value?.status}`, async () => {
+watch([() => `${currentAnalysisJob.value?.jobId}:${currentAnalysisJob.value?.status}`, isLoadingHistory, stage], async (_value, _previous, onCleanup) => {
   const current = currentAnalysisJob.value
   if (!current || current.status !== 'succeeded' || stage.value !== 'analysis' || isLoadingHistory.value) return
+  if (eventResult.value?.analysisJob?.jobId === current.jobId && eventResult.value.analysisJob.status === 'succeeded') return
   const contextVersion = draftContextVersion
+  let cancelled = false
+  onCleanup(() => {
+    cancelled = true
+    if (isCurrentDraft(contextVersion)) isLoadingAnalysisResult.value = false
+  })
+  // The terminal job status can arrive before the separate detail response.
+  isLoadingAnalysisResult.value = true
+  analysisError.value = ''
   try {
     const result = await getDraftEvent(current.eventId)
-    if (isCurrentDraft(contextVersion) && stage.value === 'analysis' && currentAnalysisJob.value?.jobId === current.jobId) eventResult.value = result
+    if (!cancelled && isCurrentDraft(contextVersion)) eventResult.value = result
   } catch {
-    if (isCurrentDraft(contextVersion)) analysisError.value = '分析已保存，结果暂时无法加载，请重新打开该记录。'
+    if (!cancelled && isCurrentDraft(contextVersion)) analysisError.value = '分析已保存，结果暂时无法加载，请重新打开该记录。'
+  } finally {
+    if (!cancelled && isCurrentDraft(contextVersion)) isLoadingAnalysisResult.value = false
   }
 })
 watch(() => props.initialEventId, (eventId) => {
@@ -678,6 +691,7 @@ onBeforeUnmount(() => {
           :sections="analysisSections"
           :loading="analysisLoading || isLoadingHistory"
           :history-loading="isLoadingHistory"
+          :result-loading="isLoadingAnalysisResult"
           :submitting="Boolean(analysisStore?.state.submitting || (!currentEventId && analysisStore?.state.pending))"
           :analysis-job="currentAnalysisJob"
           :connection-lost="Boolean(analysisStore?.state.connectionLost)"

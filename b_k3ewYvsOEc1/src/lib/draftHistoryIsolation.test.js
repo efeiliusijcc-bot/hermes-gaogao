@@ -77,6 +77,139 @@ function mountLogic(t, overrides = {}, initialProps = {}) {
   return { state, emissions, unmount, props, mount: async () => { for (const fn of mounts) await fn() } }
 }
 
+function backgroundJobStore() {
+  const state = vue.reactive({
+    jobs: { A: { jobId: 'job-A', eventId: 'A', status: 'running' } }, readJobs: [],
+  })
+  return {
+    state,
+    jobForEvent: id => state.jobs[id] || null,
+    activeJob: () => Object.values(state.jobs).find(analysisStore.isActiveAnalysis),
+    selectEvent() {},
+  }
+}
+
+test('successful job keeps loading until its analysis detail arrives and blocks outline generation', async t => {
+  const result = deferred()
+  const store = backgroundJobStore()
+  let reads = 0, outlines = 0
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async () => ++reads === 1
+      ? { event: { eventId: 'A', analysis: {} }, analysisJob: { ...store.state.jobs.A } }
+      : result.promise,
+    generateDraftOutline: async () => { outlines++; return outline('A') },
+  }, { analysisStore: store })
+  await s.openEvent('A')
+  store.state.jobs.A.status = 'succeeded'
+  await vue.nextTick()
+  assert.equal(s.analysisLoading.value, true)
+  await s.createOutline()
+  assert.equal(outlines, 0)
+  result.resolve({ ...event('A'), analysisJob: { ...store.state.jobs.A } })
+  await settle()
+  assert.equal(s.analysisLoading.value, false)
+  assert.equal(s.analysisSections.value[0].content, 'Summary A')
+  assert.equal(reads, 2)
+  await s.createOutline()
+  assert.equal(outlines, 1)
+})
+
+test('failure to fetch completed analysis shows an error instead of empty result sections', async t => {
+  const result = deferred()
+  const store = backgroundJobStore()
+  let reads = 0
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async () => ++reads === 1 ? { event: { eventId: 'A', analysis: {} } } : result.promise,
+  }, { analysisStore: store })
+  await s.openEvent('A')
+  store.state.jobs.A.status = 'succeeded'
+  await vue.nextTick()
+  assert.equal(s.analysisLoading.value, true)
+  result.reject(new Error('Detail request failed'))
+  await settle()
+  assert.equal(s.analysisLoading.value, false)
+  assert.match(s.displayedAnalysisError.value, /结果暂时无法加载/)
+})
+
+for (const reject of [false, true]) {
+  test(`late completed-analysis ${reject ? 'error' : 'result'} cannot affect another history`, async t => {
+    const result = deferred()
+    const store = backgroundJobStore()
+    let reads = 0
+    const { state: s } = mountLogic(t, {
+      getDraftEvent: async id => id !== 'A' ? event(id) : ++reads === 1
+        ? { event: { eventId: 'A', analysis: {} } } : result.promise,
+    }, { analysisStore: store })
+    await s.openEvent('A')
+    store.state.jobs.A.status = 'succeeded'
+    await vue.nextTick()
+    await s.openEvent('B')
+    assert.equal(s.analysisLoading.value, false)
+    if (reject) result.reject(new Error('A detail failed'))
+    else result.resolve(event('A'))
+    await settle()
+    assert.equal(s.currentEventId.value, 'B')
+    assert.equal(s.analysisLoading.value, false)
+    assert.equal(s.analysisSections.value[0].content, 'Summary B')
+    assert.equal(s.displayedAnalysisError.value, '')
+  })
+}
+
+test('completion during a history read fetches the finished result after the stale history response', async t => {
+  const history = deferred(), result = deferred()
+  const store = backgroundJobStore()
+  let reads = 0
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: () => ++reads === 1 ? history.promise : result.promise,
+  }, { analysisStore: store })
+  const opening = s.openEvent('A')
+  await settle()
+  store.state.jobs.A.status = 'succeeded'
+  await vue.nextTick()
+  history.resolve({ event: { eventId: 'A', analysis: {} }, analysisJob: { jobId: 'job-A', eventId: 'A', status: 'running' } })
+  await opening
+  await vue.nextTick()
+  assert.equal(s.analysisLoading.value, true)
+  assert.equal(reads, 2)
+  result.resolve({ ...event('A'), analysisJob: { ...store.state.jobs.A } })
+  await settle()
+  assert.equal(s.analysisLoading.value, false)
+  assert.equal(s.analysisSections.value[0].content, 'Summary A')
+})
+
+test('opening an already completed history uses its loaded detail without a second request', async t => {
+  const store = backgroundJobStore()
+  store.state.jobs.A.status = 'succeeded'
+  let reads = 0
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async () => { reads++; return { ...event('A'), analysisJob: { ...store.state.jobs.A } } },
+  }, { analysisStore: store })
+  await s.openEvent('A')
+  await settle()
+  assert.equal(reads, 1)
+  assert.equal(s.analysisLoading.value, false)
+  assert.equal(s.analysisSections.value[0].content, 'Summary A')
+})
+
+test('a new attempt invalidates the prior attempt detail without clearing the new loading state', async t => {
+  const result = deferred()
+  const store = backgroundJobStore()
+  let reads = 0
+  const { state: s } = mountLogic(t, {
+    getDraftEvent: async () => ++reads === 1 ? { event: { eventId: 'A', analysis: {} } } : result.promise,
+  }, { analysisStore: store })
+  await s.openEvent('A')
+  store.state.jobs.A.status = 'succeeded'
+  await vue.nextTick()
+  store.state.jobs.A = { jobId: 'retry-A', eventId: 'A', status: 'running' }
+  await vue.nextTick()
+  result.resolve(event('stale-A'))
+  await settle()
+  assert.equal(s.eventResult.value.event.eventId, 'A')
+  assert.equal(s.isLoadingAnalysisResult.value, false)
+  assert.equal(s.analysisLoading.value, true)
+})
+
 test('daily import only prefills the composer until the user starts drafting', async (t) => {
   let analyzeCalls = 0
   const { state: s, mount } = mountLogic(t, {
